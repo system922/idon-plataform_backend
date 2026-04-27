@@ -1,5 +1,5 @@
 import bcrypt from 'bcrypt';
-import * as userModel from '../models/user.js';
+import * as userModel from '../models/User.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 
 // LISTAR USUARIOS
