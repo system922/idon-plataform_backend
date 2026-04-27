@@ -24,9 +24,14 @@ const startServer = async () => {
       logger.info(`Server running on port ${PORT}`);
       logger.info(`Environment: ${env.environment}`);
       logger.info(`CORS allowed origins: ${env.corsOrigin.join(', ')}`);
-      // WhatsApp: iniciar en background (no bloquea el arranque)
-      initWhatsapp();
-      startQueueFlusher();
+      // WhatsApp: solo iniciar si está habilitado (requiere Chrome/Puppeteer)
+      if (env.whatsappEnabled) {
+        logger.info('WhatsApp habilitado — iniciando...');
+        initWhatsapp();
+        startQueueFlusher();
+      } else {
+        logger.info('WhatsApp deshabilitado (WHATSAPP_ENABLED != true) — skipping');
+      }
       // Keep-alive ping para evitar que Render (free tier) duerma el servicio
       if (env.environment === 'production' && process.env.RENDER_EXTERNAL_URL) {
         const pingUrl = `${process.env.RENDER_EXTERNAL_URL}/health`;

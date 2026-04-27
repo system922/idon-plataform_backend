@@ -16,4 +16,5 @@ export default {
     .split(',')
     .map(o => o.trim())
     .filter(Boolean),
+  whatsappEnabled: process.env.WHATSAPP_ENABLED === 'true',
 };
