@@ -205,6 +205,83 @@ router.get('/', authMiddleware, async (req, res) => {
 });
 
 /**
+ * GET /api/ordenes/unprinted
+ * Returns orders not yet printed (within the last 2 hours).
+ * Creates printed_at column on first call if it doesn't exist.
+ */
+router.get('/unprinted', authMiddleware, async (req, res) => {
+  const client = await getClient();
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    await client.query(
+      `ALTER TABLE "${schema}".pos_orders ADD COLUMN IF NOT EXISTS printed_at TIMESTAMP`
+    );
+
+    const result = await client.query(
+      `SELECT
+         o.id, o.order_number,
+         o.order_number AS numero_pedido,
+         o.order_type, o.status,
+         o.mesa_numero, o.notes AS notas,
+         o.created_at,
+         COALESCE(
+           json_agg(
+             json_build_object(
+               'id',           i.id,
+               'product_name', i.product_name,
+               'quantity',     i.quantity,
+               'notes',        i.notes
+             ) ORDER BY i.created_at
+           ) FILTER (WHERE i.id IS NOT NULL),
+           '[]'::json
+         ) AS items
+       FROM "${schema}".pos_orders o
+       LEFT JOIN "${schema}".pos_order_items i ON i.order_id = o.id
+       WHERE o.printed_at IS NULL
+         AND o.created_at > NOW() - INTERVAL '2 hours'
+       GROUP BY o.id
+       ORDER BY o.created_at ASC`
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+/**
+ * POST /api/ordenes/mark-printed
+ * Marks a list of orders as printed.
+ * Body: { order_ids: [uuid, ...] }
+ */
+router.post('/mark-printed', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { order_ids } = req.body;
+    if (!Array.isArray(order_ids) || !order_ids.length) {
+      return res.status(400).json({ error: 'order_ids requerido' });
+    }
+
+    await query(
+      `UPDATE "${schema}".pos_orders
+       SET printed_at = NOW()
+       WHERE id = ANY($1::uuid[]) AND printed_at IS NULL`,
+      [order_ids]
+    );
+
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * GET /api/ordenes/:id
  * Returns a single order with its items.
  */
