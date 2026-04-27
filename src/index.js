@@ -23,9 +23,17 @@ const startServer = async () => {
     app.listen(PORT, () => {
       logger.info(`Server running on port ${PORT}`);
       logger.info(`Environment: ${env.environment}`);
+      logger.info(`CORS allowed origins: ${env.corsOrigin.join(', ')}`);
       // WhatsApp: iniciar en background (no bloquea el arranque)
       initWhatsapp();
       startQueueFlusher();
+      // Keep-alive ping para evitar que Render (free tier) duerma el servicio
+      if (env.environment === 'production' && process.env.RENDER_EXTERNAL_URL) {
+        const pingUrl = `${process.env.RENDER_EXTERNAL_URL}/health`;
+        setInterval(() => {
+          fetch(pingUrl).catch(() => {});
+        }, 14 * 60 * 1000); // cada 14 min
+      }
     });
   } catch (error) {
     logger.error('Failed to start server:', error);

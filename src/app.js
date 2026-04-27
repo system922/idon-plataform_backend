@@ -56,7 +56,18 @@ const app = express();
 // ─── Core middleware ──────────────────────────────────────────────────────────
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(cors({ origin: env.corsOrigin, credentials: true }));
+app.use(cors({
+  origin: (origin, cb) => {
+    // allow requests with no origin (mobile apps, curl, Render health checks)
+    if (!origin) return cb(null, true);
+    if (env.corsOrigin.includes(origin)) return cb(null, true);
+    cb(new Error(`CORS: origin not allowed — ${origin}`));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-business-id', 'x-db-name'],
+}));
+app.options('*', cors());
 app.use((req, res, next) => { logger.info(`${req.method} ${req.path}`); next(); });
 
 // ─── Middleware groups ────────────────────────────────────────────────────────

@@ -12,5 +12,8 @@ export default {
     secret: process.env.JWT_SECRET || 'your-secret-key-change-in-production',
     expiresIn: process.env.JWT_EXPIRATION || '24h',
   },
-  corsOrigin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+  corsOrigin: (process.env.CORS_ORIGIN || 'http://localhost:3000')
+    .split(',')
+    .map(o => o.trim())
+    .filter(Boolean),
 };
