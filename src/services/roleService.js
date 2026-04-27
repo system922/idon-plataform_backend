@@ -1,4 +1,4 @@
-import * as roleModel from '../models/roleModel.js';
+import * as roleModel from '../models/RoleModel.js';
 
 export const getAll  = (schema)         => roleModel.findAll(schema);
 export const getById = (schema, id)     => roleModel.findById(schema, id);
