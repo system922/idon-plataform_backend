@@ -2,6 +2,7 @@ import express from 'express';
 import { query, getClient } from '../config/database.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 import { authMiddleware } from '../middleware/auth.js';
+import { emitToBusiness } from '../socket.js';
 
 const router = express.Router();
 
@@ -120,13 +121,24 @@ router.post('/', authMiddleware, async (req, res) => {
 
     await client.query('COMMIT');
 
-    res.status(201).json({
+    const responsePayload = {
       pedido: {
         ...pedido,
-        numero_pedido: orderNumber, // alias for frontend compatibility
+        numero_pedido: orderNumber,
       },
       items: insertedItems,
-    });
+    };
+
+    // Notificar a la laptop del cajero (y cocina) en tiempo real
+    const businessId = req.user?.businessId;
+    if (businessId) {
+      emitToBusiness(businessId, 'new_order', {
+        ...responsePayload,
+        schema,
+      });
+    }
+
+    res.status(201).json(responsePayload);
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
@@ -316,7 +328,19 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
     }
 
     await client.query('COMMIT');
-    res.json(result.rows[0]);
+
+    const updatedOrder = result.rows[0];
+    const businessId = req.user?.businessId;
+    if (businessId) {
+      emitToBusiness(businessId, 'order_updated', {
+        id:           updatedOrder.id,
+        status:       updatedOrder.status,
+        order_number: updatedOrder.order_number,
+        schema,
+      });
+    }
+
+    res.json(updatedOrder);
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });

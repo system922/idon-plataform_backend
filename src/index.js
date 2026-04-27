@@ -1,3 +1,4 @@
+import { createServer } from 'http';
 import app from './app.js';
 import pool from './config/database.js';
 import env from './config/env.js';
@@ -5,6 +6,7 @@ import logger from './utils/logger.js';
 import { migrateControlPlane } from './db/migrate.js';
 import { init as initWhatsapp } from './services/whatsappService.js';
 import { startQueueFlusher } from './utils/waNotifications.js';
+import { initSocket } from './socket.js';
 
 const PORT = env.port;
 
@@ -19,8 +21,12 @@ const startServer = async () => {
     await migrateControlPlane();
     logger.info('Control-plane migrations completed');
 
+    // Attach Socket.io to the HTTP server
+    const httpServer = createServer(app);
+    initSocket(httpServer);
+
     // Start server
-    app.listen(PORT, () => {
+    httpServer.listen(PORT, () => {
       logger.info(`Server running on port ${PORT}`);
       logger.info(`Environment: ${env.environment}`);
       logger.info(`CORS allowed origins: ${env.corsOrigin.join(', ')}`);
