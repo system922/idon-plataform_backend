@@ -1,0 +1,25 @@
+-- Seed: modules (23 módulos completos)
+INSERT INTO public.modules (code, name, description, price_monthly, price_annual, icon, sort_order) VALUES
+  ('core',         'Centro de Control',        'Módulo base del sistema',         0,      0,       'settings',        0),
+  ('pos',          'Punto de Venta',           'Módulo POS para ventas en caja',                    5.00,  50.00,  'shopping-cart',   1),
+  ('inventory',    'Inventario',               'Gestión de stock, productos y categorías',          4.00,  40.00,  'box',             2),
+  ('reports',      'Reportes',                 'Reportes y analytics del negocio',                  4.00,  40.00,  'bar-chart-2',     3),
+  ('accounting',   'Contabilidad',             'Contabilidad, gastos e impuestos',                  5.00,  50.00,  'calculator',      5),
+  ('orders',       'Órdenes',                  'Pedidos, mesas y cocina',                           5.00,  50.00,  'clipboard-list',  6),
+  ('kitchen',      'Cocina',                   'Pantalla KDS y gestión de producción',              4.00,  40.00,  'chef-hat',        7),
+  ('delivery',     'Entregas',                 'Gestión de entregas y repartidores',                4.00,  40.00,  'truck',           8),
+  ('tables',       'Mesas',                    'Mapa y gestión de mesas del local',                 5.00,  50.00,  'layout',          9),
+  ('reservations', 'Reservas',                 'Reservas en línea y calendario',                    5.00,  50.00,  'calendar',        10),
+  ('loyalty',      'Fidelización',             'Puntos, membresías y promociones',                  5.00,  50.00,  'star',            11),
+  ('suppliers',    'Proveedores',              'Gestión de proveedores y compras',                  5.00,  50.00,  'truck',           12),
+  ('purchases',    'Compras',                  'Órdenes de compra y control de gastos',             4.00,  40.00,  'shopping-bag',    13),
+  ('appointments', 'Citas y Agenda',           'Agendamiento de citas y servicios',                 4.00,  40.00,  'clock',           14),
+  ('employees',    'RR.HH.',                   'Gestión de personal, turnos y asistencia',          5.00,  50.00,  'users',           15),
+  ('crm',          'CRM Clientes',             'Base de clientes, historial y campañas',            4.00,  40.00,  'user-check',      16),
+  ('routes',       'Rutas',                    'Planificación y optimización de rutas',             6.00,  60.00,  'map',             17),
+  ('tracking',     'Rastreo',                  'Rastreo GPS en tiempo real de entregas',            6.00,  60.00,  'map-pin',         18),
+  ('queue',        'Turnos y Filas',           'Gestión de turnos y pantalla de llamado',           5.00,  50.00,  'list',            19),
+  ('ecommerce',    'Tienda en Línea',          'Catálogo online, carrito y pagos digitales',        20.00,  200.00, 'globe',           20),
+  ('notifications','Notificaciones',           'Push y WhatsApp',                                   4.00,  40.00,  'bell',            21),
+  ('einvoicing',   'Facturación Electrónica',  'Emisión de comprobantes electrónicos SRI Ecuador',  80,  800.00,  'file-text',       22)
+ON CONFLICT (code) DO NOTHING;
