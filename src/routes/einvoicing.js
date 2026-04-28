@@ -163,20 +163,6 @@ router.post('/invoices/:id/resend', authMiddleware, requireInvoicingModule, asyn
   }
 });
 
-// ── POST /api/einvoicing/invoices/:id/whatsapp ────────────────────────────────
-router.post('/invoices/:id/whatsapp', authMiddleware, requireInvoicingModule, async (req, res) => {
-  try {
-    const schema = await getSchemaName(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
-    const { phone } = req.body;
-    if (!phone) return res.status(400).json({ error: 'Número de teléfono requerido' });
-    const inv = await svc.sendInvoiceWhatsapp(schema, req.params.id, phone);
-    res.json({ ok: true, invoice_number: inv.invoice_number });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // ── GET /api/einvoicing/invoices/:id/pdf ──────────────────────────────────────
 router.get('/invoices/:id/pdf', authMiddleware, requireInvoicingModule, async (req, res) => {
   try {

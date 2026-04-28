@@ -38,10 +38,8 @@
     "pg": "^8.11.3",
     "pino": "^8.17.2",
     "pino-pretty": "^10.2.3",
-    "qrcode": "^1.5.4",
     "socket.io": "^4.8.3",
     "uuid": "^9.0.1",
-    "whatsapp-web.js": "^1.34.6",
     "xml2js": "^0.6.2"
   },
   "devDependencies": {

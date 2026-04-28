@@ -4,8 +4,6 @@ import pool from './config/database.js';
 import env from './config/env.js';
 import logger from './utils/logger.js';
 import { migrateControlPlane } from './db/migrate.js';
-import { init as initWhatsapp } from './services/whatsappService.js';
-import { startQueueFlusher } from './utils/waNotifications.js';
 import { initSocket } from './socket.js';
 
 const PORT = env.port;
@@ -30,14 +28,6 @@ const startServer = async () => {
       logger.info(`Server running on port ${PORT}`);
       logger.info(`Environment: ${env.environment}`);
       logger.info(`CORS allowed origins: ${env.corsOrigin.join(', ')}`);
-      // WhatsApp: solo iniciar si está habilitado (requiere Chrome/Puppeteer)
-      if (env.whatsappEnabled) {
-        logger.info('WhatsApp habilitado — iniciando...');
-        initWhatsapp();
-        startQueueFlusher();
-      } else {
-        logger.info('WhatsApp deshabilitado (WHATSAPP_ENABLED != true) — skipping');
-      }
       // Keep-alive ping para evitar que Render (free tier) duerma el servicio
       if (env.environment === 'production' && process.env.RENDER_EXTERNAL_URL) {
         const pingUrl = `${process.env.RENDER_EXTERNAL_URL}/health`;
@@ -53,7 +43,6 @@ const startServer = async () => {
   }
 };
 
-// Evitar que errores no capturados de WhatsApp/Puppeteer tumben el servidor
 process.on('uncaughtException', (err) => {
   logger.error({ err: err.message }, '[PROCESS] uncaughtException — servidor sigue corriendo');
   console.error('[PROCESS] uncaughtException:', err.message);

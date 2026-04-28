@@ -16,7 +16,6 @@ import {
 } from 'osodreamer-sri-xml-signer';
 import { query, getClient } from '../config/database.js';
 import logger from '../utils/logger.js';
-import { sendInvoice as sendWhatsapp } from './whatsappService.js';
 
 cloudinary.config({ cloudinary_url: process.env.CLOUDINARY_URL });
 
@@ -281,13 +280,6 @@ export async function emitInvoice(schema, opts) {
     await client.query('COMMIT');
     const savedInvoice = rows[0];
 
-    // Envío por WhatsApp (no bloquea si falla)
-    if (phone && savedInvoice.status === 'autorizada') {
-      generateInvoicePdf(schema, savedInvoice.id)
-        .then(pdfBuf => sendWhatsapp(phone, pdfBuf, savedInvoice))
-        .catch(e => logger.warn({ err: e.message }, 'WhatsApp send failed (non-blocking)'));
-    }
-
     return savedInvoice;
   } catch (err) {
     await client.query('ROLLBACK');
@@ -373,16 +365,6 @@ export async function listInvoices(schema, { limit = 50, status } = {}) {
 }
 
 // ------------------- WHATSAPP MANUAL -------------------
-export async function sendInvoiceWhatsapp(schema, invoiceId, phone) {
-  const { rows } = await query(`SELECT * FROM "${schema}".einvoices WHERE id = $1`, [invoiceId]);
-  const inv = rows[0];
-  if (!inv)                     throw new Error('Factura no encontrada');
-  if (inv.status !== 'autorizada') throw new Error('Solo se pueden enviar por WhatsApp facturas autorizadas por el SRI');
-  const pdfBuf = await generateInvoicePdf(schema, invoiceId);
-  await sendWhatsapp(phone, pdfBuf, inv);
-  return inv;
-}
-
 // ─── Parseo del XML firmado para RIDE PDF ─────────────────────────────────────
 async function parseFacturaFromXml(xmlText) {
   const { parseStringPromise } = await import('xml2js');

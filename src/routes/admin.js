@@ -4,7 +4,6 @@ import { successResponse, errorResponse } from '../utils/response.js';
 import { query, getClient } from '../config/database.js';
 import logger from '../utils/logger.js';
 import { authMiddleware, adminMiddleware } from '../middleware/auth.js';
-import { notifyAprobacion, notifySuscripcion, notifyPagoRecibido, notifyRecordatorio, testSend } from '../utils/waNotifications.js';
 
 const router = express.Router();
 
@@ -29,12 +28,6 @@ router.post('/:requestId/approve', async (req, res, next) => {
 
     res.json(successResponse(result, 'Business approved and provisioned successfully'));
 
-    notifyAprobacion(reqData.owner_phone, {
-      firstName:    reqData.owner_first_name || '',
-      lastName:     reqData.owner_last_name  || '',
-      businessName: reqData.business_name    || '',
-      businessSlug: reqData.slug             || '',
-    });
   } catch (error) {
     // Log extendido
     logger.error(
@@ -687,17 +680,6 @@ router.post('/businesses/:businessId/subscribe', async (req, res, next) => {
       WHERE bu.business_id=$1 AND bu.is_owner=TRUE LIMIT 1
     `, [businessId]).catch(() => ({ rows: [] }));
     const o = ownerRows[0];
-    if (o) {
-      const fmt = d => new Date(d).toLocaleDateString('es-EC', { day:'2-digit', month:'2-digit', year:'numeric' });
-      notifySuscripcion(o.phone, {
-        firstName:       o.first_name || '',
-        lastName:        o.last_name  || '',
-        businessName:    o.business_name || '',
-        plan:            billing_period === 'monthly' ? 'Mensual' : 'Anual',
-        amount:          total_amount.toFixed(2),
-        nextBillingDate: fmt(newSub[0].next_billing_at),
-      });
-    }
 
   } catch (error) {
     logger.error('Error creando suscripción:', error);
@@ -1159,19 +1141,6 @@ router.post('/subscriptions/:subId/mark-paid', async (req, res, next) => {
       WHERE bu.business_id=(SELECT business_id FROM public.subscriptions WHERE id=$1)
         AND bu.is_owner=TRUE LIMIT 1
     `, [subId]).catch(() => ({ rows: [] }));
-    const po = pOwner[0];
-    if (po) {
-      const fmt = d => new Date(d).toLocaleDateString('es-EC', { day:'2-digit', month:'2-digit', year:'numeric' });
-      notifyPagoRecibido(po.phone, {
-        firstName:       po.first_name    || '',
-        lastName:        po.last_name     || '',
-        businessName:    po.business_name || '',
-        invoiceNumber,
-        amount:          parseFloat(sub.total_amount).toFixed(2),
-        paymentDate:     fmt(new Date()),
-        nextBillingDate: fmt(nextBilling),
-      });
-    }
   } catch (e) { next(e); }
 });
 
@@ -1377,77 +1346,6 @@ router.get('/notifications/system', async (req, res, next) => {
     });
 
     res.json({ ok: true, data: notifications, total: notifications.length });
-  } catch (e) { next(e); }
-});
-
-// ════════════════════════════════════════════════════════════
-// PLANTILLAS WHATSAPP
-// ════════════════════════════════════════════════════════════
-
-router.get('/whatsapp-templates', async (req, res, next) => {
-  try {
-    const { rows } = await query(
-      'SELECT type, label, description, body, variables, is_active, updated_at FROM public.whatsapp_templates ORDER BY type'
-    );
-    res.json({ ok: true, data: rows });
-  } catch (e) { next(e); }
-});
-
-router.put('/whatsapp-templates/:type', async (req, res, next) => {
-  try {
-    const { type } = req.params;
-    const { body, is_active } = req.body;
-    if (!body || !body.trim()) return res.status(400).json({ ok: false, message: 'El cuerpo de la plantilla es requerido' });
-    const { rows } = await query(
-      `UPDATE public.whatsapp_templates
-       SET body=$1, is_active=$2, updated_at=NOW()
-       WHERE type=$3 RETURNING *`,
-      [body.trim(), is_active !== false, type]
-    );
-    if (!rows.length) return res.status(404).json({ ok: false, message: 'Plantilla no encontrada' });
-    res.json({ ok: true, data: rows[0] });
-  } catch (e) { next(e); }
-});
-
-router.post('/whatsapp-templates/test', async (req, res, next) => {
-  try {
-    const { type, phone, vars = {} } = req.body;
-    if (!type || !phone) return res.status(400).json({ ok: false, message: 'type y phone son requeridos' });
-    await testSend(type, phone, vars);
-    res.json({ ok: true, message: `Mensaje de prueba tipo "${type}" enviado a ${phone}` });
-  } catch (e) {
-    res.status(500).json({ ok: false, message: e.message });
-  }
-});
-
-// Enviar recordatorio manual a un negocio específico
-router.post('/whatsapp-templates/recordatorio/:subId', async (req, res, next) => {
-  try {
-    const { subId } = req.params;
-    const { rows } = await query(`
-      SELECT u.first_name, u.last_name, u.phone, b.name AS business_name,
-             s.total_amount, s.next_billing_at
-      FROM public.subscriptions s
-      JOIN public.businesses b ON b.id = s.business_id
-      JOIN public.business_users bu ON bu.business_id = b.id AND bu.is_owner=TRUE
-      JOIN public.users u ON u.id = bu.user_id
-      WHERE s.id=$1 LIMIT 1
-    `, [subId]);
-    if (!rows.length) return res.status(404).json({ ok: false, message: 'Suscripción no encontrada' });
-    const r = rows[0];
-    const now = new Date();
-    const due = new Date(r.next_billing_at);
-    const daysLeft = Math.ceil((due - now) / 86400000);
-    const fmt = d => new Date(d).toLocaleDateString('es-EC', { day:'2-digit', month:'2-digit', year:'numeric' });
-    notifyRecordatorio(r.phone, {
-      firstName:    r.first_name    || '',
-      lastName:     r.last_name     || '',
-      businessName: r.business_name || '',
-      daysLeft:     daysLeft > 0 ? daysLeft : 0,
-      amount:       parseFloat(r.total_amount).toFixed(2),
-      dueDate:      fmt(due),
-    });
-    res.json({ ok: true, message: `Recordatorio enviado a ${r.phone}` });
   } catch (e) { next(e); }
 });
 
