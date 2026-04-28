@@ -1,2 +1,4 @@
 credentials/
 node_modules/
+.wwebjs_auth/
+.wwebjs_cache/

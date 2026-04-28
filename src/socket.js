@@ -23,7 +23,18 @@ let io = null;
 export function initSocket(httpServer) {
   io = new Server(httpServer, {
     cors: {
-      origin: env.corsOrigin,
+      // Mismo comportamiento que el CORS de app.js:
+      // si CORS_ORIGIN está definido → validar lista, si no → aceptar cualquier origen
+      origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+        if (process.env.CORS_ORIGIN) {
+          const allowed = process.env.CORS_ORIGIN.split(',').map(o => o.trim());
+          return allowed.includes(origin)
+            ? callback(null, true)
+            : callback(new Error(`CORS socket: origen ${origin} no permitido`));
+        }
+        return callback(null, true);
+      },
       methods: ['GET', 'POST'],
       credentials: true,
     },
