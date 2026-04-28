@@ -5,7 +5,6 @@
  */
 import pkg from 'whatsapp-web.js';
 const { Client, LocalAuth, MessageMedia } = pkg;
-import puppeteer from 'puppeteer';
 import qrcode from 'qrcode';
 import logger from '../utils/logger.js';
 
@@ -30,12 +29,13 @@ export function init() {
   if (client || initializing) return;
   initializing = true;
 
-  // Obtener ruta de Chrome instalado por puppeteer
-  let executablePath;
-  try { executablePath = puppeteer.executablePath(); } catch {}
+  // Chrome: usa variable de entorno (Docker/Render) o deja que whatsapp-web.js lo detecte
+  const executablePath = process.env.CHROME_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
+
+  const sessionPath = process.env.WHATSAPP_SESSION_PATH || '.wwebjs_auth';
 
   client = new Client({
-    authStrategy: new LocalAuth({ dataPath: '.wwebjs_auth' }),
+    authStrategy: new LocalAuth({ dataPath: sessionPath }),
     puppeteer: {
       headless: true,
       ...(executablePath ? { executablePath } : {}),

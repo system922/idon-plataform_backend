@@ -24,7 +24,8 @@ router.post('/restart', authMiddleware, async (req, res) => {
   // Borrar sesión guardada para garantizar QR fresco
   try {
     const { rm } = await import('fs/promises');
-    await rm('.wwebjs_auth/session', { recursive: true, force: true });
+    const sessionBase = process.env.WHATSAPP_SESSION_PATH || '.wwebjs_auth';
+    await rm(`${sessionBase}/session`, { recursive: true, force: true });
   } catch {}
   resetReconnectCounter();
   init();

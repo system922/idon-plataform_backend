@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: idon-backend
+    env: docker
+    dockerfilePath: ./Dockerfile
+    disk:
+      name: whatsapp-session
+      mountPath: /var/data/whatsapp
+      sizeGB: 1
+    envVars:
+      - key: WHATSAPP_SESSION_PATH
+        value: /var/data/whatsapp
+      - key: WHATSAPP_ENABLED
+        value: "true"
+      - key: NODE_ENV
+        value: production
