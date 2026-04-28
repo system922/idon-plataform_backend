@@ -310,9 +310,9 @@ router.post('/validate-jefe-caja', async (req, res) => {
   }
 
   try {
-    // 1. Busca usuario activo con rol "Jefe/a de Caja" en el schema correspondiente
     const sql = `
-      SELECT u.password_hash FROM "${schema}".users u
+      SELECT u.first_name, u.last_name, u.password_hash
+      FROM "${schema}".users u
       JOIN "${schema}".roles r ON u.role_id = r.id
       WHERE r.name = $1 AND u.is_active = true
       LIMIT 1
@@ -322,11 +322,16 @@ router.post('/validate-jefe-caja', async (req, res) => {
       return res.status(404).json({ error: 'No existe Jefe/a de Caja activo' });
     }
 
-    // 2. Compara password con bcrypt
-    const ok = await bcrypt.compare(password, result.rows[0].password_hash);
+    const user = result.rows[0];
+    const ok = await bcrypt.compare(password, user.password_hash);
     if (!ok) return res.status(401).json({ error: 'Clave incorrecta' });
 
-    return res.json({ ok: true });
+    return res.json({
+      ok: true,
+      jefe: {
+        nombre: `${user.first_name} ${user.last_name}`.trim()
+      }
+    });
   } catch (err) {
     console.error('Error validando Jefe/a de Caja:', err);
     return res.status(500).json({ error: 'Error interno' });
