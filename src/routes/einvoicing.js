@@ -12,6 +12,7 @@ import { authMiddleware } from '../middleware/auth.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 import { query } from '../config/database.js';
 import * as svc from '../services/einvoicingService.js';
+import { sendInvoiceEmail } from '../services/emailService.js';
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
@@ -193,6 +194,34 @@ router.get('/invoices/:id/xml', authMiddleware, requireInvoicingModule, async (r
     res.setHeader('Content-Type', 'application/xml');
     res.setHeader('Content-Disposition', `attachment; filename="${rows[0].invoice_number}.xml"`);
     res.send(rows[0].signed_xml);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/einvoicing/invoices/:id/email ───────────────────────────────────
+// Body: { email: "cliente@ejemplo.com" }
+router.post('/invoices/:id/email', authMiddleware, requireInvoicingModule, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email requerido' });
+
+    const { rows } = await query(
+      `SELECT * FROM "${schema}".einvoices WHERE id = $1`, [req.params.id]
+    );
+    const inv = rows[0];
+    if (!inv) return res.status(404).json({ error: 'Factura no encontrada' });
+    if (inv.status !== 'autorizada') return res.status(400).json({ error: 'Solo se pueden enviar por correo facturas autorizadas' });
+
+    const cfg    = await svc.getConfig(schema);
+    const bizName = cfg?.nombre_comercial || cfg?.razon_social || 'Empresa';
+    const pdfBuf = await svc.generateInvoicePdf(schema, req.params.id);
+    await sendInvoiceEmail(inv, pdfBuf, email.trim(), bizName);
+
+    res.json({ ok: true, email: email.trim(), invoice_number: inv.invoice_number });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
