@@ -87,19 +87,41 @@ export async function uploadLogo(schema, buffer) {
   return url;
 }
 export async function saveSignatureFile(schema, buffer) {
-  const dir = path.join(UPLOADS_DIR, schema);
-  await mkdir(dir, { recursive: true });
-  const filePath = path.join(dir, 'firma.p12');
-  await writeFile(filePath, buffer);
-  return filePath;
+  const p12Base64 = buffer.toString('base64');
+
+  // Ensure the p12_base64 column exists (idempotent ALTER TABLE)
+  try {
+    await query(`ALTER TABLE "${schema}".einvoice_config ADD COLUMN IF NOT EXISTS p12_base64 TEXT`);
+  } catch { /* column may already exist — ignore */ }
+
+  // Store certificate as base64 in DB so it survives Render redeploys
+  try {
+    await query(
+      `UPDATE "${schema}".einvoice_config SET p12_base64 = $1, updated_at = NOW()`,
+      [p12Base64]
+    );
+  } catch (e) {
+    logger.warn({ err: e.message }, 'Could not save p12_base64 to DB — will rely on disk');
+  }
+
+  // Also write to disk as secondary fallback (ephemeral on Render)
+  try {
+    const dir = path.join(UPLOADS_DIR, schema);
+    await mkdir(dir, { recursive: true });
+    const filePath = path.join(dir, 'firma.p12');
+    await writeFile(filePath, buffer);
+    return filePath;
+  } catch {
+    return null;
+  }
 }
 
 // ------------------- CORE: Emisión -------------------
 export async function emitInvoice(schema, opts) {
   const cfg = await getConfig(schema);
-  if (!cfg)          throw new Error('Configuración de facturación electrónica no encontrada');
-  if (!cfg.p12_path) throw new Error('No hay firma electrónica cargada');
-  if (!cfg.ruc)      throw new Error('RUC del emisor no configurado');
+  if (!cfg)                                    throw new Error('Configuración de facturación electrónica no encontrada');
+  if (!cfg.p12_base64 && !cfg.p12_path)        throw new Error('No hay firma electrónica cargada');
+  if (!cfg.ruc)                                throw new Error('RUC del emisor no configurado');
 
   const client = await getClient();
   try {
@@ -206,8 +228,15 @@ export async function emitInvoice(schema, opts) {
     const claveMatch  = generatedXml.match(/<claveAcceso>([^<]+)<\/claveAcceso>/);
     const claveAcceso = claveMatch?.[1] || '';
 
-    // 2. Firmar XML
-    const p12Buffer = await readFile(cfg.p12_path);
+    // 2. Firmar XML — preferir base64 en BD (sobrevive redeploys), caer en disco si existe
+    let p12Buffer;
+    if (cfg.p12_base64) {
+      p12Buffer = Buffer.from(cfg.p12_base64, 'base64');
+    } else if (cfg.p12_path) {
+      p12Buffer = await readFile(cfg.p12_path);
+    } else {
+      throw new Error('No hay firma electrónica cargada');
+    }
     const signedXml = await signXml({
       p12Buffer:  new Uint8Array(p12Buffer),
       password:   cfg.p12_password || '',
@@ -292,7 +321,7 @@ export async function emitInvoice(schema, opts) {
 // ------------------- RESEND -------------------
 export async function resendInvoice(schema, invoiceId) {
   const cfg = await getConfig(schema);
-  if (!cfg?.p12_path) throw new Error('No hay firma electrónica cargada');
+  if (!cfg?.p12_base64 && !cfg?.p12_path) throw new Error('No hay firma electrónica cargada');
 
   const { rows } = await query(
     `SELECT * FROM "${schema}".einvoices WHERE id = $1`, [invoiceId]

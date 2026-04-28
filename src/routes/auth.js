@@ -3,7 +3,6 @@ import * as authService from '../services/authService.js';
 import bcrypt from 'bcrypt';
 import { query } from '../config/database.js';
 import { successResponse, errorResponse } from '../utils/response.js';
-import { notifyRegistro } from '../utils/waNotifications.js';
 import logger from '../utils/logger.js';
 
 const router = express.Router();
@@ -69,13 +68,6 @@ router.post('/register-business', async (req, res, next) => {
     console.log(`[REGISTRO] ownerPhone recibido: "${ownerPhone}"`);
     console.log(`========================================\n`);
 
-    notifyRegistro(ownerPhone, {
-      firstName:    ownerFirstName || '',
-      lastName:     ownerLastName  || '',
-      email:        ownerEmail,
-      businessName,
-      businessSlug,
-    });
 
   } catch (error) {
     if (error.message.includes('already')) {

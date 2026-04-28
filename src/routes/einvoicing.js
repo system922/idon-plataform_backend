@@ -48,9 +48,9 @@ router.get('/config', authMiddleware, requireInvoicingModule, async (req, res) =
     if (!schema) return res.status(400).json({ error: 'Business context required' });
     const cfg = await svc.getConfig(schema);
     if (!cfg) return res.json({});
-    // Never expose password or file path
-    const { p12_password, p12_path, ...safe } = cfg;
-    res.json({ ...safe, has_signature: !!p12_path });
+    // Never expose password, file path, or raw certificate bytes
+    const { p12_password, p12_path, p12_base64, ...safe } = cfg;
+    res.json({ ...safe, has_signature: !!(p12_base64 || p12_path) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -62,8 +62,8 @@ router.put('/config', authMiddleware, requireInvoicingModule, async (req, res) =
     const schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
     const updated = await svc.saveConfig(schema, req.body);
-    const { p12_password, p12_path, ...safe } = updated;
-    res.json({ ...safe, has_signature: !!p12_path });
+    const { p12_password, p12_path, p12_base64, ...safe } = updated;
+    res.json({ ...safe, has_signature: !!(p12_base64 || p12_path) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -94,7 +94,7 @@ router.post('/config/signature', authMiddleware, requireInvoicingModule, upload.
 
     const filePath = await svc.saveSignatureFile(schema, req.file.buffer);
     const updated = await svc.saveConfig(schema, {
-      p12_path: filePath,
+      p12_path: filePath || undefined,
       p12_password: req.body.password || '',
       ruc: req.body.ruc,
       razon_social: req.body.razon_social,
@@ -102,7 +102,7 @@ router.post('/config/signature', authMiddleware, requireInvoicingModule, upload.
       direccion_matriz: req.body.direccion_matriz,
       ambiente: req.body.ambiente,
     });
-    const { p12_password, p12_path, ...safe } = updated;
+    const { p12_password, p12_path, p12_base64, ...safe } = updated;
     res.json({ ...safe, has_signature: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

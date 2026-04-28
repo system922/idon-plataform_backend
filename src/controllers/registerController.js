@@ -19,7 +19,6 @@ import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import { getClient } from '../config/database.js';
 import logger from '../utils/logger.js';
-import { notifyRegistro } from '../utils/waNotifications.js';
 
 /* ─── Helpers ─────────────────────────────────────────────── */
 
@@ -183,14 +182,6 @@ export const submitRegistration = async (req, res) => {
         }
       });
 
-      notifyRegistro(phone?.trim() || null, {
-        firstName:    firstName?.trim() || '',
-        lastName:     lastName?.trim()  || '',
-        email:        existingOwner.email,
-        businessName: businessName.trim(),
-        businessSlug: slug,
-      });
-
       return;
     }
 
@@ -296,14 +287,6 @@ export const submitRegistration = async (req, res) => {
       ok: true,
       message: 'Solicitud enviada. Un administrador la revisará pronto.',
       data: { userId, ownerId, requestId, slug, status: 'pending' }
-    });
-
-    notifyRegistro(phone?.trim() || null, {
-      firstName:    firstName.trim(),
-      lastName:     lastName.trim(),
-      email:        emailClean,
-      businessName: businessName.trim(),
-      businessSlug: slug,
     });
 
     return;
