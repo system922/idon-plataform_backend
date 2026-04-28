@@ -109,6 +109,23 @@ router.post('/config/signature', authMiddleware, requireInvoicingModule, upload.
   }
 });
 
+// ── GET /api/einvoicing/invoices/by-order/:orderId ────────────────────────────
+router.get('/invoices/by-order/:orderId', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+    const { rows } = await query(
+      `SELECT invoice_number FROM "${schema}".einvoices
+        WHERE order_id = $1
+        ORDER BY created_at DESC LIMIT 1`,
+      [req.params.orderId]
+    );
+    res.json(rows[0] || null);
+  } catch {
+    res.json(null);
+  }
+});
+
 // ── GET /api/einvoicing/invoices ──────────────────────────────────────────────
 router.get('/invoices', authMiddleware, requireInvoicingModule, async (req, res) => {
   try {

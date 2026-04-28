@@ -169,17 +169,11 @@ router.get('/', authMiddleware, async (req, res) => {
          o.order_number AS numero_pedido,
          o.order_type, o.status,
          o.customer_id, o.customer_name,
-         o.customer_document_number,
          o.mesa_numero,
          o.subtotal, o.tax_rate, o.tax_amount, o.total,
          o.notes AS notas,
          o.created_at AS sale_date,
          o.updated_at,
-         (SELECT e.invoice_number
-            FROM "${schema}".einvoices e
-           WHERE e.order_id = o.id
-           ORDER BY e.created_at DESC
-           LIMIT 1) AS invoice_number,
          COALESCE(
            json_agg(
              json_build_object(
@@ -302,11 +296,6 @@ router.get('/:id', authMiddleware, async (req, res) => {
       `SELECT
          o.*,
          o.order_number AS numero_pedido,
-         (SELECT e.invoice_number
-            FROM "${schema}".einvoices e
-           WHERE e.order_id = o.id
-           ORDER BY e.created_at DESC
-           LIMIT 1) AS invoice_number,
          COALESCE(
            json_agg(
              json_build_object(
