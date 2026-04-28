@@ -16,6 +16,7 @@ import {
 } from 'osodreamer-sri-xml-signer';
 import { query, getClient } from '../config/database.js';
 import logger from '../utils/logger.js';
+import { sendInvoiceEmail } from './emailService.js';
 
 cloudinary.config({ cloudinary_url: process.env.CLOUDINARY_URL });
 
@@ -308,6 +309,15 @@ export async function emitInvoice(schema, opts) {
 
     await client.query('COMMIT');
     const savedInvoice = rows[0];
+
+    // Auto-envío de email en background — no bloquea la respuesta al cajero
+    if (savedInvoice.status === 'autorizada' && savedInvoice.customer_email) {
+      const cfg = await getConfig(schema);
+      const bizName = cfg?.nombre_comercial || cfg?.razon_social || 'Empresa';
+      generateInvoicePdf(schema, savedInvoice.id)
+        .then(pdfBuf => sendInvoiceEmail(savedInvoice, pdfBuf, savedInvoice.customer_email, bizName))
+        .catch(e => logger.warn({ err: e.message }, 'Email send failed (non-blocking)'));
+    }
 
     return savedInvoice;
   } catch (err) {

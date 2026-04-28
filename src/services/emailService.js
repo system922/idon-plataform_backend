@@ -17,7 +17,7 @@ export async function sendInvoiceEmail(inv, pdfBuf, to, businessName) {
 
   const html = `
     <div style="font-family:Arial,sans-serif;max-width:520px;margin:auto;color:#1e293b">
-      <div style="background:#6842fe;padding:24px 28px;border-radius:10px 10px 0 0">
+      <div style="background:#ff8c42;padding:24px 28px;border-radius:10px 10px 0 0">
         <h2 style="color:#fff;margin:0;font-size:20px">${businessName}</h2>
         <p style="color:#e0d9ff;margin:4px 0 0;font-size:13px">Factura Electrónica Autorizada</p>
       </div>
@@ -59,7 +59,7 @@ export async function sendInvoiceEmail(inv, pdfBuf, to, businessName) {
     subject,
     html,
     attachments: [{
-      filename: `RIDE-${inv.invoice_number}.pdf`,
+      filename: `FACTURA-${inv.invoice_number}.pdf`,
       content:  pdfBuf.toString('base64'),
     }],
   });
