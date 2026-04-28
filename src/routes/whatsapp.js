@@ -21,6 +21,11 @@ router.post('/flush-queue', authMiddleware, async (req, res) => {
 
 router.post('/restart', authMiddleware, async (req, res) => {
   await logout().catch(() => {});
+  // Borrar sesión guardada para garantizar QR fresco
+  try {
+    const { rm } = await import('fs/promises');
+    await rm('.wwebjs_auth/session', { recursive: true, force: true });
+  } catch {}
   resetReconnectCounter();
   init();
   res.json({ ok: true, message: 'Reiniciando WhatsApp...' });
