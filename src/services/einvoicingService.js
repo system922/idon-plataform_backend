@@ -244,50 +244,9 @@ export async function emitInvoice(schema, opts) {
       xmlBuffer:  new TextEncoder().encode(generatedXml),
     });
 
-    // 3. Enviar al SRI
-    let status     = 'pendiente';
-    let sriMessage = null;
-    let authNumber = null;
-    let authDate   = null;
-    let sriJson    = null;
-
-    try {
-      const recResult = await validateXml({
-        xml: new TextEncoder().encode(signedXml),
-        env: envStr,
-      });
-      logger.info({ recResult }, 'SRI recepción');
-
-      if (recResult?.estado === 'RECIBIDA') {
-        const authResult = await authorizeXml({
-          claveAcceso,
-          env: envStr,
-        });
-        logger.info({ authResult }, 'SRI autorización');
-        sriJson = authResult;
-
-        if (authResult?.estadoAutorizacion === 'AUTORIZADO') {
-          status     = 'autorizada';
-          authNumber = authResult.claveAcceso || claveAcceso;
-          authDate   = authResult.fechaAutorizacion ? new Date(authResult.fechaAutorizacion) : new Date();
-        } else {
-          status     = 'rechazada';
-          sriMessage = (authResult?.mensajes || []).map(m => m.mensaje).join(' | ')
-                     || authResult?.estadoAutorizacion
-                     || 'Rechazada por el SRI';
-        }
-      } else {
-        status     = 'pendiente';
-        sriMessage = recResult?.mensaje || 'No recibida por el SRI';
-      }
-    } catch (sriErr) {
-      logger.warn({ err: sriErr.message }, 'SRI error — guardando como pendiente');
-      status     = 'pendiente';
-      sriMessage = sriErr.message;
-    }
-
     const phone = customer.phone || opts.customer_phone || null;
 
+    // 3. Guardar en DB como 'pendiente' — devuelve inmediatamente al cajero
     const { rows } = await client.query(
       `INSERT INTO "${schema}".einvoices
          (order_id, invoice_number, access_key, auth_number,
@@ -297,27 +256,21 @@ export async function emitInvoice(schema, opts) {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
        RETURNING *`,
       [
-        opts.order_id || null, invoiceNumber, claveAcceso, authNumber,
+        opts.order_id || null, invoiceNumber, claveAcceso, null,
         customer.id   || null, razonComprador, idComprador, customer.email || null, phone,
         subtotalNum.toFixed(2), ivaNum.toFixed(2), totalNum.toFixed(2),
         JSON.stringify(opts.items || []),
         signedXml,
-        status, sriMessage, sriJson ? JSON.stringify(sriJson) : null,
-        now, authDate,
+        'pendiente', null, null,
+        now, null,
       ]
     );
 
     await client.query('COMMIT');
     const savedInvoice = rows[0];
 
-    // Auto-envío de email en background — no bloquea la respuesta al cajero
-    if (savedInvoice.status === 'autorizada' && savedInvoice.customer_email) {
-      const cfg = await getConfig(schema);
-      const bizName = cfg?.nombre_comercial || cfg?.razon_social || 'Empresa';
-      generateInvoicePdf(schema, savedInvoice.id)
-        .then(pdfBuf => sendInvoiceEmail(savedInvoice, pdfBuf, savedInvoice.customer_email, bizName))
-        .catch(e => logger.warn({ err: e.message }, 'Email send failed (non-blocking)'));
-    }
+    // 4. Enviar al SRI en background — no bloquea la respuesta al cajero
+    _authorizeSriBackground(schema, savedInvoice, signedXml, claveAcceso, envStr).catch(() => {});
 
     return savedInvoice;
   } catch (err) {
@@ -325,6 +278,64 @@ export async function emitInvoice(schema, opts) {
     throw err;
   } finally {
     client.release();
+  }
+}
+
+// ── Autorización SRI en background (no bloquea al cajero) ────────────────────
+async function _authorizeSriBackground(schema, invoice, signedXml, claveAcceso, envStr) {
+  let status = 'pendiente', authNumber = null, authDate = null, sriMessage = null, sriJson = null;
+  try {
+    const recResult = await validateXml({
+      xml: new TextEncoder().encode(signedXml),
+      env: envStr,
+    });
+    logger.info({ recResult }, 'SRI recepción (bg)');
+
+    if (recResult?.estado === 'RECIBIDA') {
+      const authResult = await authorizeXml({ claveAcceso, env: envStr });
+      logger.info({ authResult }, 'SRI autorización (bg)');
+      sriJson = authResult;
+
+      if (authResult?.estadoAutorizacion === 'AUTORIZADO') {
+        status     = 'autorizada';
+        authNumber = authResult.claveAcceso || claveAcceso;
+        authDate   = authResult.fechaAutorizacion ? new Date(authResult.fechaAutorizacion) : new Date();
+      } else {
+        status     = 'rechazada';
+        sriMessage = (authResult?.mensajes || []).map(m => m.mensaje).join(' | ')
+                   || authResult?.estadoAutorizacion || 'Rechazada por el SRI';
+      }
+    } else {
+      sriMessage = recResult?.mensaje || 'No recibida por el SRI';
+    }
+  } catch (sriErr) {
+    logger.warn({ err: sriErr.message }, 'SRI background error');
+    status     = 'pendiente';
+    sriMessage = sriErr.message;
+  }
+
+  const { rows: updated } = await query(
+    `UPDATE "${schema}".einvoices
+        SET status = $1, auth_number = $2, auth_date = $3,
+            sri_message = $4, sri_json = $5, updated_at = NOW()
+      WHERE id = $6
+      RETURNING *`,
+    [status, authNumber, authDate, sriMessage, sriJson ? JSON.stringify(sriJson) : null, invoice.id]
+  );
+
+  const updatedInvoice = updated[0];
+  if (!updatedInvoice) return;
+
+  // Auto-email si fue autorizada
+  if (status === 'autorizada' && updatedInvoice.customer_email) {
+    try {
+      const cfg     = await getConfig(schema);
+      const bizName = cfg?.nombre_comercial || cfg?.razon_social || 'Empresa';
+      const pdfBuf  = await generateInvoicePdf(schema, updatedInvoice.id);
+      await sendInvoiceEmail(updatedInvoice, pdfBuf, updatedInvoice.customer_email, bizName);
+    } catch (e) {
+      logger.warn({ err: e.message }, 'Email send failed (non-blocking)');
+    }
   }
 }
 
