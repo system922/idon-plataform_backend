@@ -1,3 +1,6 @@
+// Must be set before any Date usage — Render runs UTC, SRI requires Ecuador time
+process.env.TZ = 'America/Guayaquil';
+
 import { createServer } from 'http';
 import app from './app.js';
 import pool from './config/database.js';
