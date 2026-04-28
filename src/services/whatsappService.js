@@ -5,6 +5,7 @@
  */
 import pkg from 'whatsapp-web.js';
 const { Client, LocalAuth, MessageMedia } = pkg;
+import puppeteer from 'puppeteer';
 import qrcode from 'qrcode';
 import logger from '../utils/logger.js';
 
@@ -29,10 +30,15 @@ export function init() {
   if (client || initializing) return;
   initializing = true;
 
+  // Obtener ruta de Chrome instalado por puppeteer
+  let executablePath;
+  try { executablePath = puppeteer.executablePath(); } catch {}
+
   client = new Client({
     authStrategy: new LocalAuth({ dataPath: '.wwebjs_auth' }),
     puppeteer: {
       headless: true,
+      ...(executablePath ? { executablePath } : {}),
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -41,9 +47,12 @@ export function init() {
         '--disable-extensions',
         '--no-first-run',
         '--disable-default-apps',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
       ],
     },
-    webVersionCache: { type: 'local' },
+    webVersionCache: { type: 'remote' },
   });
 
   client.on('qr', async (qr) => {
@@ -163,7 +172,7 @@ function flushWaiters(mode) {
 
 // ── API pública ───────────────────────────────────────────────────────────────
 export function getStatus() {
-  return { status, qr: qrBase64, reconnectAttempts: reconnectCount };
+  return { status, qr: qrBase64, reconnectAttempts: reconnectCount, initializing };
 }
 
 export async function logout() {
