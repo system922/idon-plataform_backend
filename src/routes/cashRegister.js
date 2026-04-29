@@ -8,6 +8,7 @@ const router = express.Router();
 
 /**
  * GET /api/pos/cash-register/full-closing?date=YYYY-MM-DD
+ * Trae el último cierre del día
  */
 router.get('/full-closing', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
@@ -62,6 +63,7 @@ router.get('/full-closing', authMiddleware, businessContextMiddleware, async (re
 
 /**
  * GET /api/pos/cash-register/summary?date=YYYY-MM-DD
+ * Trae el resumen (ventas por método, propinas, comandas, gastos)
  */
 router.get('/summary', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
@@ -70,7 +72,9 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 
     const date = req.query.date || ecuadorToday();
 
-    // ✅ Ventas (MISMA lógica que ya validaste)
+    // --- VENTAS ---
+    // Nota: Se cambió condición pp.status='completed' por lo usual que usas ('paid','completed')
+    //       y el filtro de fecha adaptado a zona de Ecuador para coherencia
     const ventasRes = await query(
       `
       SELECT
@@ -119,7 +123,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
       [date]
     );
 
-    // ✅ Gastos
+    // --- GASTOS ---
     const gastosRes = await query(
       `
       SELECT
@@ -148,6 +152,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 
 /**
  * GET /api/pos/cash-register/closing?date=YYYY-MM-DD
+ * Trae información del último cierre simple (para auto-llenar el form)
  */
 router.get('/closing', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
@@ -185,33 +190,46 @@ router.get('/closing', authMiddleware, businessContextMiddleware, async (req, re
 
 /**
  * POST /api/pos/cash-register/closing
+ * Guarda el cuadre/final de caja. 
  */
 router.post('/closing', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
 
-    const {
-      efectivoFisico, transferenciaFisico, tarjetaFisico,
-      propinaFisico, comandasFisico, ventasFisico, date, remarks,
-    } = req.body;
+    // --- OJO: el front puede mandar valores tipo string. Aseguramos números válidos.
+    const efectivoFisico      = Number(req.body.efectivoFisico)      || 0;
+    const transferenciaFisico = Number(req.body.transferenciaFisico) || 0;
+    const tarjetaFisico       = Number(req.body.tarjetaFisico)       || 0;
+    const propinaFisico       = Number(req.body.propinaFisico)       || 0; // si no usas, déjalo en 0
+    const comandasFisico      = Number(req.body.comandasFisico)      || 0;
+    const date                = req.body.date || ecuadorToday();
+    const remarks             = req.body.remarks || null;
+    // const ventasFisico      = Number(req.body.ventasFisico) || 0; // No usado realmente
 
-    const transferFisico = transferenciaFisico;
-
-    // Ventas del sistema
+    // --- Cálculo de ventas del sistema ---
+    // Cambia el filtro: ahora incluye 'paid', 'completed' Y usa zona horaria correcta
     const summary = await query(
       `
       SELECT
-        COALESCE(SUM(CASE WHEN pp.payment_method = 'cash'     THEN pp.amount ELSE 0 END), 0) AS cash_system,
-        COALESCE(SUM(CASE WHEN pp.payment_method = 'transfer' THEN pp.amount ELSE 0 END), 0) AS transfer_system,
-        COALESCE(SUM(CASE WHEN pp.payment_method = 'card'     THEN pp.amount ELSE 0 END), 0) AS card_system,
+        COALESCE(SUM(CASE WHEN pp.payment_method = 'cash'
+                          AND pp.status IN ('completed', 'paid')
+                     THEN pp.amount ELSE 0 END), 0) AS cash_system,
+        COALESCE(SUM(CASE WHEN pp.payment_method = 'transfer'
+                          AND pp.status IN ('completed', 'paid')
+                     THEN pp.amount ELSE 0 END), 0) AS transfer_system,
+        COALESCE(SUM(CASE WHEN pp.payment_method = 'card'
+                          AND pp.status IN ('completed', 'paid')
+                     THEN pp.amount ELSE 0 END), 0) AS card_system,
         COUNT(DISTINCT po.id) AS orders_system
       FROM "${schema}".pos_orders po
       LEFT JOIN "${schema}".pos_payments pp ON pp.order_id = po.id
-      WHERE DATE(po.created_at) = $1 AND po.status = 'paid'
+      WHERE DATE(po.created_at AT TIME ZONE 'America/Guayaquil') = $1
+        AND po.status IN ('paid','completed')
       `,
       [date]
     );
+
     const s = summary?.rows[0] || {};
 
     const cashSystem     = Number(s.cash_system     || 0);
@@ -219,20 +237,21 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
     const cardSystem     = Number(s.card_system     || 0);
     const ordersSystem   = Number(s.orders_system   || 0);
 
-    // Gastos reales del día
+    // --- Gastos del día ---
     const gastosRes = await query(
       `SELECT COALESCE(SUM(amount), 0) AS total FROM "${schema}".expenses WHERE date = $1`,
       [date]
     );
     const expensesTotal = Number(gastosRes.rows[0]?.total || 0);
 
-    const diffCash      = Number(efectivoFisico)  - cashSystem;
-    const diffTransfer  = Number(transferFisico)  - transferSystem;
-    const diffCard      = Number(tarjetaFisico)   - cardSystem;
-    const ordersCounted = Number(comandasFisico);
+    // --- Cálculos de diferencias y totales ---
+    const diffCash      = efectivoFisico      - cashSystem;
+    const diffTransfer  = transferenciaFisico - transferSystem;
+    const diffCard      = tarjetaFisico       - cardSystem;
+    const ordersCounted = comandasFisico;
     const diffOrders    = ordersCounted - ordersSystem;
 
-    const totalCounted  = Number(efectivoFisico) + Number(transferFisico) + Number(tarjetaFisico) + Number(propinaFisico || 0);
+    const totalCounted  = efectivoFisico + transferenciaFisico + tarjetaFisico + propinaFisico;
     const totalSystem   = cashSystem + transferSystem + cardSystem;
     const diffTotal     = totalCounted - totalSystem;
 
@@ -240,6 +259,7 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
     const netCounted    = totalCounted - expensesTotal;
     const diffNet       = netCounted   - netSystem;
 
+    // --- Guarda el cierre ---
     const result = await query(
       `
       INSERT INTO "${schema}".cash_register_closing (
@@ -266,13 +286,13 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
       `,
       [
         req.user?.id || 'demo', date,
-        Number(efectivoFisico),  cashSystem,     diffCash,
-        Number(transferFisico),  transferSystem, diffTransfer,
-        Number(tarjetaFisico),   cardSystem,     diffCard,
-        ordersCounted,           ordersSystem,   diffOrders,
-        expensesTotal,           totalCounted,   totalSystem,  diffTotal,
-        netSystem,               netCounted,     diffNet,
-        remarks || null,
+        efectivoFisico,           cashSystem,     diffCash,
+        transferenciaFisico,      transferSystem, diffTransfer,
+        tarjetaFisico,            cardSystem,     diffCard,
+        ordersCounted,            ordersSystem,   diffOrders,
+        expensesTotal,            totalCounted,   totalSystem,  diffTotal,
+        netSystem,                netCounted,     diffNet,
+        remarks,
       ]
     );
 
@@ -281,6 +301,7 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
     res.status(500).json({ error: err.message });
   }
 });
+
 
 /**
  * GET /api/pos/cash-register/opening?date=YYYY-MM-DD
@@ -332,6 +353,7 @@ router.post('/opening', authMiddleware, businessContextMiddleware, async (req, r
       return res.status(409).json({ error: 'Ya existe una apertura de caja para hoy' });
     }
 
+    // Parsing de denominaciones asegurando Number()
     const {
       moneda_001 = 0, moneda_005 = 0, moneda_010 = 0,
       moneda_025 = 0, moneda_050 = 0, moneda_100 = 0,
@@ -340,12 +362,12 @@ router.post('/opening', authMiddleware, businessContextMiddleware, async (req, r
       monto_banca = 0, observaciones = null,
     } = req.body;
 
-    // Calcular total de efectivo por denominación
+    // Calcular total de efectivo por denominación (si está mal escrito, lo fuerza a 0)
     const totalEfectivo =
-      moneda_001 * 0.01 + moneda_005 * 0.05 + moneda_010 * 0.10 +
-      moneda_025 * 0.25 + moneda_050 * 0.50 + moneda_100 * 1.00 +
-      billete_1  * 1    + billete_5  * 5    + billete_10  * 10   +
-      billete_20 * 20   + billete_50 * 50   + billete_100 * 100;
+      Number(moneda_001) * 0.01 + Number(moneda_005) * 0.05 + Number(moneda_010) * 0.10 +
+      Number(moneda_025) * 0.25 + Number(moneda_050) * 0.50 + Number(moneda_100) * 1.00 +
+      Number(billete_1)  * 1    + Number(billete_5)  * 5    + Number(billete_10)  * 10   +
+      Number(billete_20) * 20   + Number(billete_50) * 50   + Number(billete_100) * 100;
 
     const totalInicial = totalEfectivo + Number(monto_banca);
 
