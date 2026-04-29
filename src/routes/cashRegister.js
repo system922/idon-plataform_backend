@@ -75,7 +75,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
     const date = req.query.date || ecuadorToday();
 
     // ===============================
-    // 🔹 VENTAS POR MÉTODO (FIX ZONA HORARIA + NORMALIZACIÓN)
+    // 🔹 VENTAS POR MÉTODO (FIX REAL)
     // ===============================
     const ventasPorMetodoRes = await query(
       `
@@ -94,7 +94,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
           ON pp.order_id = po.id
         WHERE
           DATE(po.created_at AT TIME ZONE 'America/Guayaquil') = $1
-          AND po.status IN ('paid','completed')
+          -- ❌ ELIMINADO: po.status estaba bloqueando todo
           AND pp.status IN ('completed','paid')
       ),
       metodos AS (
@@ -131,7 +131,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
     const ventasPorMetodo = ventasPorMetodoRes.rows || [];
 
     // ===============================
-    // 🔹 EXTRAS (PROPINA + COMANDAS)
+    // 🔹 EXTRAS (FIX TAMBIÉN)
     // ===============================
     const extrasRes = await query(
       `
@@ -149,7 +149,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
         ON pp.order_id = po.id
       WHERE 
         DATE(po.created_at AT TIME ZONE 'America/Guayaquil') = $1
-        AND po.status IN ('paid','completed')
+        -- ❌ ELIMINADO: po.status
       `,
       [date]
     );
@@ -175,7 +175,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
     const gastos = gastosRes.rows || [];
 
     // ===============================
-    // 🔹 DEBUG (opcional)
+    // 🔹 DEBUG
     // ===============================
     console.log("📊 SUMMARY DEBUG:", {
       date,
