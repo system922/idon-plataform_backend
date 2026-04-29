@@ -224,36 +224,95 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
  * GET /api/pos/cash-register/closing?date=YYYY-MM-DD
  * Trae información del último cierre simple (para auto-llenar el form)
  */
-router.get('/closing', authMiddleware, businessContextMiddleware, async (req, res) => {
+router.post('/closing', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
 
-    const date = req.query.date || ecuadorToday();
+    const date = req.body.date || await getEcuadorDate();
 
-    const result = await query(
-      `
+    const efectivoFisico      = Number(req.body.efectivoFisico) || 0;
+    const transferenciaFisico = Number(req.body.transferenciaFisico) || 0;
+    const tarjetaFisico       = Number(req.body.tarjetaFisico) || 0;
+    const propinaFisico       = Number(req.body.propinaFisico) || 0;
+    const comandasFisico      = Number(req.body.comandasFisico) || 0;
+    const remarks             = req.body.remarks || null;
+
+    const summary = await query(`
       SELECT
-        id,
-        cash_counted        AS efectivoFisico,
-        transfer_counted    AS transferenciaFisico,
-        card_counted        AS tarjetaFisico,
-        orders_counted      AS comandasFisico,
-        closing_date        AS "date",
-        created_at,
-        NULL::NUMERIC(14,2) AS propinaFisico,
-        NULL::NUMERIC(14,2) AS ventasFisico
-      FROM "${schema}".cash_register_closing
-      WHERE closing_date = $1
-      ORDER BY created_at DESC
-      LIMIT 1
-      `,
+        COALESCE(SUM(CASE WHEN pp.payment_method = 'cash'
+                          AND pp.status = 'completed'
+                     THEN pp.amount ELSE 0 END), 0) AS cash_system,
+
+        COALESCE(SUM(CASE WHEN pp.payment_method = 'transfer'
+                          AND pp.status = 'completed'
+                     THEN pp.amount ELSE 0 END), 0) AS transfer_system,
+
+        COALESCE(SUM(CASE WHEN pp.payment_method = 'card'
+                          AND pp.status = 'completed'
+                     THEN pp.amount ELSE 0 END), 0) AS card_system,
+
+        COUNT(DISTINCT po.id) AS orders_system
+
+      FROM "${schema}".pos_orders po
+      LEFT JOIN "${schema}".pos_payments pp ON pp.order_id = po.id
+      WHERE DATE(po.created_at AT TIME ZONE 'America/Guayaquil') = $1
+        AND po.status = 'completed'
+    `, [date]);
+
+    const s = summary.rows[0];
+
+    const gastosRes = await query(
+      `SELECT COALESCE(SUM(amount),0) AS total FROM "${schema}".expenses WHERE date = $1`,
       [date]
     );
 
-    if (result.rows.length === 0) return res.status(404).json({});
+    const expensesTotal = Number(gastosRes.rows[0].total || 0);
+
+    const totalCounted = efectivoFisico + transferenciaFisico + tarjetaFisico + propinaFisico;
+    const totalSystem  = Number(s.cash_system) + Number(s.transfer_system) + Number(s.card_system);
+
+    const result = await query(`
+      INSERT INTO "${schema}".cash_register_closing (
+        closing_user_id, closing_date, closing_time,
+        cash_counted, cash_system,
+        transfer_counted, transfer_system,
+        card_counted, card_system,
+        orders_counted, orders_system,
+        expenses_total, total_counted, total_system,
+        net_system, net_counted,
+        remarks
+      )
+      VALUES (
+        $1,$2,NOW(),
+        $3,$4,
+        $5,$6,
+        $7,$8,
+        $9,$10,
+        $11,$12,$13,
+        $14,$15,
+        $16
+      )
+      RETURNING *
+    `, [
+      req.user?.id || 'demo',
+      date,
+      efectivoFisico, s.cash_system,
+      transferenciaFisico, s.transfer_system,
+      tarjetaFisico, s.card_system,
+      comandasFisico, s.orders_system,
+      expensesTotal,
+      totalCounted,
+      totalSystem,
+      totalSystem - expensesTotal,
+      totalCounted - expensesTotal,
+      remarks
+    ]);
+
     res.json(result.rows[0]);
+
   } catch (err) {
+    console.error("❌ ERROR CLOSING:", err);
     res.status(500).json({ error: err.message });
   }
 });
