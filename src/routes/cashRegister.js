@@ -324,71 +324,123 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
 router.post('/closing', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
 
-    // --- OJO: el front puede mandar valores tipo string. Aseguramos números válidos.
-    const efectivoFisico      = Number(req.body.efectivoFisico)      || 0;
-    const transferenciaFisico = Number(req.body.transferenciaFisico) || 0;
-    const tarjetaFisico       = Number(req.body.tarjetaFisico)       || 0;
-    const propinaFisico       = Number(req.body.propinaFisico)       || 0; // si no usas, déjalo en 0
-    const comandasFisico      = Number(req.body.comandasFisico)      || 0;
-    const date                = req.body.date || ecuadorToday();
-    const remarks             = req.body.remarks || null;
-    // const ventasFisico      = Number(req.body.ventasFisico) || 0; // No usado realmente
+    // ===============================
+    // 🔒 HELPERS PRO
+    // ===============================
+    const toNumber = (v) => {
+      const n = parseFloat(v);
+      return isNaN(n) ? 0 : n;
+    };
 
-    // --- Cálculo de ventas del sistema ---
-    // Cambia el filtro: ahora incluye 'paid', 'completed' Y usa zona horaria correcta
+    const safe = (n) => (isNaN(n) ? 0 : n);
+
+    // ===============================
+    // 📥 INPUT SEGURO
+    // ===============================
+    const efectivoFisico      = toNumber(req.body.efectivoFisico);
+    const transferenciaFisico = toNumber(req.body.transferenciaFisico);
+    const tarjetaFisico       = toNumber(req.body.tarjetaFisico);
+    const propinaFisico       = toNumber(req.body.propinaFisico);
+    const comandasFisico      = parseInt(req.body.comandasFisico) || 0;
+
+    const date    = req.body.date || ecuadorToday();
+    const remarks = req.body.remarks || null;
+
+    // ===============================
+    // 📊 RESUMEN DEL SISTEMA (FIX REAL)
+    // ===============================
     const summary = await query(
       `
       SELECT
-        COALESCE(SUM(CASE WHEN pp.payment_method = 'cash'
-                          AND pp.status IN ('completed', 'paid')
-                     THEN pp.amount ELSE 0 END), 0) AS cash_system,
-        COALESCE(SUM(CASE WHEN pp.payment_method = 'transfer'
-                          AND pp.status IN ('completed', 'paid')
-                     THEN pp.amount ELSE 0 END), 0) AS transfer_system,
-        COALESCE(SUM(CASE WHEN pp.payment_method = 'card'
-                          AND pp.status IN ('completed', 'paid')
-                     THEN pp.amount ELSE 0 END), 0) AS card_system,
+        COALESCE(SUM(CASE 
+          WHEN LOWER(pp.payment_method) IN ('cash','efectivo')
+           AND pp.status = 'completed'
+        THEN pp.amount ELSE 0 END), 0) AS cash_system,
+
+        COALESCE(SUM(CASE 
+          WHEN LOWER(pp.payment_method) IN ('transfer','transferencia')
+           AND pp.status = 'completed'
+        THEN pp.amount ELSE 0 END), 0) AS transfer_system,
+
+        COALESCE(SUM(CASE 
+          WHEN LOWER(pp.payment_method) IN ('card','tarjeta')
+           AND pp.status = 'completed'
+        THEN pp.amount ELSE 0 END), 0) AS card_system,
+
         COUNT(DISTINCT po.id) AS orders_system
+
       FROM "${schema}".pos_orders po
-      LEFT JOIN "${schema}".pos_payments pp ON pp.order_id = po.id
+      LEFT JOIN "${schema}".pos_payments pp 
+        ON pp.order_id = po.id
+
       WHERE DATE(po.created_at AT TIME ZONE 'America/Guayaquil') = $1
         AND po.status IN ('paid','completed')
       `,
       [date]
     );
 
-    const s = summary?.rows[0] || {};
+    const s = summary?.rows?.[0] ?? {};
 
-    const cashSystem     = Number(s.cash_system     || 0);
-    const transferSystem = Number(s.transfer_system || 0);
-    const cardSystem     = Number(s.card_system     || 0);
-    const ordersSystem   = Number(s.orders_system   || 0);
+    const cashSystem     = toNumber(s.cash_system);
+    const transferSystem = toNumber(s.transfer_system);
+    const cardSystem     = toNumber(s.card_system);
+    const ordersSystem   = parseInt(s.orders_system) || 0;
 
-    // --- Gastos del día ---
+    // ===============================
+    // 💸 GASTOS
+    // ===============================
     const gastosRes = await query(
-      `SELECT COALESCE(SUM(amount), 0) AS total FROM "${schema}".expenses WHERE date = $1`,
+      `SELECT COALESCE(SUM(amount), 0) AS total 
+       FROM "${schema}".expenses 
+       WHERE date = $1`,
       [date]
     );
-    const expensesTotal = Number(gastosRes.rows[0]?.total || 0);
 
-    // --- Cálculos de diferencias y totales ---
-    const diffCash      = efectivoFisico      - cashSystem;
-    const diffTransfer  = transferenciaFisico - transferSystem;
-    const diffCard      = tarjetaFisico       - cardSystem;
+    const expensesTotal = toNumber(gastosRes.rows?.[0]?.total);
+
+    // ===============================
+    // 🧮 CÁLCULOS SEGUROS
+    // ===============================
+    const diffCash      = safe(efectivoFisico - cashSystem);
+    const diffTransfer  = safe(transferenciaFisico - transferSystem);
+    const diffCard      = safe(tarjetaFisico - cardSystem);
+
     const ordersCounted = comandasFisico;
-    const diffOrders    = ordersCounted - ordersSystem;
+    const diffOrders    = safe(ordersCounted - ordersSystem);
 
-    const totalCounted  = efectivoFisico + transferenciaFisico + tarjetaFisico + propinaFisico;
-    const totalSystem   = cashSystem + transferSystem + cardSystem;
-    const diffTotal     = totalCounted - totalSystem;
+    const totalCounted  = safe(
+      efectivoFisico + transferenciaFisico + tarjetaFisico + propinaFisico
+    );
 
-    const netSystem     = totalSystem  - expensesTotal;
-    const netCounted    = totalCounted - expensesTotal;
-    const diffNet       = netCounted   - netSystem;
+    const totalSystem = safe(
+      cashSystem + transferSystem + cardSystem
+    );
 
-    // --- Guarda el cierre ---
+    const diffTotal = safe(totalCounted - totalSystem);
+
+    const netSystem  = safe(totalSystem - expensesTotal);
+    const netCounted = safe(totalCounted - expensesTotal);
+    const diffNet    = safe(netCounted - netSystem);
+
+    // ===============================
+    // 🔍 DEBUG PRO (puedes quitar luego)
+    // ===============================
+    console.log("💰 CIERRE DEBUG:", {
+      date,
+      efectivoFisico,
+      cashSystem,
+      diffCash,
+      totalSystem,
+      totalCounted
+    });
+
+    // ===============================
+    // 💾 INSERT FINAL (100% SEGURO)
+    // ===============================
     const result = await query(
       `
       INSERT INTO "${schema}".cash_register_closing (
@@ -414,20 +466,33 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
       RETURNING *
       `,
       [
-        req.user?.id || 'demo', date,
-        efectivoFisico,           cashSystem,     diffCash,
-        transferenciaFisico,      transferSystem, diffTransfer,
-        tarjetaFisico,            cardSystem,     diffCard,
-        ordersCounted,            ordersSystem,   diffOrders,
-        expensesTotal,            totalCounted,   totalSystem,  diffTotal,
-        netSystem,                netCounted,     diffNet,
-        remarks,
+        req.user?.id || 'demo',
+        date,
+
+        efectivoFisico,      cashSystem,     diffCash,
+        transferenciaFisico, transferSystem, diffTransfer,
+        tarjetaFisico,       cardSystem,     diffCard,
+
+        ordersCounted,       ordersSystem,   diffOrders,
+
+        expensesTotal,
+        totalCounted,
+        totalSystem,
+        diffTotal,
+
+        netSystem,
+        netCounted,
+        diffNet,
+
+        remarks
       ]
     );
 
-    res.status(201).json(result.rows[0]);
+    return res.status(201).json(result.rows[0]);
+
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("❌ ERROR CLOSING:", err);
+    return res.status(500).json({ error: err.message });
   }
 });
 
