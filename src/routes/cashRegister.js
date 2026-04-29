@@ -62,9 +62,9 @@ router.get('/full-closing', authMiddleware, businessContextMiddleware, async (re
 });
 
 /**
- * GET /api/pos/cash-register/summary?date=YYYY-MM-DD
- * Trae el resumen (ventas por método, propinas, comandas, gastos)
- */
+* GET /api/pos/cash-register/summary?date=YYYY-MM-DD
+* Trae el resumen (ventas por método como array, propinas, comandas, gastos)
+*/
 router.get('/summary', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -72,36 +72,52 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 
     const date = req.query.date || ecuadorToday();
 
-    // --- VENTAS ---
-    // Nota: Se cambió condición pp.status='completed' por lo usual que usas ('paid','completed')
-    //       y el filtro de fecha adaptado a zona de Ecuador para coherencia
-    const ventasRes = await query(
+    // Nueva consulta: SIEMPRE aparecerán los 3 métodos (cash, transfer, card)
+    const ventasPorMetodoRes = await query(
+      `
+      WITH metodos AS (
+        SELECT 'cash' AS payment_method
+        UNION ALL SELECT 'transfer'
+        UNION ALL SELECT 'card'
+      ),
+      totales AS (
+        SELECT
+          pp.payment_method,
+          SUM(pp.amount) AS total_cobrado,
+          COUNT(pp.id) AS cantidad_pagos
+        FROM
+          "${schema}".pos_orders po
+          INNER JOIN "${schema}".pos_payments pp ON pp.order_id = po.id
+        WHERE
+          DATE(po.created_at AT TIME ZONE 'America/Guayaquil') = $1
+          AND po.status IN ('paid','completed')
+          AND pp.status = 'completed'
+          AND pp.payment_method IN ('cash','transfer','card')
+        GROUP BY
+          pp.payment_method
+      )
+      SELECT
+        m.payment_method,
+        COALESCE(t.total_cobrado,0)    AS total_cobrado,
+        COALESCE(t.cantidad_pagos,0)   AS cantidad_pagos
+      FROM metodos m
+      LEFT JOIN totales t ON t.payment_method = m.payment_method
+      ORDER BY
+        CASE m.payment_method
+          WHEN 'cash' THEN 1
+          WHEN 'transfer' THEN 2
+          WHEN 'card' THEN 3
+          ELSE 4
+        END
+      `,
+      [date]
+    );
+    const ventasPorMetodo = ventasPorMetodoRes.rows || [];
+
+    // Consulta adicional para PROPINA, COMANDAS y GASTOS, igual que antes:
+    const extrasRes = await query(
       `
       SELECT
-        COALESCE(SUM(
-          CASE 
-            WHEN pp.payment_method = 'cash'
-             AND pp.status = 'completed'
-            THEN pp.amount ELSE 0 
-          END
-        ), 0) AS "ventasEfectivo",
-
-        COALESCE(SUM(
-          CASE 
-            WHEN pp.payment_method = 'transfer'
-             AND pp.status = 'completed'
-            THEN pp.amount ELSE 0 
-          END
-        ), 0) AS "ventasTransferencia",
-
-        COALESCE(SUM(
-          CASE 
-            WHEN pp.payment_method = 'card'
-             AND pp.status = 'completed'
-            THEN pp.amount ELSE 0 
-          END
-        ), 0) AS "ventasTarjeta",
-
         COALESCE(SUM(
           CASE 
             WHEN pp.payment_method = 'propina'
@@ -109,21 +125,19 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
             THEN pp.amount ELSE 0 
           END
         ), 0) AS "propinas",
-
         COUNT(DISTINCT po.id) AS "comandasSistema"
-
       FROM "${schema}".pos_orders po
       LEFT JOIN "${schema}".pos_payments pp 
         ON pp.order_id = po.id
-
       WHERE 
         DATE(po.created_at AT TIME ZONE 'America/Guayaquil') = $1
         AND po.status IN ('paid','completed')
       `,
       [date]
     );
+    const extras = extrasRes.rows[0] || {};
 
-    // --- GASTOS ---
+    // GASTOS del día
     const gastosRes = await query(
       `
       SELECT
@@ -136,12 +150,13 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
       `,
       [date]
     );
-
-    const ventas = ventasRes.rows[0] || {};
     const gastos = gastosRes.rows || [];
 
+    // Respondemos con los 3 métodos siempre, y extras aparte (propinas, comandas, gastos)
     res.json({
-      ...ventas,
+      metodos: ventasPorMetodo,      // Array de cash, transfer, card SIEMPRE presentes
+      propinas: Number(extras.propinas || 0),
+      comandasSistema: Number(extras.comandasSistema || 0),
       gastos
     });
 
