@@ -72,7 +72,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 
     const date = req.query.date || ecuadorToday();
 
-    // Nueva consulta: SIEMPRE aparecerán los 3 métodos (cash, transfer, card)
+    // 🔹 Ventas por método (YA CORRECTO)
     const ventasPorMetodoRes = await query(
       `
       WITH metodos AS (
@@ -89,9 +89,10 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
           "${schema}".pos_orders po
           INNER JOIN "${schema}".pos_payments pp ON pp.order_id = po.id
         WHERE
-          DATE(po.created_at AT TIME ZONE 'America/Guayaquil') = $1
+          po.created_at >= $1::date
+          AND po.created_at < ($1::date + INTERVAL '1 day')
           AND po.status IN ('paid','completed')
-          AND pp.status = 'completed'
+          AND pp.status IN ('completed','paid')
           AND pp.payment_method IN ('cash','transfer','card')
         GROUP BY
           pp.payment_method
@@ -112,16 +113,17 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
       `,
       [date]
     );
+
     const ventasPorMetodo = ventasPorMetodoRes.rows || [];
 
-    // Consulta adicional para PROPINA, COMANDAS y GASTOS, igual que antes:
+    // 🔹 Extras (AQUÍ estaba el bug → YA CORREGIDO)
     const extrasRes = await query(
       `
       SELECT
         COALESCE(SUM(
           CASE 
             WHEN pp.payment_method = 'propina'
-             AND pp.status = 'completed'
+             AND pp.status IN ('completed','paid')
             THEN pp.amount ELSE 0 
           END
         ), 0) AS "propinas",
@@ -130,14 +132,16 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
       LEFT JOIN "${schema}".pos_payments pp 
         ON pp.order_id = po.id
       WHERE 
-        DATE(po.created_at AT TIME ZONE 'America/Guayaquil') = $1
+        po.created_at >= $1::date
+        AND po.created_at < ($1::date + INTERVAL '1 day')
         AND po.status IN ('paid','completed')
       `,
       [date]
     );
+
     const extras = extrasRes.rows[0] || {};
 
-    // GASTOS del día
+    // 🔹 Gastos (sin cambios)
     const gastosRes = await query(
       `
       SELECT
@@ -150,11 +154,12 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
       `,
       [date]
     );
+
     const gastos = gastosRes.rows || [];
 
-    // Respondemos con los 3 métodos siempre, y extras aparte (propinas, comandas, gastos)
+    // 🔹 Respuesta final
     res.json({
-      metodos: ventasPorMetodo,      // Array de cash, transfer, card SIEMPRE presentes
+      metodos: ventasPorMetodo,
       propinas: Number(extras.propinas || 0),
       comandasSistema: Number(extras.comandasSistema || 0),
       gastos
