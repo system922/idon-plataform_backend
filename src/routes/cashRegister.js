@@ -328,13 +328,18 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
       return res.status(400).json({ error: 'Business context required' });
     }
 
+    console.log("🔥 BODY RAW:", req.body);
+
+
     // ===============================
     // 🔒 HELPERS PRO
     // ===============================
     const toNumber = (v) => {
-      const n = parseFloat(v);
+      if (v === null || v === undefined || v === '') return 0;
+      const n = Number(v);
       return isNaN(n) ? 0 : n;
     };
+
 
     const safe = (n) => (isNaN(n) ? 0 : n);
 
