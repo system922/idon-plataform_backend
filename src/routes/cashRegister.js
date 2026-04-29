@@ -65,6 +65,9 @@ router.get('/full-closing', authMiddleware, businessContextMiddleware, async (re
 * GET /api/pos/cash-register/summary?date=YYYY-MM-DD
 * Trae el resumen (ventas por método como array, propinas, comandas, gastos)
 */
+/**
+ * GET /api/pos/cash-register/summary?date=YYYY-MM-DD
+ */
 router.get('/summary', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -74,9 +77,6 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 
     const date = req.query.date || ecuadorToday();
 
-    // ===============================
-    // 🔥 VENTAS POR MÉTODO (FIX TOTAL)
-    // ===============================
     const ventasPorMetodoRes = await query(
       `
       WITH pagos_normalizados AS (
@@ -94,8 +94,8 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
           ON pp.order_id = po.id
         WHERE
           DATE(po.created_at AT TIME ZONE 'America/Guayaquil') = $1
-          AND po.status IN ('paid','completed')
-          AND pp.status = 'completed' -- ✅ FIX ENUM
+          AND po.status = 'completed'
+          AND pp.status = 'completed'
       ),
 
       metodos AS (
@@ -133,16 +133,13 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 
     const ventasPorMetodo = ventasPorMetodoRes.rows || [];
 
-    // ===============================
-    // 🔥 EXTRAS (SIN ENUM ERROR)
-    // ===============================
     const extrasRes = await query(
       `
       SELECT
         COALESCE(SUM(
           CASE 
             WHEN LOWER(pp.payment_method) IN ('propina','tip')
-             AND pp.status = 'completed' -- ✅ FIX
+             AND pp.status = 'completed'
             THEN pp.amount ELSE 0 
           END
         ), 0) AS "propinas",
@@ -154,16 +151,13 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
         ON pp.order_id = po.id
       WHERE 
         DATE(po.created_at AT TIME ZONE 'America/Guayaquil') = $1
-        AND po.status IN ('paid','completed')
+        AND po.status = 'completed'
       `,
       [date]
     );
 
     const extras = extrasRes.rows[0] || {};
 
-    // ===============================
-    // 🔥 GASTOS
-    // ===============================
     const gastosRes = await query(
       `
       SELECT
@@ -177,27 +171,11 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
       [date]
     );
 
-    const gastos = gastosRes.rows || [];
-
-    // ===============================
-    // 🔥 DEBUG (MUY IMPORTANTE)
-    // ===============================
-    console.log("📊 SUMMARY OK:", {
-      date,
-      ventasPorMetodo,
-      propinas: extras.propinas,
-      comandasSistema: extras.comandasSistema,
-      gastosCount: gastos.length
-    });
-
-    // ===============================
-    // 🔥 RESPUESTA FINAL
-    // ===============================
     res.json({
       metodos: ventasPorMetodo,
       propinas: Number(extras.propinas || 0),
       comandasSistema: Number(extras.comandasSistema || 0),
-      gastos
+      gastos: gastosRes.rows || []
     });
 
   } catch (err) {
@@ -205,6 +183,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
     res.status(500).json({ error: err.message });
   }
 });
+
 
 
 
