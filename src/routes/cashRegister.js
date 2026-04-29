@@ -75,7 +75,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
     const date = req.query.date || ecuadorToday();
 
     // ===============================
-    // 🔹 VENTAS POR MÉTODO (FIX REAL)
+    // 🔥 VENTAS POR MÉTODO (FIX TOTAL)
     // ===============================
     const ventasPorMetodoRes = await query(
       `
@@ -94,14 +94,16 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
           ON pp.order_id = po.id
         WHERE
           DATE(po.created_at AT TIME ZONE 'America/Guayaquil') = $1
-          -- ❌ ELIMINADO: po.status estaba bloqueando todo
-          AND pp.status IN ('completed','paid')
+          AND po.status IN ('paid','completed')
+          AND pp.status = 'completed' -- ✅ FIX ENUM
       ),
+
       metodos AS (
         SELECT 'cash' AS payment_method
         UNION ALL SELECT 'transfer'
         UNION ALL SELECT 'card'
       ),
+
       totales AS (
         SELECT
           payment_method,
@@ -111,6 +113,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
         WHERE payment_method IN ('cash','transfer','card')
         GROUP BY payment_method
       )
+
       SELECT
         m.payment_method,
         COALESCE(t.total_cobrado, 0) AS total_cobrado,
@@ -131,7 +134,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
     const ventasPorMetodo = ventasPorMetodoRes.rows || [];
 
     // ===============================
-    // 🔹 EXTRAS (FIX TAMBIÉN)
+    // 🔥 EXTRAS (SIN ENUM ERROR)
     // ===============================
     const extrasRes = await query(
       `
@@ -139,17 +142,19 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
         COALESCE(SUM(
           CASE 
             WHEN LOWER(pp.payment_method) IN ('propina','tip')
-             AND pp.status IN ('completed','paid')
+             AND pp.status = 'completed' -- ✅ FIX
             THEN pp.amount ELSE 0 
           END
         ), 0) AS "propinas",
+
         COUNT(DISTINCT po.id) AS "comandasSistema"
+
       FROM "${schema}".pos_orders po
       LEFT JOIN "${schema}".pos_payments pp 
         ON pp.order_id = po.id
       WHERE 
         DATE(po.created_at AT TIME ZONE 'America/Guayaquil') = $1
-        -- ❌ ELIMINADO: po.status
+        AND po.status IN ('paid','completed')
       `,
       [date]
     );
@@ -157,7 +162,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
     const extras = extrasRes.rows[0] || {};
 
     // ===============================
-    // 🔹 GASTOS
+    // 🔥 GASTOS
     // ===============================
     const gastosRes = await query(
       `
@@ -175,9 +180,9 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
     const gastos = gastosRes.rows || [];
 
     // ===============================
-    // 🔹 DEBUG
+    // 🔥 DEBUG (MUY IMPORTANTE)
     // ===============================
-    console.log("📊 SUMMARY DEBUG:", {
+    console.log("📊 SUMMARY OK:", {
       date,
       ventasPorMetodo,
       propinas: extras.propinas,
@@ -186,7 +191,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
     });
 
     // ===============================
-    // 🔹 RESPUESTA FINAL
+    // 🔥 RESPUESTA FINAL
     // ===============================
     res.json({
       metodos: ventasPorMetodo,
@@ -200,6 +205,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
     res.status(500).json({ error: err.message });
   }
 });
+
 
 
 /**
