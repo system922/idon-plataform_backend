@@ -68,39 +68,53 @@ router.get('/full-closing', authMiddleware, businessContextMiddleware, async (re
 router.get('/summary', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
 
     const date = req.query.date || ecuadorToday();
 
-    // 🔹 Ventas por método (YA CORRECTO)
+    // ===============================
+    // 🔹 VENTAS POR MÉTODO (FIX ZONA HORARIA + NORMALIZACIÓN)
+    // ===============================
     const ventasPorMetodoRes = await query(
       `
-      WITH metodos AS (
+      WITH pagos_normalizados AS (
+        SELECT
+          CASE
+            WHEN LOWER(pp.payment_method) IN ('cash','efectivo') THEN 'cash'
+            WHEN LOWER(pp.payment_method) IN ('transfer','transferencia') THEN 'transfer'
+            WHEN LOWER(pp.payment_method) IN ('card','tarjeta') THEN 'card'
+            ELSE LOWER(pp.payment_method)
+          END AS payment_method,
+          pp.amount,
+          pp.id
+        FROM "${schema}".pos_orders po
+        INNER JOIN "${schema}".pos_payments pp 
+          ON pp.order_id = po.id
+        WHERE
+          DATE(po.created_at AT TIME ZONE 'America/Guayaquil') = $1
+          AND po.status IN ('paid','completed')
+          AND pp.status IN ('completed','paid')
+      ),
+      metodos AS (
         SELECT 'cash' AS payment_method
         UNION ALL SELECT 'transfer'
         UNION ALL SELECT 'card'
       ),
       totales AS (
         SELECT
-          pp.payment_method,
-          SUM(pp.amount) AS total_cobrado,
-          COUNT(pp.id) AS cantidad_pagos
-        FROM
-          "${schema}".pos_orders po
-          INNER JOIN "${schema}".pos_payments pp ON pp.order_id = po.id
-        WHERE
-          po.created_at >= $1::date
-          AND po.created_at < ($1::date + INTERVAL '1 day')
-          AND po.status IN ('paid','completed')
-          AND pp.status IN ('completed','paid')
-          AND pp.payment_method IN ('cash','transfer','card')
-        GROUP BY
-          pp.payment_method
+          payment_method,
+          SUM(amount) AS total_cobrado,
+          COUNT(id) AS cantidad_pagos
+        FROM pagos_normalizados
+        WHERE payment_method IN ('cash','transfer','card')
+        GROUP BY payment_method
       )
       SELECT
         m.payment_method,
-        COALESCE(t.total_cobrado,0)    AS total_cobrado,
-        COALESCE(t.cantidad_pagos,0)   AS cantidad_pagos
+        COALESCE(t.total_cobrado, 0) AS total_cobrado,
+        COALESCE(t.cantidad_pagos, 0) AS cantidad_pagos
       FROM metodos m
       LEFT JOIN totales t ON t.payment_method = m.payment_method
       ORDER BY
@@ -116,13 +130,15 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 
     const ventasPorMetodo = ventasPorMetodoRes.rows || [];
 
-    // 🔹 Extras (AQUÍ estaba el bug → YA CORREGIDO)
+    // ===============================
+    // 🔹 EXTRAS (PROPINA + COMANDAS)
+    // ===============================
     const extrasRes = await query(
       `
       SELECT
         COALESCE(SUM(
           CASE 
-            WHEN pp.payment_method = 'propina'
+            WHEN LOWER(pp.payment_method) IN ('propina','tip')
              AND pp.status IN ('completed','paid')
             THEN pp.amount ELSE 0 
           END
@@ -132,8 +148,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
       LEFT JOIN "${schema}".pos_payments pp 
         ON pp.order_id = po.id
       WHERE 
-        po.created_at >= $1::date
-        AND po.created_at < ($1::date + INTERVAL '1 day')
+        DATE(po.created_at AT TIME ZONE 'America/Guayaquil') = $1
         AND po.status IN ('paid','completed')
       `,
       [date]
@@ -141,7 +156,9 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 
     const extras = extrasRes.rows[0] || {};
 
-    // 🔹 Gastos (sin cambios)
+    // ===============================
+    // 🔹 GASTOS
+    // ===============================
     const gastosRes = await query(
       `
       SELECT
@@ -157,7 +174,20 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 
     const gastos = gastosRes.rows || [];
 
-    // 🔹 Respuesta final
+    // ===============================
+    // 🔹 DEBUG (opcional)
+    // ===============================
+    console.log("📊 SUMMARY DEBUG:", {
+      date,
+      ventasPorMetodo,
+      propinas: extras.propinas,
+      comandasSistema: extras.comandasSistema,
+      gastosCount: gastos.length
+    });
+
+    // ===============================
+    // 🔹 RESPUESTA FINAL
+    // ===============================
     res.json({
       metodos: ventasPorMetodo,
       propinas: Number(extras.propinas || 0),
@@ -166,9 +196,11 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
     });
 
   } catch (err) {
+    console.error("❌ ERROR SUMMARY:", err);
     res.status(500).json({ error: err.message });
   }
 });
+
 
 /**
  * GET /api/pos/cash-register/closing?date=YYYY-MM-DD
