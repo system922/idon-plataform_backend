@@ -323,6 +323,7 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
  */
 router.post('/closing', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
+
     const schema = await getSchemaName(req);
     if (!schema) {
       return res.status(400).json({ error: 'Business context required' });
@@ -330,33 +331,30 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
 
     console.log("🔥 BODY RAW:", req.body);
 
-
     // ===============================
-    // 🔒 HELPERS PRO
+    // 🧠 SAFE CORE (ANTI-NULL SYSTEM)
     // ===============================
-    const toNumber = (v) => {
-      if (v === null || v === undefined || v === '') return 0;
-      const n = Number(v);
-      return isNaN(n) ? 0 : n;
+    const n = (v) => {
+      const num = Number(v);
+      return isNaN(num) ? 0 : num;
     };
 
-
-    const safe = (n) => (isNaN(n) ? 0 : n);
+    const s = (v) => (v == null ? 0 : v);
 
     // ===============================
-    // 📥 INPUT SEGURO
+    // 📥 INPUTS
     // ===============================
-    const efectivoFisico      = toNumber(req.body.efectivoFisico);
-    const transferenciaFisico = toNumber(req.body.transferenciaFisico);
-    const tarjetaFisico       = toNumber(req.body.tarjetaFisico);
-    const propinaFisico       = toNumber(req.body.propinaFisico);
-    const comandasFisico      = parseInt(req.body.comandasFisico) || 0;
+    const efectivoFisico      = n(req.body.efectivoFisico);
+    const transferenciaFisico = n(req.body.transferenciaFisico);
+    const tarjetaFisico       = n(req.body.tarjetaFisico);
+    const propinaFisico       = n(req.body.propinaFisico);
+    const comandasFisico      = n(req.body.comandasFisico);
 
     const date    = req.body.date || ecuadorToday();
-    const remarks = req.body.remarks || null;
+    const remarks = req.body.remarks || '';
 
     // ===============================
-    // 📊 RESUMEN DEL SISTEMA (FIX REAL)
+    // 📊 SYSTEM SUMMARY
     // ===============================
     const summary = await query(
       `
@@ -388,15 +386,15 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
       [date]
     );
 
-    const s = summary?.rows?.[0] ?? {};
+    const row = summary?.rows?.[0] || {};
 
-    const cashSystem     = toNumber(s.cash_system);
-    const transferSystem = toNumber(s.transfer_system);
-    const cardSystem     = toNumber(s.card_system);
-    const ordersSystem   = parseInt(s.orders_system) || 0;
+    const cashSystem     = n(row.cash_system);
+    const transferSystem = n(row.transfer_system);
+    const cardSystem     = n(row.card_system);
+    const ordersSystem   = n(row.orders_system);
 
     // ===============================
-    // 💸 GASTOS
+    // 💸 EXPENSES SAFE
     // ===============================
     const gastosRes = await query(
       `SELECT COALESCE(SUM(amount), 0) AS total 
@@ -405,46 +403,49 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
       [date]
     );
 
-    const expensesTotal = toNumber(gastosRes.rows?.[0]?.total);
+    const expensesTotal = n(gastosRes?.rows?.[0]?.total);
 
     // ===============================
-    // 🧮 CÁLCULOS SEGUROS
+    // 🧮 CALCULOS 100% SEGUROS
     // ===============================
-    const diffCash      = safe(efectivoFisico - cashSystem);
-    const diffTransfer  = safe(transferenciaFisico - transferSystem);
-    const diffCard      = safe(tarjetaFisico - cardSystem);
+    const diffCash     = efectivoFisico - cashSystem;
+    const diffTransfer = transferenciaFisico - transferSystem;
+    const diffCard     = tarjetaFisico - cardSystem;
 
-    const ordersCounted = comandasFisico;
-    const diffOrders    = safe(ordersCounted - ordersSystem);
+    const diffOrders = comandasFisico - ordersSystem;
 
-    const totalCounted  = safe(
-      efectivoFisico + transferenciaFisico + tarjetaFisico + propinaFisico
-    );
+    const totalCounted =
+      efectivoFisico +
+      transferenciaFisico +
+      tarjetaFisico +
+      propinaFisico;
 
-    const totalSystem = safe(
-      cashSystem + transferSystem + cardSystem
-    );
+    const totalSystem = cashSystem + transferSystem + cardSystem;
 
-    const diffTotal = safe(totalCounted - totalSystem);
+    const diffTotal = totalCounted - totalSystem;
 
-    const netSystem  = safe(totalSystem - expensesTotal);
-    const netCounted = safe(totalCounted - expensesTotal);
-    const diffNet    = safe(netCounted - netSystem);
+    const netSystem  = totalSystem - expensesTotal;
+    const netCounted = totalCounted - expensesTotal;
+    const diffNet    = netCounted - netSystem;
 
     // ===============================
-    // 🔍 DEBUG PRO (puedes quitar luego)
+    // 🔍 DEBUG (IMPORTANTE)
     // ===============================
-    console.log("💰 CIERRE DEBUG:", {
-      date,
+    console.log("💰 CLOSING DEBUG:", {
       efectivoFisico,
       cashSystem,
       diffCash,
-      totalSystem,
-      totalCounted
+      totalCounted,
+      totalSystem
     });
 
     // ===============================
-    // 💾 INSERT FINAL (100% SEGURO)
+    // 🛡️ HARD GUARD (CLAVE)
+    // ===============================
+    const safeNum = (v) => (v == null || isNaN(v) ? 0 : v);
+
+    // ===============================
+    // 💾 INSERT SEGURO
     // ===============================
     const result = await query(
       `
@@ -474,20 +475,30 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
         req.user?.id || 'demo',
         date,
 
-        efectivoFisico,      cashSystem,     diffCash,
-        transferenciaFisico, transferSystem, diffTransfer,
-        tarjetaFisico,       cardSystem,     diffCard,
+        safeNum(efectivoFisico),
+        safeNum(cashSystem),
+        safeNum(diffCash),
 
-        ordersCounted,       ordersSystem,   diffOrders,
+        safeNum(transferenciaFisico),
+        safeNum(transferSystem),
+        safeNum(diffTransfer),
 
-        expensesTotal,
-        totalCounted,
-        totalSystem,
-        diffTotal,
+        safeNum(tarjetaFisico),
+        safeNum(cardSystem),
+        safeNum(diffCard),
 
-        netSystem,
-        netCounted,
-        diffNet,
+        safeNum(comandasFisico),
+        safeNum(ordersSystem),
+        safeNum(diffOrders),
+
+        safeNum(expensesTotal),
+        safeNum(totalCounted),
+        safeNum(totalSystem),
+        safeNum(diffTotal),
+
+        safeNum(netSystem),
+        safeNum(netCounted),
+        safeNum(diffNet),
 
         remarks
       ]
@@ -497,9 +508,13 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
 
   } catch (err) {
     console.error("❌ ERROR CLOSING:", err);
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({
+      error: err.message,
+      hint: "Check diff_cash or input values"
+    });
   }
 });
+
 
 
 /**
