@@ -184,7 +184,8 @@ router.get('/', authMiddleware, async (req, res) => {
                'quantity',     i.quantity,
                'unit_price',   i.unit_price,
                'line_total',   i.line_total,
-               'notes',        i.notes
+               'notes',        i.notes,
+               'paid',         COALESCE(i.paid, false)
              ) ORDER BY i.created_at
            ) FILTER (WHERE i.id IS NOT NULL),
            '[]'::json
@@ -339,7 +340,18 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
     if (!schema) return res.status(400).json({ error: 'Business context required' });
 
     const { id } = req.params;
-    const { status, payment_method, amount_paid, reference_number, payments } = req.body;
+    const { 
+      status, 
+      payment_method, 
+      amount_paid, 
+      reference_number, 
+      payments,
+      cliente_id,
+      customer_name,
+      customer_document_number,
+      notes
+    } = req.body;
+
     if (!status) return res.status(400).json({ error: 'status es requerido' });
 
     await client.query('BEGIN');
@@ -347,11 +359,23 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
     // Cambia el estado de la orden
     const result = await client.query(
       `UPDATE "${schema}".pos_orders
-       SET status = $1, updated_at = NOW()
-       WHERE id = $2
-       RETURNING *`,
-      [status, id]
+      SET 
+        status = $1,
+        customer_id = COALESCE($2, customer_id),
+        customer_name = COALESCE($3, customer_name),
+        notes = COALESCE($4, notes),
+        updated_at = NOW()
+      WHERE id = $5
+      RETURNING *`,
+      [
+        status,
+        cliente_id || null,
+        customer_name || null,
+        notes || null,
+        id
+      ]
     );
+
 
     if (result.rows.length === 0) {
       await client.query('ROLLBACK');
@@ -418,6 +442,127 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
     }
 
     res.json(updatedOrder);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+/**
+ * POST /api/ordenes/:id/pay-items
+ * Permite cobrar SOLO algunos ítems de la orden
+ */
+router.post('/:id/pay-items', authMiddleware, async (req, res) => {
+  const client = await getClient();
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { id } = req.params;
+    const { item_ids = [], amount_paid, payment_method = 'cash', cliente_id, notes } = req.body;
+
+    if (!item_ids.length) {
+      return res.status(400).json({ error: 'Debe enviar items a cobrar' });
+    }
+
+    await client.query('BEGIN');
+
+    // 1. Obtener items seleccionados
+    const itemsRes = await client.query(
+      `SELECT * FROM "${schema}".pos_order_items
+      WHERE id = ANY($1::uuid[]) 
+        AND order_id = $2
+        AND COALESCE(paid, false) = false`,
+      [item_ids, id]
+    );
+
+
+    const items = itemsRes.rows;
+
+    if (!items.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Items no encontrados' });
+    }
+
+    // 2. Calcular subtotal + iva + total de esos items
+    let subtotal = 0;
+    let total = 0;
+
+    for (const i of items) {
+      subtotal += (i.unit_price * i.quantity);
+      total += i.line_total;
+    }
+
+    const tax = total - subtotal;
+
+    // 3. Insertar pago
+    await client.query(
+      `INSERT INTO "${schema}".pos_payments
+       (order_id, payment_method, amount, status, paid_at)
+       VALUES ($1, $2, $3, 'completed', NOW())`,
+      [id, payment_method, total]
+    );
+
+    // 4. Eliminar items ya pagados
+    await client.query(
+      `UPDATE "${schema}".pos_order_items
+      SET paid = TRUE
+      WHERE id = ANY($1::uuid[])`,
+      [item_ids]
+    );
+
+
+    // 5. Recalcular orden restante
+    const remainingRes = await client.query(
+      `SELECT 
+        COALESCE(SUM(unit_price * quantity),0) as subtotal,
+        COALESCE(SUM(line_total),0) as total
+      FROM "${schema}".pos_order_items
+      WHERE order_id = $1 AND paid = FALSE`,
+      [id]
+    );
+
+
+    const remainingSubtotal = parseFloat(remainingRes.rows[0].subtotal);
+    const remainingTotal    = parseFloat(remainingRes.rows[0].total);
+    const remainingTax      = remainingTotal - remainingSubtotal;
+
+    // 6. Si ya no quedan items → cerrar orden
+    let newStatus = 'partial';
+    if (remainingTotal === 0) {
+      newStatus = 'paid';
+    }
+
+    await client.query(
+      `UPDATE "${schema}".pos_orders
+       SET subtotal = $1,
+           tax_amount = $2,
+           total = $3,
+           status = $4,
+           updated_at = NOW()
+       WHERE id = $5`,
+      [remainingSubtotal, remainingTax, remainingTotal, newStatus, id]
+    );
+
+    await client.query('COMMIT');
+
+    res.json({
+      success: true,
+      paid: {
+        subtotal,
+        tax,
+        total
+      },
+      remaining: {
+        subtotal: remainingSubtotal,
+        tax: remainingTax,
+        total: remainingTotal
+      },
+      status: newStatus
+    });
+
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
