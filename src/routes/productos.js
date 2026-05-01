@@ -3,7 +3,7 @@ import * as ctrl from '../controllers/productosController.js';
 
 const router = Router();
 
-router.get('/',           ctrl.getAll);
+router.get('/',           ctrl.getAll);          // Esta ruta es donde se filtra por category_id
 router.get('/fiscal-rates', ctrl.getFiscalRates);
 router.get('/next-code',  ctrl.getNextCode);
 router.get('/:id',        ctrl.getById);

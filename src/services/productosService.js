@@ -1,3 +1,4 @@
+// servicios/productosService.js
 import * as productModel from '../models/productosModel.js';
 
 const toNum  = (v, def = null) => (v === '' || v == null ? def : Number(v));
@@ -10,7 +11,16 @@ function calcIva(price, isTaxable, rates) {
   return { taxValue: tax, priceWithoutTax: price - tax };
 }
 
-export const getAll     = (schema, includeInactive) => productModel.findAll(schema, includeInactive);
+export const getAll = async (schema, includeInactive, category_id) => {
+  if (category_id) {
+    // Si se proporciona un `category_id`, pasamos ese filtro a la consulta
+    return productModel.findByCategory(schema, category_id, includeInactive);
+  } else {
+    // Si no, obtenemos todos los productos
+    return productModel.findAll(schema, includeInactive);
+  }
+};
+
 export const getById    = (schema, id)               => productModel.findById(schema, id);
 export const getFiscalRates = ()                     => productModel.getFiscalRates();
 

@@ -4,6 +4,16 @@ import { getSchemaName } from '../utils/tenantHelper.js';
 import { authMiddleware, businessContextMiddleware } from '../middleware/auth.js';
 import { ecuadorToday } from '../utils/dateHelper.js';
 
+// ===============================
+// 🔥 HELPERS PRO
+// ===============================
+const n = (v) => {
+  const num = Number(v);
+  return isNaN(num) ? 0 : num;
+};
+
+const safe = (v) => (v == null || isNaN(v) ? 0 : v);
+
 const router = express.Router();
 
 /**
@@ -65,6 +75,9 @@ router.get('/full-closing', authMiddleware, businessContextMiddleware, async (re
 * GET /api/pos/cash-register/summary?date=YYYY-MM-DD
 * Trae el resumen (ventas por método como array, propinas, comandas, gastos)
 */
+// ===============================
+// 📊 SUMMARY
+// ===============================
 router.get('/summary', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -72,17 +85,12 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
       return res.status(400).json({ error: 'Business context required' });
     }
 
-    // ✅ FECHA ECUADOR REAL DESDE DB
-    const dateRes = await query(`
-      SELECT DATE(NOW() AT TIME ZONE 'America/Guayaquil') AS today
-    `);
-
-    const date = req.query.date || dateRes.rows[0].today;
+    const date = req.query.date || ecuadorToday();
 
     // ===============================
-    // 🔥 VENTAS POR MÉTODO (FIX REAL)
+    // 💰 VENTAS POR MÉTODO
     // ===============================
-    const ventasPorMetodoRes = await query(
+    const ventasRes = await query(
       `
       WITH pagos_normalizados AS (
         SELECT
@@ -99,81 +107,34 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
           ON pp.order_id = po.id
         WHERE
           DATE(po.created_at AT TIME ZONE 'America/Guayaquil') = $1
-
-          -- 🔥 FIX REAL AQUÍ
           AND po.status IN ('paid','completed')
-
-          -- 🔥 ENUM CORRECTO
           AND pp.status = 'completed'
       ),
-
       metodos AS (
         SELECT 'cash' AS payment_method
         UNION ALL SELECT 'transfer'
         UNION ALL SELECT 'card'
       ),
-
       totales AS (
         SELECT
           payment_method,
           SUM(amount) AS total_cobrado,
           COUNT(id) AS cantidad_pagos
         FROM pagos_normalizados
-        WHERE payment_method IN ('cash','transfer','card')
         GROUP BY payment_method
       )
-
       SELECT
         m.payment_method,
         COALESCE(t.total_cobrado, 0) AS total_cobrado,
         COALESCE(t.cantidad_pagos, 0) AS cantidad_pagos
       FROM metodos m
       LEFT JOIN totales t ON t.payment_method = m.payment_method
-      ORDER BY
-        CASE m.payment_method
-          WHEN 'cash' THEN 1
-          WHEN 'transfer' THEN 2
-          WHEN 'card' THEN 3
-          ELSE 4
-        END
       `,
       [date]
     );
 
-    const ventasPorMetodo = ventasPorMetodoRes.rows || [];
-
     // ===============================
-    // 🔥 EXTRAS (BIEN)
-    // ===============================
-    const extrasRes = await query(
-      `
-      SELECT
-        COALESCE(SUM(
-          CASE 
-            WHEN LOWER(pp.payment_method) IN ('propina','tip')
-             AND pp.status = 'completed'
-            THEN pp.amount ELSE 0 
-          END
-        ), 0) AS "propinas",
-
-        COUNT(DISTINCT po.id) AS "comandasSistema"
-
-      FROM "${schema}".pos_orders po
-      LEFT JOIN "${schema}".pos_payments pp 
-        ON pp.order_id = po.id
-      WHERE 
-        DATE(po.created_at AT TIME ZONE 'America/Guayaquil') = $1
-
-        -- 🔥 IMPORTANTE
-        AND po.status IN ('paid','completed')
-      `,
-      [date]
-    );
-
-    const extras = extrasRes.rows[0] || {};
-
-    // ===============================
-    // 🔥 GASTOS (OK)
+    // 💸 GASTOS
     // ===============================
     const gastosRes = await query(
       `
@@ -183,144 +144,25 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
         amount AS monto
       FROM "${schema}".expenses
       WHERE date = $1
-      ORDER BY created_at ASC
       `,
       [date]
     );
 
-    const gastos = gastosRes.rows || [];
-
-    // ===============================
-    // 🔥 DEBUG PRO
-    // ===============================
-    console.log("📊 SUMMARY OK:", {
-      date,
-      ventasPorMetodo,
-      totalVentas: ventasPorMetodo.reduce((a, b) => a + Number(b.total_cobrado), 0),
-      propinas: extras.propinas,
-      comandasSistema: extras.comandasSistema,
-      gastosCount: gastos.length
-    });
-
-    // ===============================
-    // 🔥 RESPUESTA FINAL
-    // ===============================
     res.json({
-      metodos: ventasPorMetodo,
-      propinas: Number(extras.propinas || 0),
-      comandasSistema: Number(extras.comandasSistema || 0),
-      gastos
+      metodos: ventasRes.rows || [],
+      gastos: gastosRes.rows || []
     });
 
   } catch (err) {
-    console.error("❌ ERROR SUMMARY:", err);
+    console.error("❌ SUMMARY ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
 
-
-/**
- * GET /api/pos/cash-register/closing?date=YYYY-MM-DD
- * Trae información del último cierre simple (para auto-llenar el form)
- */
-router.post('/closing', authMiddleware, businessContextMiddleware, async (req, res) => {
-  try {
-    const schema = await getSchemaName(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
-
-    const date = req.body.date || await getEcuadorDate();
-
-    const efectivoFisico      = Number(req.body.efectivoFisico) || 0;
-    const transferenciaFisico = Number(req.body.transferenciaFisico) || 0;
-    const tarjetaFisico       = Number(req.body.tarjetaFisico) || 0;
-    const propinaFisico       = Number(req.body.propinaFisico) || 0;
-    const comandasFisico      = Number(req.body.comandasFisico) || 0;
-    const remarks             = req.body.remarks || null;
-
-    const summary = await query(`
-      SELECT
-        COALESCE(SUM(CASE WHEN pp.payment_method = 'cash'
-                          AND pp.status = 'completed'
-                     THEN pp.amount ELSE 0 END), 0) AS cash_system,
-
-        COALESCE(SUM(CASE WHEN pp.payment_method = 'transfer'
-                          AND pp.status = 'completed'
-                     THEN pp.amount ELSE 0 END), 0) AS transfer_system,
-
-        COALESCE(SUM(CASE WHEN pp.payment_method = 'card'
-                          AND pp.status = 'completed'
-                     THEN pp.amount ELSE 0 END), 0) AS card_system,
-
-        COUNT(DISTINCT po.id) AS orders_system
-
-      FROM "${schema}".pos_orders po
-      LEFT JOIN "${schema}".pos_payments pp ON pp.order_id = po.id
-      WHERE DATE(po.created_at AT TIME ZONE 'America/Guayaquil') = $1
-        AND po.status = 'completed'
-    `, [date]);
-
-    const s = summary.rows[0];
-
-    const gastosRes = await query(
-      `SELECT COALESCE(SUM(amount),0) AS total FROM "${schema}".expenses WHERE date = $1`,
-      [date]
-    );
-
-    const expensesTotal = Number(gastosRes.rows[0].total || 0);
-
-    const totalCounted = efectivoFisico + transferenciaFisico + tarjetaFisico + propinaFisico;
-    const totalSystem  = Number(s.cash_system) + Number(s.transfer_system) + Number(s.card_system);
-
-    const result = await query(`
-      INSERT INTO "${schema}".cash_register_closing (
-        closing_user_id, closing_date, closing_time,
-        cash_counted, cash_system,
-        transfer_counted, transfer_system,
-        card_counted, card_system,
-        orders_counted, orders_system,
-        expenses_total, total_counted, total_system,
-        net_system, net_counted,
-        remarks
-      )
-      VALUES (
-        $1,$2,NOW(),
-        $3,$4,
-        $5,$6,
-        $7,$8,
-        $9,$10,
-        $11,$12,$13,
-        $14,$15,
-        $16
-      )
-      RETURNING *
-    `, [
-      req.user?.id || 'demo',
-      date,
-      efectivoFisico, s.cash_system,
-      transferenciaFisico, s.transfer_system,
-      tarjetaFisico, s.card_system,
-      comandasFisico, s.orders_system,
-      expensesTotal,
-      totalCounted,
-      totalSystem,
-      totalSystem - expensesTotal,
-      totalCounted - expensesTotal,
-      remarks
-    ]);
-
-    res.json(result.rows[0]);
-
-  } catch (err) {
-    console.error("❌ ERROR CLOSING:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/**
- * POST /api/pos/cash-register/closing
- * Guarda el cuadre/final de caja. 
- */
+// ===============================
+// 💾 CLOSING (ÚNICO Y CORRECTO)
+// ===============================
 router.post('/closing', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
 
@@ -328,18 +170,6 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
     if (!schema) {
       return res.status(400).json({ error: 'Business context required' });
     }
-
-    console.log("🔥 BODY RAW:", req.body);
-
-    // ===============================
-    // 🧠 SAFE CORE (ANTI-NULL SYSTEM)
-    // ===============================
-    const n = (v) => {
-      const num = Number(v);
-      return isNaN(num) ? 0 : num;
-    };
-
-    const s = (v) => (v == null ? 0 : v);
 
     // ===============================
     // 📥 INPUTS
@@ -354,25 +184,25 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
     const remarks = req.body.remarks || '';
 
     // ===============================
-    // 📊 SYSTEM SUMMARY
+    // 📊 SYSTEM
     // ===============================
     const summary = await query(
       `
       SELECT
         COALESCE(SUM(CASE 
           WHEN LOWER(pp.payment_method) IN ('cash','efectivo')
-           AND pp.status = 'completed'
-        THEN pp.amount ELSE 0 END), 0) AS cash_system,
+          AND pp.status = 'completed'
+        THEN pp.amount END), 0) AS cash_system,
 
         COALESCE(SUM(CASE 
           WHEN LOWER(pp.payment_method) IN ('transfer','transferencia')
-           AND pp.status = 'completed'
-        THEN pp.amount ELSE 0 END), 0) AS transfer_system,
+          AND pp.status = 'completed'
+        THEN pp.amount END), 0) AS transfer_system,
 
         COALESCE(SUM(CASE 
           WHEN LOWER(pp.payment_method) IN ('card','tarjeta')
-           AND pp.status = 'completed'
-        THEN pp.amount ELSE 0 END), 0) AS card_system,
+          AND pp.status = 'completed'
+        THEN pp.amount END), 0) AS card_system,
 
         COUNT(DISTINCT po.id) AS orders_system
 
@@ -386,7 +216,7 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
       [date]
     );
 
-    const row = summary?.rows?.[0] || {};
+    const row = summary.rows[0] || {};
 
     const cashSystem     = n(row.cash_system);
     const transferSystem = n(row.transfer_system);
@@ -394,25 +224,22 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
     const ordersSystem   = n(row.orders_system);
 
     // ===============================
-    // 💸 EXPENSES SAFE
+    // 💸 GASTOS
     // ===============================
     const gastosRes = await query(
-      `SELECT COALESCE(SUM(amount), 0) AS total 
-       FROM "${schema}".expenses 
-       WHERE date = $1`,
+      `SELECT COALESCE(SUM(amount),0) AS total FROM "${schema}".expenses WHERE date = $1`,
       [date]
     );
 
-    const expensesTotal = n(gastosRes?.rows?.[0]?.total);
+    const expensesTotal = n(gastosRes.rows[0]?.total);
 
     // ===============================
-    // 🧮 CALCULOS 100% SEGUROS
+    // 🧮 CALCULOS
     // ===============================
     const diffCash     = efectivoFisico - cashSystem;
     const diffTransfer = transferenciaFisico - transferSystem;
     const diffCard     = tarjetaFisico - cardSystem;
-
-    const diffOrders = comandasFisico - ordersSystem;
+    const diffOrders   = comandasFisico - ordersSystem;
 
     const totalCounted =
       efectivoFisico +
@@ -420,7 +247,10 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
       tarjetaFisico +
       propinaFisico;
 
-    const totalSystem = cashSystem + transferSystem + cardSystem;
+    const totalSystem =
+      cashSystem +
+      transferSystem +
+      cardSystem;
 
     const diffTotal = totalCounted - totalSystem;
 
@@ -429,44 +259,49 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
     const diffNet    = netCounted - netSystem;
 
     // ===============================
-    // 🔍 DEBUG (IMPORTANTE)
+    // 🔍 DEBUG
     // ===============================
-    console.log("💰 CLOSING DEBUG:", {
-      efectivoFisico,
-      cashSystem,
-      diffCash,
+    console.log("💰 CLOSING:", {
       totalCounted,
-      totalSystem
+      totalSystem,
+      diffTotal
     });
 
     // ===============================
-    // 🛡️ HARD GUARD (CLAVE)
-    // ===============================
-    const safeNum = (v) => (v == null || isNaN(v) ? 0 : v);
-
-    // ===============================
-    // 💾 INSERT SEGURO
+    // 💾 INSERT
     // ===============================
     const result = await query(
       `
       INSERT INTO "${schema}".cash_register_closing (
         closing_user_id, closing_date, closing_time,
-        cash_counted,     cash_system,     diff_cash,
+
+        cash_counted, cash_system, diff_cash,
         transfer_counted, transfer_system, diff_transfer,
-        card_counted,     card_system,     diff_card,
-        orders_counted,   orders_system,   diff_orders,
-        expenses_total,   total_counted,   total_system,  diff_total,
-        net_system,       net_counted,     diff_net,
+        card_counted, card_system, diff_card,
+
+        orders_counted, orders_system, diff_orders,
+
+        expenses_total,
+        total_counted, total_system, diff_total,
+
+        net_system, net_counted, diff_net,
+
         remarks
       )
       VALUES (
-        $1,  $2,  NOW(),
-        $3,  $4,  $5,
-        $6,  $7,  $8,
-        $9,  $10, $11,
-        $12, $13, $14,
-        $15, $16, $17, $18,
-        $19, $20, $21,
+        $1,$2,NOW(),
+
+        $3,$4,$5,
+        $6,$7,$8,
+        $9,$10,$11,
+
+        $12,$13,$14,
+
+        $15,
+        $16,$17,$18,
+
+        $19,$20,$21,
+
         $22
       )
       RETURNING *
@@ -475,42 +310,28 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
         req.user?.id || 'demo',
         date,
 
-        safeNum(efectivoFisico),
-        safeNum(cashSystem),
-        safeNum(diffCash),
+        safe(efectivoFisico), safe(cashSystem), safe(diffCash),
+        safe(transferenciaFisico), safe(transferSystem), safe(diffTransfer),
+        safe(tarjetaFisico), safe(cardSystem), safe(diffCard),
 
-        safeNum(transferenciaFisico),
-        safeNum(transferSystem),
-        safeNum(diffTransfer),
+        safe(comandasFisico), safe(ordersSystem), safe(diffOrders),
 
-        safeNum(tarjetaFisico),
-        safeNum(cardSystem),
-        safeNum(diffCard),
+        safe(expensesTotal),
 
-        safeNum(comandasFisico),
-        safeNum(ordersSystem),
-        safeNum(diffOrders),
+        safe(totalCounted), safe(totalSystem), safe(diffTotal),
 
-        safeNum(expensesTotal),
-        safeNum(totalCounted),
-        safeNum(totalSystem),
-        safeNum(diffTotal),
-
-        safeNum(netSystem),
-        safeNum(netCounted),
-        safeNum(diffNet),
+        safe(netSystem), safe(netCounted), safe(diffNet),
 
         remarks
       ]
     );
 
-    return res.status(201).json(result.rows[0]);
+    res.status(201).json(result.rows[0]);
 
   } catch (err) {
     console.error("❌ ERROR CLOSING:", err);
-    return res.status(500).json({
-      error: err.message,
-      hint: "Check diff_cash or input values"
+    res.status(500).json({
+      error: err.message
     });
   }
 });
