@@ -349,13 +349,15 @@ router.get('/opening', authMiddleware, businessContextMiddleware, async (req, re
     if (!schema) return res.status(400).json({ error: 'Business context required' });
 
     const date   = req.query.date || ecuadorToday();
-    const userId = req.user?.id || req.user?.userId || '';
 
+    // 🔥 FIX: Buscar apertura de caja POR FECHA, no por usuario
+    // Una sola apertura por día para todos los usuarios
     const result = await query(
       `SELECT * FROM "${schema}".cash_register_openings
-       WHERE date = $1 AND user_id = $2
+       WHERE date = $1
+       ORDER BY created_at ASC
        LIMIT 1`,
-      [date, userId]
+      [date]
     );
 
     if (result.rows.length === 0) return res.status(404).json({});
@@ -379,10 +381,11 @@ router.post('/opening', authMiddleware, businessContextMiddleware, async (req, r
                      || req.user?.email || userId;
     const date     = req.body.date || ecuadorToday();
 
-    // Verificar que no exista ya apertura hoy para este usuario
+    // 🔥 FIX: Verificar que no exista apertura POR FECHA
+    // No por usuario. Una sola apertura por día para todos.
     const existing = await query(
-      `SELECT id FROM "${schema}".cash_register_openings WHERE date = $1 AND user_id = $2 LIMIT 1`,
-      [date, userId]
+      `SELECT id FROM "${schema}".cash_register_openings WHERE date = $1 LIMIT 1`,
+      [date]
     );
     if (existing.rows.length > 0) {
       return res.status(409).json({ error: 'Ya existe una apertura de caja para hoy' });
