@@ -375,44 +375,91 @@ BEGIN
 
 
 
-    -- pos_discounts
-  EXECUTE format('
-    CREATE TABLE %I.pos_discounts (
-      id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      name           VARCHAR(100) NOT NULL,
-      type           VARCHAR(20)  NOT NULL,
-      value          NUMERIC(10,2) NOT NULL,
-      applies_to     VARCHAR(20) DEFAULT ''order'',
-      product_id     UUID REFERENCES %I.products(id) ON DELETE SET NULL,
-      min_amount     NUMERIC(12,2) DEFAULT 0,
-      code           VARCHAR(50),
-      usage_limit    INT,
-      used_count     INT DEFAULT 0,
-      days_of_week   INT[],
-      start_time     TIME,
-      end_time       TIME,
-      start_date     TIMESTAMP,
-      end_date       TIMESTAMP,
-      is_active      BOOLEAN DEFAULT true,
-      created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )', p_schema_name, p_schema_name);
-  EXECUTE format('CREATE INDEX %I_pos_discounts_is_active_idx ON %I.pos_discounts (is_active)', p_schema_name, p_schema_name);
-  EXECUTE format('CREATE INDEX %I_pos_discounts_code_idx ON %I.pos_discounts (code)', p_schema_name, p_schema_name);
-  EXECUTE format('CREATE INDEX %I_pos_discounts_product_id_idx ON %I.pos_discounts (product_id)', p_schema_name, p_schema_name);
-  v_table_count := v_table_count + 1;
+    -- ─── pos_discounts (descuentos avanzados: cupones, horarios, producto) ───────
+    EXECUTE format('
+      CREATE TABLE %I.pos_discounts (
+        id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name                VARCHAR(100) NOT NULL,
+        description         TEXT,
+        type                VARCHAR(20) NOT NULL CHECK (type IN (''percentage'', ''fixed'', ''buy_x_get_y'', ''bulk'', ''coupon'')),
+        value               NUMERIC(10,2) NOT NULL,
+        applies_to          VARCHAR(20) DEFAULT ''order'' CHECK (applies_to IN (''order'', ''product'', ''category'')),
+        product_id          UUID REFERENCES %I.products(id) ON DELETE SET NULL,
+        category_id         INT REFERENCES %I.categories(id) ON DELETE SET NULL,
+        min_amount          NUMERIC(12,2) DEFAULT 0,
+        max_discount        NUMERIC(12,2),
+        min_quantity        INT DEFAULT 1,
+        code                VARCHAR(50) UNIQUE,
+        usage_limit         INT,
+        used_count          INT DEFAULT 0,
+        per_user_limit      INT,
+        days_of_week        INT[],
+        start_time          TIME,
+        end_time            TIME,
+        start_date          TIMESTAMP,
+        end_date            TIMESTAMP,
+        stackable           BOOLEAN DEFAULT FALSE,
+        priority            INT DEFAULT 0,
+        customer_segment    VARCHAR(20) DEFAULT ''all'' CHECK (customer_segment IN (''all'', ''new'', ''frequent'', ''vip'')),
+        is_active           BOOLEAN DEFAULT TRUE,
+        created_by          UUID REFERENCES %I.users(id) ON DELETE SET NULL,
+        created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )', p_schema_name, p_schema_name, p_schema_name, p_schema_name);
 
-  -- pos_order_discounts
-  EXECUTE format('
-    CREATE TABLE %I.pos_order_discounts (
-      id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      order_id      UUID NOT NULL REFERENCES %I.pos_orders(id) ON DELETE CASCADE,
-      discount_id   UUID,
-      discount_name VARCHAR(100),
-      amount        NUMERIC(12,2) NOT NULL,
-      created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )', p_schema_name, p_schema_name);
-  EXECUTE format('CREATE INDEX %I_pos_order_discounts_order_id_idx ON %I.pos_order_discounts (order_id)', p_schema_name, p_schema_name);
-  v_table_count := v_table_count + 1;
+    -- Índices para pos_discounts
+    EXECUTE format('CREATE INDEX %I_pos_discounts_type_idx ON %I.pos_discounts (type)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_pos_discounts_is_active_idx ON %I.pos_discounts (is_active)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_pos_discounts_code_idx ON %I.pos_discounts (code)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_pos_discounts_product_id_idx ON %I.pos_discounts (product_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_pos_discounts_category_id_idx ON %I.pos_discounts (category_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_pos_discounts_dates_idx ON %I.pos_discounts (start_date, end_date)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_pos_discounts_priority_idx ON %I.pos_discounts (priority DESC)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_pos_discounts_days_of_week_idx ON %I.pos_discounts USING GIN (days_of_week)', p_schema_name, p_schema_name);
+
+    v_table_count := v_table_count + 1;
+
+    -- ─── pos_order_discounts (historial de descuentos aplicados) ────────────────
+    EXECUTE format('
+      CREATE TABLE %I.pos_order_discounts (
+        id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        order_id            UUID NOT NULL REFERENCES %I.pos_orders(id) ON DELETE CASCADE,
+        discount_id         UUID REFERENCES %I.pos_discounts(id) ON DELETE SET NULL,
+        discount_name       VARCHAR(100),
+        discount_type       VARCHAR(20),
+        discount_value      NUMERIC(10,2),
+        amount              NUMERIC(12,2) NOT NULL,
+        original_subtotal   NUMERIC(12,2),
+        final_subtotal      NUMERIC(12,2),
+        coupon_code         VARCHAR(50),
+        created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )', p_schema_name, p_schema_name, p_schema_name);
+
+    EXECUTE format('CREATE INDEX %I_pos_order_discounts_order_id_idx ON %I.pos_order_discounts (order_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_pos_order_discounts_discount_id_idx ON %I.pos_order_discounts (discount_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_pos_order_discounts_created_at_idx ON %I.pos_order_discounts (created_at DESC)', p_schema_name, p_schema_name);
+
+    v_table_count := v_table_count + 1;
+
+    -- ─── coupons (cupones específicos) ──────────────────────────────────────────
+    EXECUTE format('
+      CREATE TABLE %I.coupons (
+        id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        code                VARCHAR(50) UNIQUE NOT NULL,
+        discount_id         UUID NOT NULL REFERENCES %I.pos_discounts(id) ON DELETE CASCADE,
+        is_single_use       BOOLEAN DEFAULT TRUE,
+        max_uses            INT,
+        used_count          INT DEFAULT 0,
+        expires_at          TIMESTAMP,
+        created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        created_by          UUID REFERENCES %I.users(id) ON DELETE SET NULL
+      )', p_schema_name, p_schema_name, p_schema_name);
+
+    EXECUTE format('CREATE INDEX %I_coupons_code_idx ON %I.coupons (code)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_coupons_discount_id_idx ON %I.coupons (discount_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_coupons_expires_at_idx ON %I.coupons (expires_at)', p_schema_name, p_schema_name);
+
+    v_table_count := v_table_count + 1;
 
   -- cash_register_openings
   EXECUTE format('
