@@ -24,8 +24,6 @@ router.post('/', authMiddleware, async (req, res) => {
       items = [],
       notas = '',
       order_type = 'dine_in',
-      subtotal = 0,
-      total = 0,
     } = req.body;
 
     if (!items.length) {
@@ -96,24 +94,30 @@ router.post('/', authMiddleware, async (req, res) => {
 
     const pedido = insertRes.rows[0];
 
+    // Insertar items - SOLO guardamos product_id y quantity (product_name viene de products en el GET)
     const insertedItems = [];
     for (const item of items) {
-      const productRes = await client.query(
-        `SELECT selling_price, tax_rate FROM "${schema}".products WHERE id = $1`,
+      // Verificar que el producto existe
+      const productCheck = await client.query(
+        `SELECT id FROM "${schema}".products WHERE id = $1`,
         [item.product_id]
       );
-      const product = productRes.rows[0];
+      
+      if (productCheck.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: `Producto no encontrado: ${item.product_id}` });
+      }
+      
       const quantity = item.quantity || 1;
 
       const itemRes = await client.query(
         `INSERT INTO "${schema}".pos_order_items
-           (order_id, product_id, product_name, quantity, notes)
-         VALUES ($1, $2, $3, $4, $5)
+           (order_id, product_id, quantity, notes)
+         VALUES ($1, $2, $3, $4)
          RETURNING *`,
         [
           pedido.id,
           item.product_id,
-          item.product_name,
           quantity,
           item.notes || null,
         ]
@@ -150,7 +154,7 @@ router.post('/', authMiddleware, async (req, res) => {
 
 /**
  * GET /api/ordenes
- * Lista órdenes con sus items (selling_price y tax_rate desde products)
+ * Lista órdenes con sus items (todo desde products mediante JOIN)
  */
 router.get('/', authMiddleware, async (req, res) => {
   try {
@@ -183,7 +187,7 @@ router.get('/', authMiddleware, async (req, res) => {
              json_build_object(
                'id',           i.id,
                'product_id',   i.product_id,
-               'product_name', i.product_name,
+               'product_name', p.name,
                'quantity',     i.quantity,
                'selling_price', p.selling_price,
                'tax_rate',     p.tax_rate,
@@ -229,7 +233,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
              json_build_object(
                'id',           i.id,
                'product_id',   i.product_id,
-               'product_name', i.product_name,
+               'product_name', p.name,
                'quantity',     i.quantity,
                'selling_price', p.selling_price,
                'tax_rate',     p.tax_rate,

@@ -326,20 +326,18 @@ BEGIN
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- pos_order_items (FK → pos_orders, products)
+    -- pos_order_items (solo guarda referencia, precios vienen de products)
     EXECUTE format('
       CREATE TABLE %I.pos_order_items (
         id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         order_id     UUID NOT NULL REFERENCES %I.pos_orders(id) ON DELETE CASCADE,
-        product_id   UUID REFERENCES %I.products(id) ON DELETE RESTRICT,
-        product_name VARCHAR(255)  NOT NULL,
-        product_code VARCHAR(50),
-        quantity     INT           NOT NULL DEFAULT 1,
-        unit_price   NUMERIC(12,2) NOT NULL,
-        line_total   NUMERIC(12,2) NOT NULL,
+        product_id   UUID NOT NULL REFERENCES %I.products(id) ON DELETE RESTRICT,
+        quantity     INT  NOT NULL DEFAULT 1,
         notes        TEXT,
+        paid         BOOLEAN DEFAULT FALSE,
         created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name, p_schema_name);
+    
     EXECUTE format(
       'CREATE INDEX %I_pos_order_items_order_id_idx ON %I.pos_order_items (order_id)',
       p_schema_name, p_schema_name);
@@ -375,74 +373,109 @@ BEGIN
       )', p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- cash_register_closing (sin FK)
-    EXECUTE format('
-      CREATE TABLE %I.cash_register_closing (
-        id               SERIAL PRIMARY KEY,
-        closing_user_id  VARCHAR(50)   NOT NULL,
-        closing_date     DATE          NOT NULL,
-        closing_time     TIME          NOT NULL DEFAULT CURRENT_TIME,
-        cash_counted     NUMERIC(14,2) NOT NULL,
-        cash_system      NUMERIC(14,2) NOT NULL,
-        diff_cash        NUMERIC(14,2) NOT NULL,
-        transfer_counted NUMERIC(14,2) NOT NULL,
-        transfer_system  NUMERIC(14,2) NOT NULL,
-        diff_transfer    NUMERIC(14,2) NOT NULL,
-        card_counted     NUMERIC(14,2) NOT NULL,
-        card_system      NUMERIC(14,2) NOT NULL,
-        diff_card        NUMERIC(14,2) NOT NULL,
-        orders_counted   INT           NOT NULL,
-        orders_system    INT           NOT NULL,
-        diff_orders      INT           NOT NULL,
-        extras           JSONB,
-        expenses_total   NUMERIC(14,2) NOT NULL,
-        total_counted    NUMERIC(14,2) NOT NULL,
-        total_system     NUMERIC(14,2) NOT NULL,
-        diff_total       NUMERIC(14,2) NOT NULL,
-        net_system       NUMERIC(14,2) NOT NULL,
-        net_counted      NUMERIC(14,2) NOT NULL,
-        diff_net         NUMERIC(14,2) NOT NULL,
-        remarks          TEXT,
-        created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )', p_schema_name);
-    EXECUTE format(
-      'CREATE INDEX %I_cash_register_closing_closing_date_idx ON %I.cash_register_closing (closing_date)',
-      p_schema_name, p_schema_name);
-    EXECUTE format(
-      'CREATE INDEX %I_cash_register_closing_created_at_desc_idx ON %I.cash_register_closing (created_at DESC)',
-      p_schema_name, p_schema_name);
-    v_table_count := v_table_count + 1;
 
-    -- cash_register_openings (apertura de caja con denominaciones)
-    EXECUTE format('
-      CREATE TABLE %I.cash_register_openings (
-        id             SERIAL PRIMARY KEY,
-        user_id        VARCHAR(100)  NOT NULL,
-        user_name      VARCHAR(255),
-        date           DATE          NOT NULL,
-        moneda_001     INT           NOT NULL DEFAULT 0,
-        moneda_005     INT           NOT NULL DEFAULT 0,
-        moneda_010     INT           NOT NULL DEFAULT 0,
-        moneda_025     INT           NOT NULL DEFAULT 0,
-        moneda_050     INT           NOT NULL DEFAULT 0,
-        moneda_100     INT           NOT NULL DEFAULT 0,
-        billete_1      INT           NOT NULL DEFAULT 0,
-        billete_5      INT           NOT NULL DEFAULT 0,
-        billete_10     INT           NOT NULL DEFAULT 0,
-        billete_20     INT           NOT NULL DEFAULT 0,
-        billete_50     INT           NOT NULL DEFAULT 0,
-        billete_100    INT           NOT NULL DEFAULT 0,
-        total_efectivo NUMERIC(14,2) NOT NULL DEFAULT 0,
-        monto_banca    NUMERIC(14,2) NOT NULL DEFAULT 0,
-        total_inicial  NUMERIC(14,2) NOT NULL DEFAULT 0,
-        observaciones  TEXT,
-        created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        CONSTRAINT uq_opening_date_user UNIQUE (date, user_id)
-      )', p_schema_name);
-    EXECUTE format(
-      'CREATE INDEX %I_cash_register_openings_date_idx ON %I.cash_register_openings (date DESC)',
-      p_schema_name, p_schema_name);
-    v_table_count := v_table_count + 1;
+
+    -- pos_discounts
+  EXECUTE format('
+    CREATE TABLE %I.pos_discounts (
+      id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      name           VARCHAR(100) NOT NULL,
+      type           VARCHAR(20)  NOT NULL,
+      value          NUMERIC(10,2) NOT NULL,
+      applies_to     VARCHAR(20) DEFAULT ''order'',
+      product_id     UUID REFERENCES %I.products(id) ON DELETE SET NULL,
+      min_amount     NUMERIC(12,2) DEFAULT 0,
+      code           VARCHAR(50),
+      usage_limit    INT,
+      used_count     INT DEFAULT 0,
+      days_of_week   INT[],
+      start_time     TIME,
+      end_time       TIME,
+      start_date     TIMESTAMP,
+      end_date       TIMESTAMP,
+      is_active      BOOLEAN DEFAULT true,
+      created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )', p_schema_name, p_schema_name);
+  EXECUTE format('CREATE INDEX %I_pos_discounts_is_active_idx ON %I.pos_discounts (is_active)', p_schema_name, p_schema_name);
+  EXECUTE format('CREATE INDEX %I_pos_discounts_code_idx ON %I.pos_discounts (code)', p_schema_name, p_schema_name);
+  EXECUTE format('CREATE INDEX %I_pos_discounts_product_id_idx ON %I.pos_discounts (product_id)', p_schema_name, p_schema_name);
+  v_table_count := v_table_count + 1;
+
+  -- pos_order_discounts
+  EXECUTE format('
+    CREATE TABLE %I.pos_order_discounts (
+      id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      order_id      UUID NOT NULL REFERENCES %I.pos_orders(id) ON DELETE CASCADE,
+      discount_id   UUID,
+      discount_name VARCHAR(100),
+      amount        NUMERIC(12,2) NOT NULL,
+      created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )', p_schema_name, p_schema_name);
+  EXECUTE format('CREATE INDEX %I_pos_order_discounts_order_id_idx ON %I.pos_order_discounts (order_id)', p_schema_name, p_schema_name);
+  v_table_count := v_table_count + 1;
+
+  -- cash_register_openings
+  EXECUTE format('
+    CREATE TABLE %I.cash_register_openings (
+      id             SERIAL PRIMARY KEY,
+      user_id        VARCHAR(100)  NOT NULL,
+      user_name      VARCHAR(255),
+      date           DATE          NOT NULL,
+      moneda_001     INT           NOT NULL DEFAULT 0,
+      moneda_005     INT           NOT NULL DEFAULT 0,
+      moneda_010     INT           NOT NULL DEFAULT 0,
+      moneda_025     INT           NOT NULL DEFAULT 0,
+      moneda_050     INT           NOT NULL DEFAULT 0,
+      moneda_100     INT           NOT NULL DEFAULT 0,
+      billete_1      INT           NOT NULL DEFAULT 0,
+      billete_5      INT           NOT NULL DEFAULT 0,
+      billete_10     INT           NOT NULL DEFAULT 0,
+      billete_20     INT           NOT NULL DEFAULT 0,
+      billete_50     INT           NOT NULL DEFAULT 0,
+      billete_100    INT           NOT NULL DEFAULT 0,
+      total_efectivo NUMERIC(14,2) NOT NULL DEFAULT 0,
+      monto_banca    NUMERIC(14,2) NOT NULL DEFAULT 0,
+      total_inicial  NUMERIC(14,2) NOT NULL DEFAULT 0,
+      observaciones  TEXT,
+      created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT uq_opening_date_user UNIQUE (date, user_id)
+    )', p_schema_name);
+  EXECUTE format('CREATE INDEX %I_cash_register_openings_date_idx ON %I.cash_register_openings (date DESC)', p_schema_name, p_schema_name);
+  v_table_count := v_table_count + 1;
+
+  -- cash_register_closing
+  EXECUTE format('
+    CREATE TABLE %I.cash_register_closing (
+      id               SERIAL PRIMARY KEY,
+      closing_user_id  VARCHAR(50)   NOT NULL,
+      closing_date     DATE          NOT NULL,
+      closing_time     TIME          NOT NULL DEFAULT CURRENT_TIME,
+      cash_counted     NUMERIC(14,2) NOT NULL,
+      cash_system      NUMERIC(14,2) NOT NULL,
+      diff_cash        NUMERIC(14,2) NOT NULL,
+      transfer_counted NUMERIC(14,2) NOT NULL,
+      transfer_system  NUMERIC(14,2) NOT NULL,
+      diff_transfer    NUMERIC(14,2) NOT NULL,
+      card_counted     NUMERIC(14,2) NOT NULL,
+      card_system      NUMERIC(14,2) NOT NULL,
+      diff_card        NUMERIC(14,2) NOT NULL,
+      orders_counted   INT           NOT NULL,
+      orders_system    INT           NOT NULL,
+      diff_orders      INT           NOT NULL,
+      extras           JSONB,
+      expenses_total   NUMERIC(14,2) NOT NULL,
+      total_counted    NUMERIC(14,2) NOT NULL,
+      total_system     NUMERIC(14,2) NOT NULL,
+      diff_total       NUMERIC(14,2) NOT NULL,
+      net_system       NUMERIC(14,2) NOT NULL,
+      net_counted      NUMERIC(14,2) NOT NULL,
+      diff_net         NUMERIC(14,2) NOT NULL,
+      remarks          TEXT,
+      created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )', p_schema_name);
+  EXECUTE format('CREATE INDEX %I_cash_register_closing_closing_date_idx ON %I.cash_register_closing (closing_date)', p_schema_name, p_schema_name);
+  EXECUTE format('CREATE INDEX %I_cash_register_closing_created_at_desc_idx ON %I.cash_register_closing (created_at DESC)', p_schema_name, p_schema_name);
+  v_table_count := v_table_count + 1;
 
   END IF;
 
