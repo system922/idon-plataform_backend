@@ -30,6 +30,7 @@ import productosRoutes       from './routes/productos.js';
 import categoriesRoutes      from './routes/categoriesRoutes.js';
 import ordenesRoutes         from './routes/ordenes.js';
 import posSettingsRoutes     from './routes/posSettings.js';
+import descuentosRoutes      from './routes/descuentosRoutes.js';
 import reportsRoutes         from './routes/reportsRoutes.js';
 import salesRouter           from './routes/salesRouter.js';
 import purchasesRouter       from './routes/purchasesRouter.js';
@@ -109,6 +110,7 @@ app.use('/api/employees',           ...authBusiness, employeesRoutes);
 app.use('/api/attendance',          ...authBusiness, attendanceRoutes);
 app.use('/api/payroll',             ...authBusiness, payrollRoutes);
 app.use('/api/ordenes',             ...authBusiness, ordenesRoutes);
+app.use('/api/discounts',           ...authBusiness, descuentosRoutes);
 
 app.use('/api/reports',             ...authBusiness, reportsRoutes);
 app.use('/api/print',               ...authBusiness, printRoutes);

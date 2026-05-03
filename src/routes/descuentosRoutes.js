@@ -15,7 +15,7 @@ const router = express.Router();
 // Obtener todos los descuentos del negocio
 // Query params: ?is_active=true&type=percentage&category_id=1
 // ============================================================================
-router.get('/descuentos', authMiddleware, async (req, res) => {
+router.get('/discounts', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
@@ -79,7 +79,7 @@ router.get('/descuentos', authMiddleware, async (req, res) => {
 // 2. GET /api/descuentos/:id
 // Obtener un descuento específico por ID
 // ============================================================================
-router.get('/descuentos/:id', authMiddleware, async (req, res) => {
+router.get('/discounts/:id', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
@@ -113,7 +113,7 @@ router.get('/descuentos/:id', authMiddleware, async (req, res) => {
 // 3. POST /api/descuentos
 // Crear un nuevo descuento
 // ============================================================================
-router.post('/descuentos', authMiddleware, async (req, res) => {
+router.post('/discounts', authMiddleware, async (req, res) => {
   const client = await getClient();
   try {
     const schema = await getSchemaName(req);
@@ -213,7 +213,7 @@ router.post('/descuentos', authMiddleware, async (req, res) => {
 // 4. PUT /api/descuentos/:id
 // Actualizar un descuento existente
 // ============================================================================
-router.put('/descuentos/:id', authMiddleware, async (req, res) => {
+router.put('/discounts/:id', authMiddleware, async (req, res) => {
   const client = await getClient();
   try {
     const schema = await getSchemaName(req);
@@ -297,7 +297,7 @@ router.put('/descuentos/:id', authMiddleware, async (req, res) => {
 // 5. DELETE /api/descuentos/:id
 // Eliminar un descuento (soft delete o hard delete)
 // ============================================================================
-router.delete('/descuentos/:id', authMiddleware, async (req, res) => {
+router.delete('/discounts/:id', authMiddleware, async (req, res) => {
   const client = await getClient();
   try {
     const schema = await getSchemaName(req);
@@ -363,7 +363,7 @@ router.delete('/descuentos/:id', authMiddleware, async (req, res) => {
 // 6. POST /api/descuentos/calculate
 // Calcular el mejor descuento para un carrito
 // ============================================================================
-router.post('/descuentos/calculate', authMiddleware, async (req, res) => {
+router.post('/discounts/calculate', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
@@ -481,7 +481,7 @@ router.post('/descuentos/calculate', authMiddleware, async (req, res) => {
 // 7. POST /api/descuentos/apply-coupon
 // Aplicar un cupón específico
 // ============================================================================
-router.post('/descuentos/apply-coupon', authMiddleware, async (req, res) => {
+router.post('/discounts/apply-coupon', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
@@ -543,7 +543,7 @@ router.post('/descuentos/apply-coupon', authMiddleware, async (req, res) => {
 // 8. POST /api/descuentos/:id/register-usage
 // Registrar uso de un descuento
 // ============================================================================
-router.post('/descuentos/:id/register-usage', authMiddleware, async (req, res) => {
+router.post('/discounts/:id/register-usage', authMiddleware, async (req, res) => {
   const client = await getClient();
   try {
     const schema = await getSchemaName(req);
@@ -590,7 +590,7 @@ router.post('/descuentos/:id/register-usage', authMiddleware, async (req, res) =
 // 9. GET /api/descuentos/stats
 // Estadísticas de descuentos
 // ============================================================================
-router.get('/descuentos/stats', authMiddleware, async (req, res) => {
+router.get('/discounts/stats', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
