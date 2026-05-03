@@ -8,18 +8,14 @@ const router = express.Router();
 
 /**
  * POST /api/ordenes
- * Creates a new POS order + its line items (sends to kitchen).
- * Headers: Authorization, X-DB-Name, X-Business-ID
- * Body: { numero_mesa, cliente_id, items, notas, order_type,
- *         tax_rate, tax_amount, subtotal, total }
- * Response: { pedido: { id, order_number, ... }, items: [...] }
+ * Crea una nueva orden POS
  */
 router.post('/', authMiddleware, async (req, res) => {
   const client = await getClient();
   try {
     const schema = await getSchemaName(req);
     if (!schema) {
-      return res.status(400).json({ error: 'Business context required (X-DB-Name o X-Business-ID)' });
+      return res.status(400).json({ error: 'Business context required' });
     }
 
     const {
@@ -28,19 +24,9 @@ router.post('/', authMiddleware, async (req, res) => {
       items = [],
       notas = '',
       order_type = 'dine_in',
-      // Accept both new (tax_*) and legacy (iva_*, vat_*) field names
-      tax_rate,
-      vat_rate,
-      iva_percentage,
-      tax_amount,
-      iva_amount,
-      subtotal   = 0,
-      total      = 0,
+      subtotal = 0,
+      total = 0,
     } = req.body;
-
-    // Resolve tax fields: prefer explicit numeric value, fallback to legacy names
-    const resolvedTaxRate   = tax_rate   ?? (vat_rate != null ? vat_rate * 100 : null) ?? iva_percentage ?? 15;
-    const resolvedTaxAmount = tax_amount ?? iva_amount ?? 0;
 
     if (!items.length) {
       return res.status(400).json({ error: 'La orden debe tener al menos un ítem' });
@@ -48,13 +34,11 @@ router.post('/', authMiddleware, async (req, res) => {
 
     await client.query('BEGIN');
 
-    // Generar número de orden secuencial dentro del negocio
     const countRes = await client.query(
       `SELECT COUNT(*) AS cnt FROM "${schema}".pos_orders`
     );
     const orderNumber = String(parseInt(countRes.rows[0].cnt, 10) + 1).padStart(4, '0');
 
-    // Nombre del cliente
     let customerName = null;
     if (cliente_id) {
       const cRes = await client.query(
@@ -64,13 +48,38 @@ router.post('/', authMiddleware, async (req, res) => {
       customerName = cRes.rows[0]?.name || null;
     }
 
-    // Insertar cabecera en pos_orders
+    // Calcular totales desde products
+    let calculatedSubtotal = 0;
+    let calculatedTax = 0;
+    let calculatedTotal = 0;
+
+    for (const item of items) {
+      const productRes = await client.query(
+        `SELECT selling_price, tax_rate FROM "${schema}".products WHERE id = $1`,
+        [item.product_id]
+      );
+      
+      if (productRes.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: `Producto no encontrado: ${item.product_id}` });
+      }
+      
+      const product = productRes.rows[0];
+      const quantity = item.quantity || 1;
+      const itemSubtotal = product.selling_price * quantity;
+      const itemTax = product.tax_rate * quantity;
+      
+      calculatedSubtotal += itemSubtotal;
+      calculatedTax += itemTax;
+      calculatedTotal += itemSubtotal + itemTax;
+    }
+
     const insertRes = await client.query(
       `INSERT INTO "${schema}".pos_orders
          (order_number, order_type, status,
           customer_id, customer_name, mesa_numero,
-          subtotal, tax_rate, tax_amount, total, notes)
-       VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, $8, $9, $10)
+          subtotal, tax_amount, total, notes)
+       VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
       [
         orderNumber,
@@ -78,42 +87,35 @@ router.post('/', authMiddleware, async (req, res) => {
         cliente_id || null,
         customerName,
         numero_mesa ? parseInt(numero_mesa, 10) : null,
-        subtotal,
-        resolvedTaxRate,
-        resolvedTaxAmount,
-        total,
+        calculatedSubtotal,
+        calculatedTax,
+        calculatedTotal,
         notas,
       ]
     );
 
     const pedido = insertRes.rows[0];
 
-    // Insertar ítems en pos_order_items
     const insertedItems = [];
     for (const item of items) {
-      const resolvedProductId   = item.product_id   || item.producto_id || item.productoId || null;
-      const resolvedProductName = item.product_name || item.name        || item.nombre    || 'Producto';
-      const resolvedProductCode = item.product_code || item.code        || item.codigo    || null;
-      const resolvedQty         = item.quantity     || item.cantidad    || 1;
-      const resolvedPrice       = item.unit_price   || item.price       || item.precio    || 0;
-      const resolvedLineTotal   = item.line_total   || item.subtotal    || (resolvedPrice * resolvedQty);
-      const resolvedNotes       = item.notes        || item.notas       || null;
+      const productRes = await client.query(
+        `SELECT selling_price, tax_rate FROM "${schema}".products WHERE id = $1`,
+        [item.product_id]
+      );
+      const product = productRes.rows[0];
+      const quantity = item.quantity || 1;
 
       const itemRes = await client.query(
         `INSERT INTO "${schema}".pos_order_items
-           (order_id, product_id, product_name, product_code,
-            quantity, unit_price, line_total, notes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           (order_id, product_id, product_name, quantity, notes)
+         VALUES ($1, $2, $3, $4, $5)
          RETURNING *`,
         [
           pedido.id,
-          resolvedProductId,
-          resolvedProductName,
-          resolvedProductCode,
-          resolvedQty,
-          resolvedPrice,
-          resolvedLineTotal,
-          resolvedNotes,
+          item.product_id,
+          item.product_name,
+          quantity,
+          item.notes || null,
         ]
       );
       insertedItems.push(itemRes.rows[0]);
@@ -129,7 +131,6 @@ router.post('/', authMiddleware, async (req, res) => {
       items: insertedItems,
     };
 
-    // Notificar a la laptop del cajero (y cocina) en tiempo real
     const businessId = req.user?.businessId;
     if (businessId) {
       emitToBusiness(businessId, 'new_order', {
@@ -149,9 +150,7 @@ router.post('/', authMiddleware, async (req, res) => {
 
 /**
  * GET /api/ordenes
- * Lists recent orders with their items (kitchen queue).
- * Headers: Authorization, X-DB-Name
- * Query: status, limit
+ * Lista órdenes con sus items (selling_price y tax_rate desde products)
  */
 router.get('/', authMiddleware, async (req, res) => {
   try {
@@ -160,8 +159,13 @@ router.get('/', authMiddleware, async (req, res) => {
 
     const { status, limit = 50 } = req.query;
 
-    const conditions = status ? `WHERE o.status = $1` : '';
-    const params     = status ? [status]              : [];
+    let conditions = '';
+    let params = [];
+    
+    if (status) {
+      conditions = `WHERE o.status = $1`;
+      params = [status];
+    }
 
     const result = await query(
       `SELECT
@@ -170,7 +174,7 @@ router.get('/', authMiddleware, async (req, res) => {
          o.order_type, o.status,
          o.customer_id, o.customer_name,
          o.mesa_numero,
-         o.subtotal, o.tax_rate, o.tax_amount, o.total,
+         o.subtotal, o.tax_amount, o.total,
          o.notes AS notas,
          o.created_at AS sale_date,
          o.updated_at,
@@ -180,10 +184,9 @@ router.get('/', authMiddleware, async (req, res) => {
                'id',           i.id,
                'product_id',   i.product_id,
                'product_name', i.product_name,
-               'product_code', i.product_code,
                'quantity',     i.quantity,
-               'unit_price',   i.unit_price,
-               'line_total',   i.line_total,
+               'selling_price', p.selling_price,
+               'tax_rate',     p.tax_rate,
                'notes',        i.notes,
                'paid',         COALESCE(i.paid, false)
              ) ORDER BY i.created_at
@@ -192,6 +195,7 @@ router.get('/', authMiddleware, async (req, res) => {
          ) AS items
        FROM "${schema}".pos_orders o
        LEFT JOIN "${schema}".pos_order_items i ON i.order_id = o.id
+       LEFT JOIN "${schema}".products p ON i.product_id = p.id
        ${conditions}
        GROUP BY o.id
        ORDER BY o.created_at DESC
@@ -206,85 +210,8 @@ router.get('/', authMiddleware, async (req, res) => {
 });
 
 /**
- * GET /api/ordenes/unprinted
- * Returns orders not yet printed (within the last 2 hours).
- * Creates printed_at column on first call if it doesn't exist.
- */
-router.get('/unprinted', authMiddleware, async (req, res) => {
-  const client = await getClient();
-  try {
-    const schema = await getSchemaName(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
-
-    await client.query(
-      `ALTER TABLE "${schema}".pos_orders ADD COLUMN IF NOT EXISTS printed_at TIMESTAMP`
-    );
-
-    const result = await client.query(
-      `SELECT
-         o.id, o.order_number,
-         o.order_number AS numero_pedido,
-         o.order_type, o.status,
-         o.mesa_numero, o.notes AS notas,
-         o.created_at,
-         COALESCE(
-           json_agg(
-             json_build_object(
-               'id',           i.id,
-               'product_name', i.product_name,
-               'quantity',     i.quantity,
-               'notes',        i.notes
-             ) ORDER BY i.created_at
-           ) FILTER (WHERE i.id IS NOT NULL),
-           '[]'::json
-         ) AS items
-       FROM "${schema}".pos_orders o
-       LEFT JOIN "${schema}".pos_order_items i ON i.order_id = o.id
-       WHERE o.printed_at IS NULL
-         AND o.created_at > NOW() - INTERVAL '2 hours'
-       GROUP BY o.id
-       ORDER BY o.created_at ASC`
-    );
-
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
-  }
-});
-
-/**
- * POST /api/ordenes/mark-printed
- * Marks a list of orders as printed.
- * Body: { order_ids: [uuid, ...] }
- */
-router.post('/mark-printed', authMiddleware, async (req, res) => {
-  try {
-    const schema = await getSchemaName(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
-
-    const { order_ids } = req.body;
-    if (!Array.isArray(order_ids) || !order_ids.length) {
-      return res.status(400).json({ error: 'order_ids requerido' });
-    }
-
-    await query(
-      `UPDATE "${schema}".pos_orders
-       SET printed_at = NOW()
-       WHERE id = ANY($1::uuid[]) AND printed_at IS NULL`,
-      [order_ids]
-    );
-
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/**
  * GET /api/ordenes/:id
- * Returns a single order with its items.
+ * Obtiene una orden específica con sus items
  */
 router.get('/:id', authMiddleware, async (req, res) => {
   try {
@@ -303,17 +230,18 @@ router.get('/:id', authMiddleware, async (req, res) => {
                'id',           i.id,
                'product_id',   i.product_id,
                'product_name', i.product_name,
-               'product_code', i.product_code,
                'quantity',     i.quantity,
-               'unit_price',   i.unit_price,
-               'line_total',   i.line_total,
-               'notes',        i.notes
+               'selling_price', p.selling_price,
+               'tax_rate',     p.tax_rate,
+               'notes',        i.notes,
+               'paid',         COALESCE(i.paid, false)
              ) ORDER BY i.created_at
            ) FILTER (WHERE i.id IS NOT NULL),
            '[]'::json
          ) AS items
        FROM "${schema}".pos_orders o
        LEFT JOIN "${schema}".pos_order_items i ON i.order_id = o.id
+       LEFT JOIN "${schema}".products p ON i.product_id = p.id
        WHERE o.id = $1
        GROUP BY o.id`,
       [id]
@@ -331,7 +259,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
 
 /**
  * PATCH /api/ordenes/:id/status
- * Updates the status of an order (pending → sent → completed → paid).
+ * Actualiza estado de orden y registra pagos
  */
 router.patch('/:id/status', authMiddleware, async (req, res) => {
   const client = await getClient();
@@ -356,7 +284,6 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
 
     await client.query('BEGIN');
 
-    // Cambia el estado de la orden
     const result = await client.query(
       `UPDATE "${schema}".pos_orders
       SET 
@@ -376,15 +303,12 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
       ]
     );
 
-
     if (result.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Orden no encontrada' });
     }
 
-    // SOLO si el status va a 'paid', guardamos en .pos_payments
     if (status === 'paid') {
-      // Garantizar que la tabla existe (por si el tenant fue provisionado antes de que se agregara)
       await client.query(`
         CREATE TABLE IF NOT EXISTS "${schema}".pos_payments (
           id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -398,7 +322,6 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
         )
       `);
 
-      // Helper — usa literal 'completed' en SQL para evitar problemas de cast con ENUMs schema-qualified
       const insertPayment = (orderId, method, amount, refNum) =>
         client.query(
           `INSERT INTO "${schema}".pos_payments
@@ -408,14 +331,12 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
         );
 
       if (payments && Array.isArray(payments) && payments.length > 0) {
-        // Pago mixto: un registro por cada método con monto > 0
         for (const p of payments) {
           if ((parseFloat(p.amount) || 0) > 0) {
             await insertPayment(id, p.method, p.amount, p.reference_number);
           }
         }
       } else {
-        // Pago simple (efectivo / tarjeta / transferencia)
         let paymentAmount = amount_paid;
         if (paymentAmount === undefined || paymentAmount === null) {
           const totalRes = await client.query(
@@ -452,7 +373,7 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
 
 /**
  * POST /api/ordenes/:id/pay-items
- * Permite cobrar SOLO algunos ítems de la orden
+ * Cobra SOLO algunos items de la orden (Split Payment)
  */
 router.post('/:id/pay-items', authMiddleware, async (req, res) => {
   const client = await getClient();
@@ -469,15 +390,15 @@ router.post('/:id/pay-items', authMiddleware, async (req, res) => {
 
     await client.query('BEGIN');
 
-    // 1. Obtener items seleccionados
     const itemsRes = await client.query(
-      `SELECT * FROM "${schema}".pos_order_items
-      WHERE id = ANY($1::uuid[]) 
-        AND order_id = $2
-        AND COALESCE(paid, false) = false`,
+      `SELECT i.*, p.selling_price, p.tax_rate
+      FROM "${schema}".pos_order_items i
+      LEFT JOIN "${schema}".products p ON i.product_id = p.id
+      WHERE i.id = ANY($1::uuid[]) 
+        AND i.order_id = $2
+        AND COALESCE(i.paid, false) = false`,
       [item_ids, id]
     );
-
 
     const items = itemsRes.rows;
 
@@ -486,18 +407,19 @@ router.post('/:id/pay-items', authMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'Items no encontrados' });
     }
 
-    // 2. Calcular subtotal + iva + total de esos items
     let subtotal = 0;
+    let taxTotal = 0;
     let total = 0;
 
     for (const i of items) {
-      subtotal += (i.unit_price * i.quantity);
-      total += i.line_total;
+      const itemSubtotal = i.selling_price * i.quantity;
+      const itemTax = i.tax_rate * i.quantity;
+      
+      subtotal += itemSubtotal;
+      taxTotal += itemTax;
+      total += itemSubtotal + itemTax;
     }
 
-    const tax = total - subtotal;
-
-    // 3. Insertar pago
     await client.query(
       `INSERT INTO "${schema}".pos_payments
        (order_id, payment_method, amount, status, paid_at)
@@ -505,7 +427,6 @@ router.post('/:id/pay-items', authMiddleware, async (req, res) => {
       [id, payment_method, total]
     );
 
-    // 4. Eliminar items ya pagados
     await client.query(
       `UPDATE "${schema}".pos_order_items
       SET paid = TRUE
@@ -513,23 +434,21 @@ router.post('/:id/pay-items', authMiddleware, async (req, res) => {
       [item_ids]
     );
 
-
-    // 5. Recalcular orden restante
     const remainingRes = await client.query(
       `SELECT 
-        COALESCE(SUM(unit_price * quantity),0) as subtotal,
-        COALESCE(SUM(line_total),0) as total
-      FROM "${schema}".pos_order_items
-      WHERE order_id = $1 AND paid = FALSE`,
+        COALESCE(SUM(p.selling_price * i.quantity), 0) as subtotal,
+        COALESCE(SUM(p.tax_rate * i.quantity), 0) as tax,
+        COALESCE(SUM((p.selling_price + p.tax_rate) * i.quantity), 0) as total
+      FROM "${schema}".pos_order_items i
+      LEFT JOIN "${schema}".products p ON i.product_id = p.id
+      WHERE i.order_id = $1 AND i.paid = FALSE`,
       [id]
     );
 
+    const remainingSubtotal = parseFloat(remainingRes.rows[0].subtotal) || 0;
+    const remainingTax = parseFloat(remainingRes.rows[0].tax) || 0;
+    const remainingTotal = parseFloat(remainingRes.rows[0].total) || 0;
 
-    const remainingSubtotal = parseFloat(remainingRes.rows[0].subtotal);
-    const remainingTotal    = parseFloat(remainingRes.rows[0].total);
-    const remainingTax      = remainingTotal - remainingSubtotal;
-
-    // 6. Si ya no quedan items → cerrar orden
     let newStatus = 'partial';
     if (remainingTotal === 0) {
       newStatus = 'paid';
@@ -552,7 +471,7 @@ router.post('/:id/pay-items', authMiddleware, async (req, res) => {
       success: true,
       paid: {
         subtotal,
-        tax,
+        tax: taxTotal,
         total
       },
       remaining: {
