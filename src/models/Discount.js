@@ -13,10 +13,8 @@ export async function findAllDiscounts(schema) {
     ORDER BY d.priority DESC, d.created_at DESC
   `;
   const { rows } = await query(sql);
-  return rows.map(d => ({
-    ...d,
-    days_of_week: d.days_of_week ? d.days_of_week.split(',').map(Number) : []
-  }));
+  // days_of_week ya viene como array de enteros (postgres lo devuelve así)
+  return rows;
 }
 
 export async function findDiscountById(schema, id) {
@@ -31,11 +29,7 @@ export async function findDiscountById(schema, id) {
   `;
   const { rows } = await query(sql, [id]);
   if (rows.length === 0) return null;
-  const d = rows[0];
-  return {
-    ...d,
-    days_of_week: d.days_of_week ? d.days_of_week.split(',').map(Number) : []
-  };
+  return rows[0];
 }
 
 export async function createDiscount(schema, data) {
@@ -44,10 +38,9 @@ export async function createDiscount(schema, data) {
     product_id, category_id, min_amount, max_discount,
     min_quantity, code, usage_limit, days_of_week,
     start_time, end_time, start_date, end_date,
-    stackable, priority, customer_segment, is_active
+    stackable, priority, customer_segment, is_active,
+    created_by
   } = data;
-
-  const daysStr = days_of_week?.length ? days_of_week.join(',') : null;
 
   const sql = `
     INSERT INTO "${schema}".${TABLE} (
@@ -55,23 +48,20 @@ export async function createDiscount(schema, data) {
       product_id, category_id, min_amount, max_discount,
       min_quantity, code, usage_limit, days_of_week,
       start_time, end_time, start_date, end_date,
-      stackable, priority, customer_segment, is_active
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+      stackable, priority, customer_segment, is_active, created_by
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
     RETURNING *
   `;
   const params = [
     name, description, type, value, applies_to,
-    product_id, category_id, min_amount, max_discount,
-    min_quantity, code, usage_limit, daysStr,
-    start_time, end_time, start_date, end_date,
-    stackable, priority, customer_segment, is_active
+    product_id || null, category_id || null, min_amount || 0, max_discount || null,
+    min_quantity || 1, code || null, usage_limit || null, days_of_week || null,
+    start_time || null, end_time || null, start_date || null, end_date || null,
+    stackable || false, priority || 0, customer_segment || 'all', is_active !== false,
+    created_by || null
   ];
   const { rows } = await query(sql, params);
-  const newDiscount = rows[0];
-  return {
-    ...newDiscount,
-    days_of_week: newDiscount.days_of_week ? newDiscount.days_of_week.split(',').map(Number) : []
-  };
+  return rows[0];
 }
 
 export async function updateDiscount(schema, id, updates) {
@@ -89,12 +79,8 @@ export async function updateDiscount(schema, id, updates) {
 
   for (const field of allowed) {
     if (updates[field] !== undefined) {
-      let val = updates[field];
-      if (field === 'days_of_week' && Array.isArray(val)) {
-        val = val.join(',');
-      }
       fields.push(`${field} = $${idx++}`);
-      values.push(val);
+      values.push(updates[field]);
     }
   }
 
@@ -109,11 +95,7 @@ export async function updateDiscount(schema, id, updates) {
   `;
   const { rows } = await query(sql, values);
   if (rows.length === 0) return null;
-  const updated = rows[0];
-  return {
-    ...updated,
-    days_of_week: updated.days_of_week ? updated.days_of_week.split(',').map(Number) : []
-  };
+  return rows[0];
 }
 
 export async function deleteDiscount(schema, id, hardDelete = false) {
