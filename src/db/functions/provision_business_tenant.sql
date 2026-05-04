@@ -1198,6 +1198,7 @@ BEGIN
         subtotal       NUMERIC(10,2) DEFAULT 0,
         iva_amount     NUMERIC(10,2) DEFAULT 0,
         total          NUMERIC(10,2) DEFAULT 0,
+        discount_amount NUMERIC(10,2) DEFAULT 0,
         items          JSONB,
         signed_xml     TEXT,
         status         VARCHAR(30) DEFAULT ''pendiente'',
@@ -1208,21 +1209,29 @@ BEGIN
         created_at     TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         updated_at     TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       )', p_schema_name);
+
     EXECUTE format(
       'CREATE INDEX %I_einvoices_order_id_idx ON %I.einvoices (order_id)',
       p_schema_name, p_schema_name);
+
     EXECUTE format(
       'CREATE INDEX %I_einvoices_status_idx ON %I.einvoices (status)',
       p_schema_name, p_schema_name);
+
     EXECUTE format(
       'CREATE INDEX %I_einvoices_access_key_idx ON %I.einvoices (access_key)',
       p_schema_name, p_schema_name);
+
     EXECUTE format(
       'CREATE INDEX %I_einvoices_created_at_desc_idx ON %I.einvoices (created_at DESC)',
       p_schema_name, p_schema_name);
-    v_table_count := v_table_count + 1;
 
-  END IF;
+    -- 🔥 ÍNDICE ADICIONAL para consultas por discount_amount si es necesario
+    EXECUTE format(
+      'CREATE INDEX %I_einvoices_discount_amount_idx ON %I.einvoices (discount_amount)',
+      p_schema_name, p_schema_name);
+
+    v_table_count := v_table_count + 1;
 
   -- ─── REPORTS (sin FK) ───────────────────────────────────────────────────
   IF ANY_MATCH(v_modules, 'reports') THEN

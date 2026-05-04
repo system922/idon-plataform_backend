@@ -27,13 +27,13 @@ const UPLOADS_DIR = path.join(__dirname, '../../uploads/signatures');
 function pad(n, len) {
   return String(n).padStart(len, '0');
 }
-
+// Código porcentaje IVA (número, no string) para la librería osodreamer
 function ivaCode(rate) {
-  if (rate === 0) return 0;
-  if (rate === 5) return 5;
-  if (rate === 8) return 8;
-  if (rate === 12) return 2;
-  return 4; // 15%
+  if (rate === 0)  return 0;  // 0%
+  if (rate === 5)  return 5;  // 5%
+  if (rate === 8)  return 8;  // diferenciado
+  if (rate === 12) return 2;  // 12%
+  return 4;                   // 15% default actual Ecuador
 }
 
 // ------------------- CONFIG Y SIGNATURE -------------------
@@ -41,7 +41,6 @@ export async function getConfig(schema) {
   const { rows } = await query(`SELECT * FROM "${schema}".einvoice_config LIMIT 1`);
   return rows[0] || null;
 }
-
 export async function saveConfig(schema, data) {
   const { rows } = await query(
     `UPDATE "${schema}".einvoice_config SET
@@ -88,23 +87,25 @@ export async function uploadLogo(schema, buffer) {
   );
   return url;
 }
-
 export async function saveSignatureFile(schema, buffer) {
   const p12Base64 = buffer.toString('base64');
 
+  // Ensure the p12_base64 column exists (idempotent ALTER TABLE)
   try {
     await query(`ALTER TABLE "${schema}".einvoice_config ADD COLUMN IF NOT EXISTS p12_base64 TEXT`);
-  } catch { }
+  } catch { /* column may already exist — ignore */ }
 
+  // Store certificate as base64 in DB so it survives Render redeploys
   try {
     await query(
       `UPDATE "${schema}".einvoice_config SET p12_base64 = $1, updated_at = NOW()`,
       [p12Base64]
     );
   } catch (e) {
-    logger.warn({ err: e.message }, 'Could not save p12_base64 to DB');
+    logger.warn({ err: e.message }, 'Could not save p12_base64 to DB — will rely on disk');
   }
 
+  // Also write to disk as secondary fallback (ephemeral on Render)
   try {
     const dir = path.join(UPLOADS_DIR, schema);
     await mkdir(dir, { recursive: true });
@@ -116,17 +117,18 @@ export async function saveSignatureFile(schema, buffer) {
   }
 }
 
-// ------------------- CORE: Emisión (CON DESCUENTO) -------------------
+// ------------------- CORE: Emisión -------------------
 export async function emitInvoice(schema, opts) {
   const cfg = await getConfig(schema);
-  if (!cfg) throw new Error('Configuración de facturación electrónica no encontrada');
-  if (!cfg.p12_base64 && !cfg.p12_path) throw new Error('No hay firma electrónica cargada');
-  if (!cfg.ruc) throw new Error('RUC del emisor no configurado');
+  if (!cfg)                                    throw new Error('Configuración de facturación electrónica no encontrada');
+  if (!cfg.p12_base64 && !cfg.p12_path)        throw new Error('No hay firma electrónica cargada');
+  if (!cfg.ruc)                                throw new Error('RUC del emisor no configurado');
 
   const client = await getClient();
   try {
     await client.query('BEGIN');
 
+    // Incrementar secuencial atómicamente
     const { rows: seqRows } = await client.query(
       `UPDATE "${schema}".einvoice_config
          SET secuencial_actual = secuencial_actual + 1
@@ -134,105 +136,86 @@ export async function emitInvoice(schema, opts) {
     );
     const secuencial = seqRows[0].seq;
 
-    const now = new Date();
-    const estab = cfg.serie_estab || '001';
-    const ptoEmi = cfg.serie_pto_emision || '001';
-    const ambiente = cfg.ambiente || '1';
-    const envEnum = parseInt(ambiente, 10);
-    const envStr = envEnum === 2 ? 'prod' : 'test';
+    const now        = new Date();
+    const estab      = cfg.serie_estab        || '001';
+    const ptoEmi     = cfg.serie_pto_emision  || '001';
+    const ambiente   = cfg.ambiente           || '1';
+    const envEnum    = parseInt(ambiente, 10); // 1=pruebas, 2=producción
+    const envStr     = envEnum === 2 ? 'prod' : 'test'; // SRI_URLS usa 'test'/'prod'
 
     const invoiceNumber = `${estab}-${ptoEmi}-${pad(secuencial, 9)}`;
-    const customer = opts.customer || {};
-    const tipoId = customer.tipo_identificacion || '07';
-    const idComprador = customer.ruc || '9999999999';
-    const razonComprador = customer.name || 'CONSUMIDOR FINAL';
-    const ivaRate = parseFloat(opts.iva_rate ?? 15);
-    
-    // 🔥 DESCUENTO
-    const totalDescuento = parseFloat(opts.descuento || 0);
-    const subtotalOriginal = parseFloat(opts.subtotal || 0);
-    const ivaOriginal = parseFloat(opts.iva_amount || 0);
-    
-    const subtotalConDescuento = Math.max(0, subtotalOriginal - totalDescuento);
-    
-    let ivaRecalculado = ivaOriginal;
-    if (totalDescuento > 0 && subtotalOriginal > 0) {
-      ivaRecalculado = subtotalConDescuento * (ivaOriginal / subtotalOriginal);
-      ivaRecalculado = Math.round(ivaRecalculado * 100) / 100;
-    }
-    
-    const totalFactura = subtotalConDescuento + ivaRecalculado;
+    const customer      = opts.customer || {};
+    const tipoId        = customer.tipo_identificacion || '07';
+    const idComprador   = customer.ruc  || '9999999999999';
+    const razonComprador= customer.name || 'CONSUMIDOR FINAL';
+    const ivaRate       = parseFloat(opts.iva_rate ?? 15);
+    const subtotalNum   = parseFloat(opts.subtotal  || 0);
+    const ivaNum        = parseFloat(opts.iva_amount|| 0);
+    const totalNum      = parseFloat(opts.total     || 0);
+
+    const ivaCod = ivaCode(ivaRate);
 
     const detalleItems = (opts.items || []).map((item) => {
-      const qty = parseFloat(item.qty || item.quantity || 1);
-      const unitPrice = parseFloat(item.unit_price || 0);
-      const lineTotal = parseFloat((item.subtotal || item.line_total || (unitPrice * qty) || 0).toFixed(2));
-      const ivaItem = Math.round(lineTotal * ivaRate / 100 * 100) / 100;
-
-      // 🔥 DESCUENTO
-      const totalDescuento = parseFloat(opts.descuento || 0);
-      console.log('💰💰💰 DESCUENTO RECIBIDO EN BACKEND:', {
-        'opts.descuento': opts.descuento,
-        totalDescuento,
-        subtotalOriginal: parseFloat(opts.subtotal || 0),
-        ivaOriginal: parseFloat(opts.iva_amount || 0)
-      });
-      
+      const qty      = parseFloat(item.qty || item.quantity || 1);
+      const unitPrice= parseFloat(item.unit_price || 0);
+      const lineTotal= parseFloat((item.subtotal || item.line_total || (unitPrice * qty) || 0).toFixed(2));
+      const ivaItem  = parseFloat((lineTotal * ivaRate / 100).toFixed(2));
       return {
-        codigoPrincipal: item.code || 'PROD',
-        descripcion: item.description || item.name || 'Producto',
-        cantidad: qty,
-        precioUnitario: unitPrice,
-        descuento: 0,
-        precioTotalSinImpuesto: lineTotal,
+        codigoPrincipal:         item.code || 'PROD',
+        descripcion:             item.description || item.name || 'Producto',
+        cantidad:                qty,
+        precioUnitario:          unitPrice,
+        descuento:               0,
+        precioTotalSinImpuesto:  lineTotal,
         impuestos: {
           impuesto: [{
-            codigo: 2,
-            codigoPorcentaje: ivaCode(ivaRate),
-            tarifa: ivaRate,
-            baseImponible: lineTotal,
-            valor: ivaItem,
+            codigo:           2,        // TAX_CODE_ENUM.VAT — número
+            codigoPorcentaje: ivaCod,   // número: 4=15%, 2=12%, etc.
+            tarifa:           ivaRate,  // porcentaje real
+            baseImponible:    lineTotal,
+            valor:            ivaItem,
           }],
         },
       };
     });
 
+    // Construir el comprobante — formato que acepta osodreamer-sri-xml-signer
     const comprobante = {
       infoTributaria: {
-        ruc: cfg.ruc,
-        ambiente: envEnum,
-        dirMatriz: cfg.direccion_matriz || 'Ecuador',
+        ruc:         cfg.ruc,
+        ambiente:    envEnum,
+        dirMatriz:   cfg.direccion_matriz || 'Ecuador',
         estab,
         ptoEmi,
-        secuencial: pad(secuencial, 9),
+        secuencial:  pad(secuencial, 9),
         razonSocial: cfg.razon_social,
         ...(cfg.nombre_comercial ? { nombreComercial: cfg.nombre_comercial } : {}),
       },
       infoFactura: {
-        fechaEmision: now,
-        dirEstablecimiento: cfg.direccion_establecimiento || cfg.direccion_matriz || 'Ecuador',
+        fechaEmision:                now,
+        dirEstablecimiento:          cfg.direccion_establecimiento || cfg.direccion_matriz || 'Ecuador',
         ...(cfg.contribuyente_especial ? { contribuyenteEspecial: cfg.contribuyente_especial } : {}),
-        obligadoContabilidad: cfg.obligado_contabilidad ? 'SI' : 'NO',
+        obligadoContabilidad:        cfg.obligado_contabilidad ? 'SI' : 'NO',
         tipoIdentificacionComprador: tipoId,
-        razonSocialComprador: razonComprador,
-        identificacionComprador: idComprador,
-        totalSinImpuestos: subtotalConDescuento,
-        totalDescuento: totalDescuento,
-        propina: 0,
-        importeTotal: totalFactura,
-        moneda: 'USD',
+        razonSocialComprador:        razonComprador,
+        identificacionComprador:     idComprador,
+        totalSinImpuestos:           subtotalNum,
+        totalDescuento:              0,
+        propina:                     0,
+        importeTotal:                totalNum,
+        moneda:                      'USD',
         totalConImpuestos: {
           totalImpuesto: [{
-            codigo: 2,
-            codigoPorcentaje: ivaCode(ivaRate),
-            baseImponible: subtotalConDescuento,
-            valor: ivaRecalculado,
+            codigo:           2,
+            codigoPorcentaje: ivaCod,
+            baseImponible:    subtotalNum,
+            valor:            ivaNum,
           }],
         },
         pagos: {
           pago: [{
             formaPago: opts.forma_pago || '01',
-            total: totalFactura,
+            total:     totalNum,
           }],
         },
       },
@@ -241,10 +224,12 @@ export async function emitInvoice(schema, opts) {
       },
     };
 
+    // 1. Generar XML
     const { generatedXml } = await generateXmlInvoice(comprobante);
-    const claveMatch = generatedXml.match(/<claveAcceso>([^<]+)<\/claveAcceso>/);
+    const claveMatch  = generatedXml.match(/<claveAcceso>([^<]+)<\/claveAcceso>/);
     const claveAcceso = claveMatch?.[1] || '';
 
+    // 2. Firmar XML — preferir base64 en BD (sobrevive redeploys), caer en disco si existe
     let p12Buffer;
     if (cfg.p12_base64) {
       p12Buffer = Buffer.from(cfg.p12_base64, 'base64');
@@ -253,41 +238,28 @@ export async function emitInvoice(schema, opts) {
     } else {
       throw new Error('No hay firma electrónica cargada');
     }
-    
     const signedXml = await signXml({
-      p12Buffer: new Uint8Array(p12Buffer),
-      password: cfg.p12_password || '',
-      xmlBuffer: new TextEncoder().encode(generatedXml),
+      p12Buffer:  new Uint8Array(p12Buffer),
+      password:   cfg.p12_password || '',
+      xmlBuffer:  new TextEncoder().encode(generatedXml),
     });
 
     const phone = customer.phone || opts.customer_phone || null;
 
-    // Asegurar que existe la columna discount_amount
-    try {
-      await client.query(`ALTER TABLE "${schema}".einvoices ADD COLUMN IF NOT EXISTS discount_amount NUMERIC(10,2) DEFAULT 0`);
-    } catch { }
-    
-    console.log('💾 GUARDANDO EN DB:', {
-      subtotalConDescuento: subtotalConDescuento.toFixed(2),
-      totalDescuento: totalDescuento.toFixed(2),
-      ivaRecalculado: ivaRecalculado.toFixed(2),
-      totalFactura: totalFactura.toFixed(2)
-    });
-
+    // 3. Guardar en DB como 'pendiente' — devuelve inmediatamente al cajero
     const { rows } = await client.query(
       `INSERT INTO "${schema}".einvoices
          (order_id, invoice_number, access_key, auth_number,
           customer_id, customer_name, customer_ruc, customer_email, customer_phone,
-          subtotal, iva_amount, total, items, discount_amount,
+          subtotal, iva_amount, total, items,
           signed_xml, status, sri_message, sri_json, emission_date, auth_date)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
        RETURNING *`,
       [
         opts.order_id || null, invoiceNumber, claveAcceso, null,
-        customer.id || null, razonComprador, idComprador, customer.email || null, phone,
-        subtotalConDescuento.toFixed(2), ivaRecalculado.toFixed(2), totalFactura.toFixed(2),
+        customer.id   || null, razonComprador, idComprador, customer.email || null, phone,
+        subtotalNum.toFixed(2), ivaNum.toFixed(2), totalNum.toFixed(2),
         JSON.stringify(opts.items || []),
-        totalDescuento.toFixed(2),
         signedXml,
         'pendiente', null, null,
         now, null,
@@ -297,6 +269,7 @@ export async function emitInvoice(schema, opts) {
     await client.query('COMMIT');
     const savedInvoice = rows[0];
 
+    // 4. Enviar al SRI en background — no bloquea la respuesta al cajero
     _authorizeSriBackground(schema, savedInvoice, signedXml, claveAcceso, envStr).catch(() => {});
 
     return savedInvoice;
@@ -308,7 +281,7 @@ export async function emitInvoice(schema, opts) {
   }
 }
 
-// ── Autorización SRI en background ────────────────────
+// ── Autorización SRI en background (no bloquea al cajero) ────────────────────
 async function _authorizeSriBackground(schema, invoice, signedXml, claveAcceso, envStr) {
   let status = 'pendiente', authNumber = null, authDate = null, sriMessage = null, sriJson = null;
   try {
@@ -324,11 +297,11 @@ async function _authorizeSriBackground(schema, invoice, signedXml, claveAcceso, 
       sriJson = authResult;
 
       if (authResult?.estadoAutorizacion === 'AUTORIZADO') {
-        status = 'autorizada';
+        status     = 'autorizada';
         authNumber = authResult.claveAcceso || claveAcceso;
-        authDate = authResult.fechaAutorizacion ? new Date(authResult.fechaAutorizacion) : new Date();
+        authDate   = authResult.fechaAutorizacion ? new Date(authResult.fechaAutorizacion) : new Date();
       } else {
-        status = 'rechazada';
+        status     = 'rechazada';
         sriMessage = (authResult?.mensajes || []).map(m => m.mensaje).join(' | ')
                    || authResult?.estadoAutorizacion || 'Rechazada por el SRI';
       }
@@ -337,7 +310,7 @@ async function _authorizeSriBackground(schema, invoice, signedXml, claveAcceso, 
     }
   } catch (sriErr) {
     logger.warn({ err: sriErr.message }, 'SRI background error');
-    status = 'pendiente';
+    status     = 'pendiente';
     sriMessage = sriErr.message;
   }
 
@@ -353,11 +326,12 @@ async function _authorizeSriBackground(schema, invoice, signedXml, claveAcceso, 
   const updatedInvoice = updated[0];
   if (!updatedInvoice) return;
 
+  // Auto-email si fue autorizada
   if (status === 'autorizada' && updatedInvoice.customer_email) {
     try {
-      const cfg = await getConfig(schema);
+      const cfg     = await getConfig(schema);
       const bizName = cfg?.nombre_comercial || cfg?.razon_social || 'Empresa';
-      const pdfBuf = await generateInvoicePdf(schema, updatedInvoice.id);
+      const pdfBuf  = await generateInvoicePdf(schema, updatedInvoice.id);
       await sendInvoiceEmail(updatedInvoice, pdfBuf, updatedInvoice.customer_email, bizName);
     } catch (e) {
       logger.warn({ err: e.message }, 'Email send failed (non-blocking)');
@@ -374,11 +348,11 @@ export async function resendInvoice(schema, invoiceId) {
     `SELECT * FROM "${schema}".einvoices WHERE id = $1`, [invoiceId]
   );
   const inv = rows[0];
-  if (!inv) throw new Error('Factura no encontrada');
+  if (!inv)          throw new Error('Factura no encontrada');
   if (!inv.signed_xml) throw new Error('XML firmado no disponible');
 
-  const ambiente = cfg.ambiente || '1';
-  const envStr = parseInt(ambiente, 10) === 2 ? 'prod' : 'test';
+  const ambiente  = cfg.ambiente || '1';
+  const envStr    = parseInt(ambiente, 10) === 2 ? 'prod' : 'test';
   let status, authNumber, authDate, sriMessage, sriJson;
 
   try {
@@ -394,19 +368,19 @@ export async function resendInvoice(schema, invoiceId) {
     sriJson = authResult;
 
     if (authResult?.estadoAutorizacion === 'AUTORIZADO') {
-      status = 'autorizada';
+      status     = 'autorizada';
       authNumber = authResult.claveAcceso || inv.access_key;
-      authDate = authResult.fechaAutorizacion ? new Date(authResult.fechaAutorizacion) : new Date();
+      authDate   = authResult.fechaAutorizacion ? new Date(authResult.fechaAutorizacion) : new Date();
       sriMessage = null;
     } else {
-      status = 'rechazada';
+      status     = 'rechazada';
       authNumber = null;
-      authDate = null;
+      authDate   = null;
       sriMessage = (authResult?.mensajes || []).map(m => m.mensaje).join(' | ')
                  || authResult?.estadoAutorizacion || 'Rechazada por el SRI';
     }
   } catch (sriErr) {
-    status = 'error';
+    status     = 'error';
     sriMessage = sriErr.message;
   }
 
@@ -423,12 +397,12 @@ export async function resendInvoice(schema, invoiceId) {
 
 // ------------------- HISTORIAL -------------------
 export async function listInvoices(schema, { limit = 50, status } = {}) {
-  const where = status ? `WHERE status = $1` : '';
+  const where  = status ? `WHERE status = $1` : '';
   const params = status ? [status] : [];
   const { rows } = await query(
     `SELECT id, invoice_number, access_key, auth_number,
             customer_id, customer_name, customer_ruc, customer_email, customer_phone,
-            subtotal, iva_amount, total, discount_amount,
+            subtotal, iva_amount, total,
             status, sri_message, sri_json,
             emission_date, auth_date, created_at
        FROM "${schema}".einvoices
@@ -440,7 +414,8 @@ export async function listInvoices(schema, { limit = 50, status } = {}) {
   return rows;
 }
 
-// ------------------- PARSEO XML -------------------
+// ------------------- WHATSAPP MANUAL -------------------
+// ─── Parseo del XML firmado para RIDE PDF ─────────────────────────────────────
 async function parseFacturaFromXml(xmlText) {
   const { parseStringPromise } = await import('xml2js');
   const parsed = await parseStringPromise(xmlText, { explicitArray: false, ignoreAttrs: false });
@@ -455,8 +430,8 @@ async function parseFacturaFromXml(xmlText) {
   const str = v => (typeof v === 'object' ? v?._ ?? Object.values(v)[0] : v) ?? '';
   const num = v => parseFloat(str(v)) || 0;
 
-  const it = factura?.infoTributaria ?? {};
-  const inf = factura?.infoFactura ?? {};
+  const it  = factura?.infoTributaria ?? {};
+  const inf = factura?.infoFactura    ?? {};
 
   let rawDetalles = factura?.detalles?.detalle ?? [];
   if (!Array.isArray(rawDetalles)) rawDetalles = [rawDetalles];
@@ -467,38 +442,37 @@ async function parseFacturaFromXml(xmlText) {
     const ivaImp = rawImp.find(i => str(i?.codigo) === '2') || rawImp[0] || {};
     return {
       codigoPrincipal: str(d?.codigoPrincipal),
-      codigoAuxiliar: str(d?.codigoAuxiliar),
-      descripcion: str(d?.descripcion),
-      cantidad: num(d?.cantidad),
-      unitPrice: num(d?.precioUnitario),
-      descuento: num(d?.descuento),
-      lineTotal: num(d?.precioTotalSinImpuesto),
-      ivaRate: num(ivaImp?.tarifa) || 15,
-      ivaValue: num(ivaImp?.valor),
+      codigoAuxiliar:  str(d?.codigoAuxiliar),
+      descripcion:     str(d?.descripcion),
+      cantidad:        num(d?.cantidad),
+      unitPrice:       num(d?.precioUnitario),
+      descuento:       num(d?.descuento),
+      lineTotal:       num(d?.precioTotalSinImpuesto),
+      ivaRate:         num(ivaImp?.tarifa) || 15,
+      ivaValue:        num(ivaImp?.valor),
     };
   });
 
   return {
-    razonSocial: str(it?.razonSocial),
-    ruc: str(it?.ruc),
-    nombreComercial: str(it?.nombreComercial),
-    dirMatriz: str(it?.dirMatriz),
-    dirEstab: str(inf?.dirEstablecimiento),
-    claveAcceso: str(it?.claveAcceso),
-    ambiente: str(it?.ambiente),
-    estab: str(it?.estab),
-    ptoEmi: str(it?.ptoEmi),
-    secuencial: str(it?.secuencial),
-    fechaEmision: str(inf?.fechaEmision),
-    tipoIdComprador: str(inf?.tipoIdentificacionComprador),
+    razonSocial:    str(it?.razonSocial),
+    ruc:            str(it?.ruc),
+    nombreComercial:str(it?.nombreComercial),
+    dirMatriz:      str(it?.dirMatriz),
+    dirEstab:       str(inf?.dirEstablecimiento),
+    claveAcceso:    str(it?.claveAcceso),
+    ambiente:       str(it?.ambiente),
+    estab:          str(it?.estab),
+    ptoEmi:         str(it?.ptoEmi),
+    secuencial:     str(it?.secuencial),
+    fechaEmision:   str(inf?.fechaEmision),
+    tipoIdComprador:str(inf?.tipoIdentificacionComprador),
     razonComprador: str(inf?.razonSocialComprador),
-    idComprador: str(inf?.identificacionComprador),
-    subtotal: num(inf?.totalSinImpuestos),
-    totalDescuento: num(inf?.totalDescuento || 0),
-    iva: num(inf?.totalConImpuestos?.totalImpuesto?.valor
-           ?? inf?.totalConImpuestos?.totalImpuesto?.[0]?.valor),
-    total: num(inf?.importeTotal),
-    formaPago: str(inf?.pagos?.pago?.formaPago ?? inf?.pagos?.pago?.[0]?.formaPago),
+    idComprador:    str(inf?.identificacionComprador),
+    subtotal:       num(inf?.totalSinImpuestos),
+    iva:            num(inf?.totalConImpuestos?.totalImpuesto?.valor
+                       ?? inf?.totalConImpuestos?.totalImpuesto?.[0]?.valor),
+    total:          num(inf?.importeTotal),
+    formaPago:      str(inf?.pagos?.pago?.formaPago ?? inf?.pagos?.pago?.[0]?.formaPago),
     items,
   };
 }
@@ -511,36 +485,36 @@ async function generateBarcode(text) {
   } catch { return null; }
 }
 
-// ------------------- GENERACIÓN PDF (CON DESCUENTO) -------------------
+// ------------------- GENERACIÓN PDF (RIDE) -------------------
 export async function generateInvoicePdf(schema, invoiceId) {
   const { rows: invRows } = await query(
     `SELECT * FROM "${schema}".einvoices WHERE id = $1`, [invoiceId]
   );
   const inv = invRows[0];
-  if (!inv) throw new Error('Factura no encontrada');
-  if (!inv.signed_xml) throw new Error('XML firmado no disponible');
+  if (!inv)          throw new Error('Factura no encontrada');
+  if (!inv.signed_xml) throw new Error('XML firmado no disponible para esta factura');
 
-  const d = await parseFacturaFromXml(inv.signed_xml);
+  const d   = await parseFacturaFromXml(inv.signed_xml);
   const cfg = await getConfig(schema);
 
+  // Download logo from Cloudinary if set
   let logoBuf = null;
   if (cfg?.logo_url) {
     try {
       const res = await fetch(cfg.logo_url);
       if (res.ok) logoBuf = Buffer.from(await res.arrayBuffer());
-    } catch { }
+    } catch { /* logo optional — continue without it */ }
   }
 
-  const razonSocial = d.razonSocial || cfg?.razon_social || 'EMISOR';
-  const ruc = d.ruc || cfg?.ruc || '-';
-  const dirMatriz = d.dirMatriz || cfg?.direccion_matriz || '';
-  const nroFactura = inv.invoice_number || `${d.estab}-${d.ptoEmi}-${d.secuencial}`;
+  const razonSocial  = d.razonSocial  || cfg?.razon_social     || 'EMISOR';
+  const ruc          = d.ruc          || cfg?.ruc               || '-';
+  const dirMatriz    = d.dirMatriz    || cfg?.direccion_matriz  || '';
+  const nroFactura   = inv.invoice_number || `${d.estab}-${d.ptoEmi}-${d.secuencial}`;
   const esProduccion = d.ambiente === '2';
 
-  const subtotal = d.subtotal || parseFloat(inv.subtotal || 0);
-  const totalDescuento = d.totalDescuento || parseFloat(inv.discount_amount || 0);
-  const iva = d.iva || parseFloat(inv.iva_amount || 0);
-  const total = d.total || parseFloat(inv.total || 0);
+  const subtotal = d.subtotal || parseFloat(inv.subtotal   || 0);
+  const iva      = d.iva      || parseFloat(inv.iva_amount  || 0);
+  const total    = d.total    || parseFloat(inv.total       || 0);
 
   const FORMA_PAGO_LABELS = {
     '01': 'SIN UTILIZACIÓN DEL SISTEMA FINANCIERO',
@@ -555,50 +529,54 @@ export async function generateInvoicePdf(schema, invoiceId) {
   const formaPagoLabel = FORMA_PAGO_LABELS[d.formaPago] || (d.formaPago || 'SIN UTILIZACIÓN DEL SISTEMA FINANCIERO');
 
   const claveAcceso = d.claveAcceso || inv.access_key || '';
-  const barcodeBuf = await generateBarcode(claveAcceso);
+  const barcodeBuf  = await generateBarcode(claveAcceso);
 
+  // Per-IVA-rate subtotals from parsed items
   const subtotalByRate = {};
   for (const item of d.items) {
     const r = item.ivaRate;
     subtotalByRate[r] = (subtotalByRate[r] || 0) + item.lineTotal;
   }
   const ivaRates = Object.keys(subtotalByRate).map(Number).sort((a, b) => b - a);
-  const mainRate = ivaRates[0] ?? 15;
+  const mainRate  = ivaRates[0] ?? 15;
 
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', margin: 0 });
+    const doc    = new PDFDocument({ size: 'A4', margin: 0 });
     const chunks = [];
     doc.on('data', c => chunks.push(c));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('end',  () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
 
-    const M = 30;
-    const PW = doc.page.width;
-    const W = PW - M * 2;
-    const BK = '#000000';
-    const GR = '#666666';
-    const LGR = '#eeeeee';
+    const M    = 30;
+    const PW   = doc.page.width;
+    const W    = PW - M * 2;
+    const BK   = '#000000';
+    const GR   = '#666666';
+    const LGR  = '#eeeeee';
     const VLGR = '#f9f9f9';
-    const WHT = '#ffffff';
-    const BLU = '#1a56db';
-    const BDR = '#999999';
+    const WHT  = '#ffffff';
+    const BLU  = '#1a56db';
+    const BDR  = '#999999';
 
-    const bord = (x, y2, w, h, lw = 0.5) => doc.rect(x, y2, w, h).lineWidth(lw).stroke(BDR);
-    const fill = (x, y2, w, h, color) => doc.rect(x, y2, w, h).fill(color);
+    const bord = (x, y2, w, h, lw = 0.5) =>
+      doc.rect(x, y2, w, h).lineWidth(lw).stroke(BDR);
+    const fill = (x, y2, w, h, color) =>
+      doc.rect(x, y2, w, h).fill(color);
 
     let y = M;
 
-    // HEADER
-    const leftW = Math.round(W * 0.52);
+    // ══════════════════════════ HEADER ═══════════════════════════════════════
+    const leftW  = Math.round(W * 0.52);
     const rightW = W - leftW - 4;
     const rightX = M + leftW + 4;
-    const hH = 178;
+    const hH     = 178;
 
     bord(rightX, y, rightW, hH, 0.8);
 
+    // ── Izquierda: logo + datos emisor ──────────────────────────────────────
     const LOGO_FIT = 75;
     if (logoBuf) {
-      try { doc.image(logoBuf, M, y, { fit: [LOGO_FIT, LOGO_FIT] }); } catch { }
+      try { doc.image(logoBuf, M, y, { fit: [LOGO_FIT, LOGO_FIT] }); } catch {}
     }
     let ly = logoBuf ? y + LOGO_FIT + 4 : y + 2;
 
@@ -632,7 +610,9 @@ export async function generateInvoicePdf(schema, invoiceId) {
     doc.fontSize(8).font('Helvetica')
        .text('OBLIGADO A LLEVAR CONTABILIDAD:   ' + (cfg?.obligado_contabilidad ? 'SI' : 'NO'), M, ly, { width: leftW - 2 });
 
+    // ── Derecha: caja factura ────────────────────────────────────────────────
     let ry = y + 10;
+
     doc.fillColor(BK).fontSize(13).font('Helvetica-Bold')
        .text('F  A  C  T  U  R  A', rightX, ry, { width: rightW, align: 'center' });
     ry += 20;
@@ -672,7 +652,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
 
     if (barcodeBuf) {
       const bW = rightW - 10, bH = 28;
-      try { doc.image(barcodeBuf, rightX + 5, ry, { width: bW, height: bH }); } catch { }
+      try { doc.image(barcodeBuf, rightX + 5, ry, { width: bW, height: bH }); } catch {}
       ry += bH + 2;
     }
     doc.fontSize(5.8).font('Courier').fillColor(BK)
@@ -680,9 +660,9 @@ export async function generateInvoicePdf(schema, invoiceId) {
 
     y = M + hH + 4;
 
-    // CLIENTE
+    // ══════════════════════════ CLIENTE ══════════════════════════════════════
     const razonComp = d.razonComprador || inv.customer_name || 'CONSUMIDOR FINAL';
-    const idComp = d.idComprador || inv.customer_ruc || '-';
+    const idComp    = d.idComprador    || inv.customer_ruc  || '-';
     const fechaEmDisplay = d.fechaEmision
       || (inv.emission_date
           ? new Date(inv.emission_date).toLocaleDateString('es-EC',
@@ -709,16 +689,17 @@ export async function generateInvoicePdf(schema, invoiceId) {
 
     y += cliH + 2;
 
-    // TABLA ITEMS
+    // ══════════════════════════ TABLA DE ÍTEMS ════════════════════════════════
+    // Widths: 0.090+0.090+0.055+0.400+0.120+0.090+0.075+0.080 = 1.000
     const COLS = [
-      { h: 'Cod. Principal', w: 0.090, a: 'left' },
-      { h: 'Cod. Auxiliar', w: 0.090, a: 'left' },
-      { h: 'Cant', w: 0.055, a: 'right' },
-      { h: 'Descripción', w: 0.400, a: 'left' },
-      { h: 'Detalles Adicionales', w: 0.120, a: 'left' },
-      { h: 'Precio\nUnitario', w: 0.090, a: 'right' },
-      { h: 'Descuento', w: 0.075, a: 'right' },
-      { h: 'Precio Total', w: 0.080, a: 'right' },
+      { h: 'Cod. Principal',       w: 0.090, a: 'left'  },
+      { h: 'Cod. Auxiliar',        w: 0.090, a: 'left'  },
+      { h: 'Cant',                 w: 0.055, a: 'right' },
+      { h: 'Descripción',          w: 0.400, a: 'left'  },
+      { h: 'Detalles Adicionales', w: 0.120, a: 'left'  },
+      { h: 'Precio\nUnitario',     w: 0.090, a: 'right' },
+      { h: 'Descuento',            w: 0.075, a: 'right' },
+      { h: 'Precio Total',         w: 0.080, a: 'right' },
     ];
 
     const thH = 20;
@@ -742,7 +723,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
       cx = M;
       const rv = [
         item.codigoPrincipal || '',
-        item.codigoAuxiliar || '',
+        item.codigoAuxiliar  || '',
         item.cantidad.toFixed(4),
         item.descripcion || '-',
         '',
@@ -767,29 +748,22 @@ export async function generateInvoicePdf(schema, invoiceId) {
     }
     y += 4;
 
-    // TOTALES CON DESCUENTO
+    // ══════════════════════════ INFO ADICIONAL + TOTALES ══════════════════════
     const infoW = W * 0.55;
-    const totW = W - infoW - 4;
-    const totX = M + infoW + 4;
+    const totW  = W - infoW - 4;
+    const totX  = M + infoW + 4;
 
     const totRows = [];
     for (const rate of ivaRates) {
       totRows.push(['SUBTOTAL ' + rate + '%', (subtotalByRate[rate] || 0).toFixed(2)]);
     }
     if (!subtotalByRate[0]) totRows.push(['SUBTOTAL 0%', '0.00']);
-    totRows.push(['SUBTOTAL Exento de IVA', '0.00']);
-    totRows.push(['SUBTOTAL SIN IMPUESTOS', subtotal.toFixed(2)]);
-    
-    // 🔥 MOSTRAR DESCUENTO SI APLICA
-    if (totalDescuento > 0) {
-      totRows.push(['TOTAL DESCUENTO', `-${totalDescuento.toFixed(2)}`]);
-    } else {
-      totRows.push(['TOTAL DESCUENTO', '0.00']);
-    }
-    
-    totRows.push(['ICE', '0.00']);
-    totRows.push(['IVA ' + mainRate + '%', iva.toFixed(2)]);
-    totRows.push(['PROPINA', '0.00']);
+    totRows.push(['SUBTOTAL Exento de IVA',   '0.00']);
+    totRows.push(['SUBTOTAL SIN IMPUESTOS',   subtotal.toFixed(2)]);
+    totRows.push(['TOTAL DESCUENTO',          '0.00']);
+    totRows.push(['ICE',                      '0.00']);
+    totRows.push(['IVA ' + mainRate + '%',    iva.toFixed(2)]);
+    totRows.push(['PROPINA',                  '0.00']);
 
     const totRowH = 13;
 
@@ -826,15 +800,15 @@ export async function generateInvoicePdf(schema, invoiceId) {
        .text(total.toFixed(2), totX + 4, ty + 3, { width: totW - 8, align: 'right' });
     ty += 15;
 
-    y = Math.max(iy, ty) + 10;
+    y = Math.max(iy, ty) + 6;
 
-    // FORMA DE PAGO
+    // ══════════════════════════ FORMA DE PAGO ════════════════════════════════
     fill(M, y, W, 14, LGR);
     bord(M, y, W, 14);
     doc.fillColor(BK).fontSize(7).font('Helvetica-Bold')
        .text('Forma de Pago', M + 6, y + 4, { width: W * 0.55 })
-       .text('Valor', M + W * 0.57, y + 4, { width: W * 0.14, align: 'right' })
-       .text('Plazo', M + W * 0.73, y + 4, { width: W * 0.12, align: 'right' })
+       .text('Valor',  M + W * 0.57, y + 4, { width: W * 0.14, align: 'right' })
+       .text('Plazo',  M + W * 0.73, y + 4, { width: W * 0.12, align: 'right' })
        .text('Tiempo', M + W * 0.87, y + 4, { width: W * 0.11, align: 'right' });
     y += 14;
 
@@ -843,10 +817,11 @@ export async function generateInvoicePdf(schema, invoiceId) {
     doc.fillColor(BK).fontSize(7.5).font('Helvetica')
        .text(formaPagoLabel, M + 6, y + 3, { width: W * 0.55 })
        .text(total.toFixed(2), M + W * 0.57, y + 3, { width: W * 0.14, align: 'right' })
-       .text('0', M + W * 0.73, y + 3, { width: W * 0.12, align: 'right' })
-       .text('Dias', M + W * 0.87, y + 3, { width: W * 0.11, align: 'right' });
+       .text('0',              M + W * 0.73, y + 3, { width: W * 0.12, align: 'right' })
+       .text('Dias',           M + W * 0.87, y + 3, { width: W * 0.11, align: 'right' });
     y += 14 + 8;
 
+    // ══════════════════════════ FOOTER ════════════════════════════════════════
     doc.fillColor(GR).fontSize(7).font('Helvetica')
        .text('Página 1 de 1', M, y, { width: W, align: 'center' });
 
