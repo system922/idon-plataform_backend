@@ -17,6 +17,22 @@ import { sendInvoiceEmail } from '../services/emailService.js';
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
+export async function getIvaRate() {
+  try {
+    const { rows } = await query(`
+      SELECT iva_rate FROM public.fiscal_config WHERE is_active = true LIMIT 1
+    `);
+    
+    if (rows.length > 0 && rows[0].iva_rate) {
+      return parseFloat(rows[0].iva_rate);
+    }
+    return 15.00; // Valor por defecto
+  } catch (err) {
+    console.error('Error al obtener tasa de IVA:', err);
+    return 15.00;
+  }
+}
+
 // ── Verifica que el negocio tenga el módulo 'invoicing' activo ────────────────
 async function requireInvoicingModule(req, res, next) {
   try {

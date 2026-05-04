@@ -4,6 +4,7 @@ import env from './config/env.js';
 import logger from './utils/logger.js';
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
+import fiscalRoutes          from './routes/fiscalRoutes.js';
 import auditLogRoutes        from './routes/auditLogRoutes.js';
 import securityRoutes        from './routes/security.js';
 import usersRoutes           from './routes/users.js';
@@ -86,6 +87,10 @@ app.use('/api/business-types',  businessTypeRoutes_r);
 app.use('/api/security',        securityRoutes);
 app.use('/api/audit-log',       auditLogRoutes);
 app.use('/api/business-owners', businessOwnersRoutes);
+
+// ─── Ruta de configureación fiscal ─────────────────────────────────────────────────
+app.use('/api/fiscal', fiscalRoutes);
+
 
 // ─── Rutas autenticadas + contexto de negocio ─────────────────────────────────
 app.use('/api/settings',            ...authBusiness, posSettingsRoutes);
