@@ -11,13 +11,11 @@ const router = express.Router();
 router.get('/', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-
     const result = await query(`
       SELECT *
       FROM "${schema}".inventory_physical
       ORDER BY created_at DESC
     `);
-
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -36,14 +34,14 @@ router.post('/', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Categorías requeridas' });
     }
 
+    // Crear el encabezado del inventario
     const inv = await query(`
       INSERT INTO "${schema}".inventory_physical DEFAULT VALUES
       RETURNING *
     `);
-
     const inventoryId = inv.rows[0].id;
 
-    /* guardar categorías */
+    // Guardar las categorías seleccionadas
     for (const catId of categories) {
       await query(`
         INSERT INTO "${schema}".inventory_physical_categories
@@ -52,7 +50,7 @@ router.post('/', authMiddleware, async (req, res) => {
       `, [inventoryId, catId]);
     }
 
-    /* insertar productos */
+    // Insertar productos usando category_id (corregido)
     await query(`
       INSERT INTO "${schema}".inventory_physical_items
       (inventory_id, product_id, product_name, system_stock)
@@ -62,15 +60,14 @@ router.post('/', authMiddleware, async (req, res) => {
         p.name,
         p.stock
       FROM "${schema}".products p
-      JOIN "${schema}".categories c ON c.name = p.category
       JOIN "${schema}".inventory_physical_categories ic
-        ON ic.category_id = c.id
+        ON ic.category_id = p.category_id
       WHERE ic.inventory_id = $1
     `, [inventoryId]);
 
     res.status(201).json({ id: inventoryId });
-
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -133,16 +130,13 @@ router.post('/movements', authMiddleware, async (req, res) => {
 router.get('/:id', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-
     const items = await query(`
       SELECT *
       FROM "${schema}".inventory_physical_items
       WHERE inventory_id = $1
       ORDER BY product_name
     `, [req.params.id]);
-
     res.json({ items: items.rows });
-
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -167,7 +161,6 @@ router.put('/:id/items/:itemId', authMiddleware, async (req, res) => {
     `, [counted_stock, req.params.itemId]);
 
     res.json({ success: true });
-
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -180,7 +173,7 @@ router.post('/:id/close', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
 
-    /* validar pendientes */
+    // Verificar que no queden items pendientes
     const pending = await query(`
       SELECT COUNT(*) 
       FROM "${schema}".inventory_physical_items
@@ -191,20 +184,20 @@ router.post('/:id/close', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Inventario incompleto' });
     }
 
-    /* generar movimientos */
+    // Generar movimientos de ajuste
     await query(`
       INSERT INTO "${schema}".inventory_movements
       (product_id, type, quantity, reference_id)
       SELECT
         product_id,
         'adjustment',
-        difference,
+        ABS(difference),
         inventory_id
       FROM "${schema}".inventory_physical_items
       WHERE inventory_id = $1 AND difference <> 0
     `, [req.params.id]);
 
-    /* cerrar */
+    // Cerrar el inventario
     await query(`
       UPDATE "${schema}".inventory_physical
       SET
@@ -215,8 +208,8 @@ router.post('/:id/close', authMiddleware, async (req, res) => {
     `, [req.params.id]);
 
     res.json({ success: true });
-
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
