@@ -201,6 +201,7 @@ export async function emitInvoice(schema, opts) {
       
       return {
         codigoPrincipal: item.code || 'PROD',
+        codigoAuxiliar: item.aux_code || '',
         descripcion: item.description || item.name || 'Producto',
         cantidad: qty,
         precioUnitario: unitPrice,
