@@ -116,7 +116,7 @@ export async function saveSignatureFile(schema, buffer) {
   }
 }
 
-// ------------------- CORE: Emisión (CON DESCUENTO) -------------------
+// ------------------- CORE: Emisión (CON DESCUENTO CORREGIDO SRI) -------------------
 export async function emitInvoice(schema, opts) {
   const cfg = await getConfig(schema);
   if (!cfg) throw new Error('Configuración de facturación electrónica no encontrada');
@@ -148,49 +148,70 @@ export async function emitInvoice(schema, opts) {
     const razonComprador = customer.name || 'CONSUMIDOR FINAL';
     const ivaRate = parseFloat(opts.iva_rate ?? 15);
     
-    // 🔥 DESCUENTO
+    // ============================================================
+    // 🔥 DESCUENTO - CÁLCULO CORRECTO PARA SRI ECUADOR
+    // ============================================================
+    // Según normativa SRI: 
+    // 1. Restar descuento al subtotal ANTES del IVA
+    // 2. Calcular IVA sobre la nueva base imponible
+    // ============================================================
     const totalDescuento = parseFloat(opts.descuento || 0);
     const subtotalOriginal = parseFloat(opts.subtotal || 0);
-    const ivaOriginal = parseFloat(opts.iva_amount || 0);
-    
-    const subtotalConDescuento = Math.max(0, subtotalOriginal - totalDescuento);
-    
-    let ivaRecalculado = ivaOriginal;
-    if (totalDescuento > 0 && subtotalOriginal > 0) {
-      ivaRecalculado = subtotalConDescuento * (ivaOriginal / subtotalOriginal);
-      ivaRecalculado = Math.round(ivaRecalculado * 100) / 100;
-    }
-    
-    const totalFactura = subtotalConDescuento + ivaRecalculado;
 
+    console.log('💰💰💰 DESCUENTO RECIBIDO EN BACKEND:', {
+      'opts.descuento': opts.descuento,
+      totalDescuento,
+      subtotalOriginal,
+      ivaRate
+    });
+
+    // 1. Nueva base imponible = subtotal original - descuento
+    const nuevaBaseImponible = Math.max(0, subtotalOriginal - totalDescuento);
+    
+    // 2. IVA se calcula sobre la nueva base imponible
+    const ivaRecalculado = Math.round((nuevaBaseImponible * ivaRate / 100) * 100) / 100;
+    
+    // 3. Total factura = nueva base imponible + IVA
+    const totalFactura = nuevaBaseImponible + ivaRecalculado;
+
+    console.log('💰 Cálculo descuento SRI (CORRECTO):', {
+      subtotalOriginal,
+      totalDescuento,
+      nuevaBaseImponible: nuevaBaseImponible.toFixed(2),
+      ivaRate: ivaRate + '%',
+      ivaRecalculado: ivaRecalculado.toFixed(2),
+      totalFactura: totalFactura.toFixed(2)
+    });
+
+    // Detalle de items con descuento prorrateado
     const detalleItems = (opts.items || []).map((item) => {
       const qty = parseFloat(item.qty || item.quantity || 1);
       const unitPrice = parseFloat(item.unit_price || 0);
-      const lineTotal = parseFloat((item.subtotal || item.line_total || (unitPrice * qty) || 0).toFixed(2));
-      const ivaItem = Math.round(lineTotal * ivaRate / 100 * 100) / 100;
-
-      // 🔥 DESCUENTO
-      const totalDescuento = parseFloat(opts.descuento || 0);
-      console.log('💰💰💰 DESCUENTO RECIBIDO EN BACKEND:', {
-        'opts.descuento': opts.descuento,
-        totalDescuento,
-        subtotalOriginal: parseFloat(opts.subtotal || 0),
-        ivaOriginal: parseFloat(opts.iva_amount || 0)
-      });
+      const lineTotalOriginal = parseFloat((item.subtotal || unitPrice * qty || 0).toFixed(2));
+      
+      // Proporción del descuento para este item
+      let descuentoItem = 0;
+      if (totalDescuento > 0 && subtotalOriginal > 0) {
+        descuentoItem = totalDescuento * (lineTotalOriginal / subtotalOriginal);
+        descuentoItem = Math.round(descuentoItem * 100) / 100;
+      }
+      
+      const lineTotalConDescuento = Math.max(0, lineTotalOriginal - descuentoItem);
+      const ivaItem = Math.round((lineTotalConDescuento * ivaRate / 100) * 100) / 100;
       
       return {
         codigoPrincipal: item.code || 'PROD',
         descripcion: item.description || item.name || 'Producto',
         cantidad: qty,
         precioUnitario: unitPrice,
-        descuento: 0,
-        precioTotalSinImpuesto: lineTotal,
+        descuento: descuentoItem,
+        precioTotalSinImpuesto: lineTotalConDescuento,
         impuestos: {
           impuesto: [{
             codigo: 2,
             codigoPorcentaje: ivaCode(ivaRate),
             tarifa: ivaRate,
-            baseImponible: lineTotal,
+            baseImponible: lineTotalConDescuento,
             valor: ivaItem,
           }],
         },
@@ -216,8 +237,8 @@ export async function emitInvoice(schema, opts) {
         tipoIdentificacionComprador: tipoId,
         razonSocialComprador: razonComprador,
         identificacionComprador: idComprador,
-        totalSinImpuestos: subtotalConDescuento,
-        totalDescuento: totalDescuento,
+        totalSinImpuestos: nuevaBaseImponible,      // ✅ Nueva base imponible (con descuento)
+        totalDescuento: totalDescuento,              // ✅ Monto total del descuento
         propina: 0,
         importeTotal: totalFactura,
         moneda: 'USD',
@@ -225,7 +246,7 @@ export async function emitInvoice(schema, opts) {
           totalImpuesto: [{
             codigo: 2,
             codigoPorcentaje: ivaCode(ivaRate),
-            baseImponible: subtotalConDescuento,
+            baseImponible: nuevaBaseImponible,      // ✅ Sobre la nueva base imponible
             valor: ivaRecalculado,
           }],
         },
@@ -268,7 +289,7 @@ export async function emitInvoice(schema, opts) {
     } catch { }
     
     console.log('💾 GUARDANDO EN DB:', {
-      subtotalConDescuento: subtotalConDescuento.toFixed(2),
+      nuevaBaseImponible: nuevaBaseImponible.toFixed(2),
       totalDescuento: totalDescuento.toFixed(2),
       ivaRecalculado: ivaRecalculado.toFixed(2),
       totalFactura: totalFactura.toFixed(2)
@@ -285,7 +306,7 @@ export async function emitInvoice(schema, opts) {
       [
         opts.order_id || null, invoiceNumber, claveAcceso, null,
         customer.id || null, razonComprador, idComprador, customer.email || null, phone,
-        subtotalConDescuento.toFixed(2), ivaRecalculado.toFixed(2), totalFactura.toFixed(2),
+        nuevaBaseImponible.toFixed(2), ivaRecalculado.toFixed(2), totalFactura.toFixed(2),
         JSON.stringify(opts.items || []),
         totalDescuento.toFixed(2),
         signedXml,
