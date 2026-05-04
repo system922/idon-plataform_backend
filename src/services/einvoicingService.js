@@ -618,7 +618,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
 
     bord(rightX, y, rightW, hH, 0.8);
 
-    const LOGO_FIT = 75;
+    const LOGO_FIT = 100;
     if (logoBuf) {
       try { doc.image(logoBuf, M, y, { fit: [LOGO_FIT, LOGO_FIT] }); } catch { }
     }
