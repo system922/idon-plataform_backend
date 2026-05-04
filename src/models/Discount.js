@@ -1,31 +1,30 @@
 import { query } from '../config/database.js';
 
-// Obtener todos los descuentos con nombres de cat/prod
+const TABLE = 'pos_discounts';
+
 export async function findAllDiscounts(schema) {
   const sql = `
     SELECT d.*,
            c.name AS category_name,
            p.name AS product_name
-    FROM "${schema}".discounts d
+    FROM "${schema}".${TABLE} d
     LEFT JOIN "${schema}".categories c ON d.category_id = c.id
     LEFT JOIN "${schema}".products p ON d.product_id = p.id
     ORDER BY d.priority DESC, d.created_at DESC
   `;
   const { rows } = await query(sql);
-  // Parsear days_of_week
   return rows.map(d => ({
     ...d,
     days_of_week: d.days_of_week ? d.days_of_week.split(',').map(Number) : []
   }));
 }
 
-// Buscar por ID
 export async function findDiscountById(schema, id) {
   const sql = `
     SELECT d.*,
            c.name AS category_name,
            p.name AS product_name
-    FROM "${schema}".discounts d
+    FROM "${schema}".${TABLE} d
     LEFT JOIN "${schema}".categories c ON d.category_id = c.id
     LEFT JOIN "${schema}".products p ON d.product_id = p.id
     WHERE d.id = $1
@@ -39,7 +38,6 @@ export async function findDiscountById(schema, id) {
   };
 }
 
-// Crear descuento
 export async function createDiscount(schema, data) {
   const {
     name, description, type, value, applies_to,
@@ -52,7 +50,7 @@ export async function createDiscount(schema, data) {
   const daysStr = days_of_week?.length ? days_of_week.join(',') : null;
 
   const sql = `
-    INSERT INTO "${schema}".discounts (
+    INSERT INTO "${schema}".${TABLE} (
       name, description, type, value, applies_to,
       product_id, category_id, min_amount, max_discount,
       min_quantity, code, usage_limit, days_of_week,
@@ -76,13 +74,11 @@ export async function createDiscount(schema, data) {
   };
 }
 
-// Actualizar descuento (parcial)
 export async function updateDiscount(schema, id, updates) {
   const fields = [];
   const values = [];
   let idx = 1;
 
-  // Mapeo de campos permitidos
   const allowed = [
     'name', 'description', 'type', 'value', 'applies_to',
     'product_id', 'category_id', 'min_amount', 'max_discount',
@@ -106,7 +102,7 @@ export async function updateDiscount(schema, id, updates) {
 
   values.push(id);
   const sql = `
-    UPDATE "${schema}".discounts
+    UPDATE "${schema}".${TABLE}
     SET ${fields.join(', ')}, updated_at = NOW()
     WHERE id = $${idx}
     RETURNING *
@@ -120,14 +116,13 @@ export async function updateDiscount(schema, id, updates) {
   };
 }
 
-// Eliminar (soft delete o hard)
 export async function deleteDiscount(schema, id, hardDelete = false) {
   let sql;
   let params = [id];
   if (hardDelete) {
-    sql = `DELETE FROM "${schema}".discounts WHERE id = $1 RETURNING id`;
+    sql = `DELETE FROM "${schema}".${TABLE} WHERE id = $1 RETURNING id`;
   } else {
-    sql = `UPDATE "${schema}".discounts SET is_active = false WHERE id = $1 RETURNING id`;
+    sql = `UPDATE "${schema}".${TABLE} SET is_active = false WHERE id = $1 RETURNING id`;
   }
   const { rows } = await query(sql, params);
   return rows[0] || null;
