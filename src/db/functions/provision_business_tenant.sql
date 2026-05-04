@@ -1233,6 +1233,10 @@ BEGIN
 
     v_table_count := v_table_count + 1;
 
+  END IF;
+
+
+
   -- ─── REPORTS (sin FK) ───────────────────────────────────────────────────
   IF ANY_MATCH(v_modules, 'reports') THEN
 
