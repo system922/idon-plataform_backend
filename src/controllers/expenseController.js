@@ -1,6 +1,7 @@
 import * as expenseService from '../services/expenseService.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 import { ecuadorToday } from '../utils/dateHelper.js';
+import { query } from '../config/database.js';
 
 // Listar todas las compras (gastos tipo egreso de caja)
 export const getAllExpenses = async (req, res) => {
@@ -37,6 +38,33 @@ export const getExpensesByDate = async (req, res) => {
     res.json({ expenses });
   } catch (e) {
     res.status(500).json({ error: 'Error obteniendo gastos por fecha', detail: e.message });
+  }
+};
+
+// Crear gasto/egreso
+export const createExpense = async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { amount, description, notes, category_id, created_by, date } = req.body;
+
+    if (!amount || isNaN(Number(amount))) {
+      return res.status(400).json({ error: 'El campo amount es requerido y debe ser numérico' });
+    }
+
+    const targetDate = date || ecuadorToday();
+
+    const result = await query(
+      `INSERT INTO "${schema}".expenses (amount, description, notes, category_id, created_by, date)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [Number(amount), description || null, notes || null, category_id || null, created_by || null, targetDate]
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (e) {
+    res.status(500).json({ error: 'Error creando gasto', detail: e.message });
   }
 };
 

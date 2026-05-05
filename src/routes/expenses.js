@@ -4,6 +4,7 @@ import * as expenseController from '../controllers/expenseController.js';
 const router = express.Router();
 
 router.get('/',     expenseController.getAllExpenses);
+router.post('/',    expenseController.createExpense);
 router.get('/date/:date', expenseController.getExpensesByDate);
 router.get('/purchases-by-day', expenseController.getPurchasesTotalByDay);
 
