@@ -1,5 +1,5 @@
 import express from 'express';
-import * as accountingController from '../controllers/accountingController.js';
+import * as accountingController from '../controllers/accountingReceivableController';
 
 const router = express.Router();
 
