@@ -139,11 +139,12 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
     const gastosRes = await query(
       `
       SELECT
-        COALESCE(category, 'Gasto') AS concepto,
-        description,
-        amount AS monto
-      FROM "${schema}".expenses
-      WHERE date = $1
+        COALESCE(ec.name, e.description, 'Gasto') AS concepto,
+        e.description,
+        e.amount AS monto
+      FROM "${schema}".expenses e
+      LEFT JOIN "${schema}".expense_categories ec ON ec.id = e.category_id
+      WHERE e.date = $1
       `,
       [date]
     );
@@ -227,7 +228,7 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
     // 💸 GASTOS
     // ===============================
     const gastosRes = await query(
-      `SELECT COALESCE(SUM(amount),0) AS total FROM "${schema}".expenses WHERE date = $1`,
+      `SELECT COALESCE(SUM(amount), 0) AS total FROM "${schema}".expenses WHERE date = $1`,
       [date]
     );
 
