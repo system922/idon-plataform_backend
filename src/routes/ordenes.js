@@ -494,4 +494,89 @@ router.post('/:id/pay-items', authMiddleware, async (req, res) => {
   }
 });
 
+/**
+ * DELETE /api/ordenes/:id
+ */
+router.delete('/:id', authMiddleware, async (req, res) => {
+  const client = await getClient();
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { id } = req.params;
+    await client.query('BEGIN');
+    await client.query(`DELETE FROM "${schema}".pos_order_items WHERE order_id = $1`, [id]);
+    await client.query(`DELETE FROM "${schema}".pos_payments WHERE order_id = $1`, [id]);
+    const result = await client.query(`DELETE FROM "${schema}".pos_orders WHERE id = $1 RETURNING id`, [id]);
+    if (!result.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Orden no encontrada' });
+    }
+    await client.query('COMMIT');
+    res.json({ success: true });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+/**
+ * PATCH /api/ordenes/:id
+ * Actualiza los items de una orden (edición desde historial)
+ * Body: { items: [{ product_id, quantity, notes }], subtotal, tax_amount, total }
+ */
+router.patch('/:id', authMiddleware, async (req, res) => {
+  const client = await getClient();
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { id } = req.params;
+    const { items, subtotal, tax_amount, total } = req.body;
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Se requieren items válidos' });
+    }
+
+    await client.query('BEGIN');
+
+    // Verify order exists
+    const orderRes = await client.query(
+      `SELECT id FROM "${schema}".pos_orders WHERE id = $1`, [id]
+    );
+    if (!orderRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Orden no encontrada' });
+    }
+
+    // Replace all items
+    await client.query(`DELETE FROM "${schema}".pos_order_items WHERE order_id = $1`, [id]);
+    for (const item of items) {
+      await client.query(
+        `INSERT INTO "${schema}".pos_order_items (order_id, product_id, quantity, notes)
+         VALUES ($1, $2, $3, $4)`,
+        [id, item.product_id, item.quantity, item.notes || null]
+      );
+    }
+
+    // Update order totals
+    await client.query(
+      `UPDATE "${schema}".pos_orders
+       SET subtotal=$1, tax_amount=$2, total=$3, updated_at=NOW()
+       WHERE id=$4`,
+      [subtotal || 0, tax_amount || 0, total || 0, id]
+    );
+
+    await client.query('COMMIT');
+    res.json({ success: true });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
 export default router;

@@ -243,4 +243,107 @@ router.post('/invoices/:id/email', authMiddleware, requireInvoicingModule, async
   }
 });
 
+// ── CREDIT NOTES ─────────────────────────────────────────────────────────────
+
+async function ensureCreditNotesTable(schema) {
+  await query(`
+    CREATE TABLE IF NOT EXISTS "${schema}".credit_notes (
+      id SERIAL PRIMARY KEY,
+      invoice_id UUID,
+      reference_invoice VARCHAR(50),
+      reason TEXT NOT NULL,
+      items JSONB DEFAULT '[]',
+      subtotal NUMERIC(10,2) DEFAULT 0,
+      iva_amount NUMERIC(10,2) DEFAULT 0,
+      discount_amount NUMERIC(10,2) DEFAULT 0,
+      total NUMERIC(10,2) DEFAULT 0,
+      customer_name VARCHAR(255),
+      customer_ruc VARCHAR(20),
+      customer_email VARCHAR(255),
+      status VARCHAR(20) DEFAULT 'emitida',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+}
+
+// GET /api/einvoicing/credit-notes
+router.get('/credit-notes', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    await ensureCreditNotesTable(schema);
+    const result = await query(`
+      SELECT cn.*, ei.invoice_number
+      FROM "${schema}".credit_notes cn
+      LEFT JOIN "${schema}".einvoices ei ON ei.id = cn.invoice_id
+      ORDER BY cn.created_at DESC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/einvoicing/credit-notes
+router.post('/credit-notes', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    await ensureCreditNotesTable(schema);
+    const {
+      invoice_id, reason, items, subtotal, iva_amount, discount_amount, total,
+      customer_name, customer_ruc, customer_email, reference_invoice
+    } = req.body;
+
+    if (!reason?.trim()) return res.status(400).json({ error: 'Motivo es requerido' });
+
+    const result = await query(`
+      INSERT INTO "${schema}".credit_notes
+        (invoice_id, reference_invoice, reason, items, subtotal, iva_amount, discount_amount, total,
+         customer_name, customer_ruc, customer_email, status)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'emitida')
+      RETURNING *
+    `, [
+      invoice_id || null, reference_invoice || null, reason,
+      JSON.stringify(items || []),
+      subtotal || 0, iva_amount || 0, discount_amount || 0, total || 0,
+      customer_name || null, customer_ruc || null, customer_email || null
+    ]);
+
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/einvoicing/credit-notes/:id/pdf — retorna PDF simple
+router.get('/credit-notes/:id/pdf', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    const { id } = req.params;
+    const result = await query(`SELECT * FROM "${schema}".credit_notes WHERE id=$1`, [id]);
+    if (!result.rows.length) return res.status(404).json({ error: 'Nota de crédito no encontrada' });
+
+    const cn = result.rows[0];
+    const html = `
+      <html><body style="font-family:Arial;padding:20px">
+        <h2>Nota de Crédito</h2>
+        <p><b>Factura referida:</b> ${cn.reference_invoice || '-'}</p>
+        <p><b>Motivo:</b> ${cn.reason}</p>
+        <p><b>Cliente:</b> ${cn.customer_name || '-'} | RUC: ${cn.customer_ruc || '-'}</p>
+        <p><b>Subtotal:</b> $${parseFloat(cn.subtotal).toFixed(2)}</p>
+        <p><b>IVA:</b> $${parseFloat(cn.iva_amount).toFixed(2)}</p>
+        <p><b>Total:</b> $${parseFloat(cn.total).toFixed(2)}</p>
+        <p><b>Estado:</b> ${cn.status}</p>
+        <p><b>Fecha:</b> ${new Date(cn.created_at).toLocaleDateString('es-EC')}</p>
+      </body></html>
+    `;
+    res.setHeader('Content-Type', 'text/html');
+    res.send(html);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

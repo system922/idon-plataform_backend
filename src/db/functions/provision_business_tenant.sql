@@ -157,6 +157,7 @@ BEGIN
       id          SERIAL PRIMARY KEY,
       name        VARCHAR(100) NOT NULL UNIQUE,
       description VARCHAR(250),
+      is_active   BOOLEAN   DEFAULT true,
       created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )', p_schema_name);
@@ -207,65 +208,6 @@ BEGIN
   EXECUTE format(
     'CREATE INDEX %I_products_is_active_idx ON %I.products (is_active)',
     p_schema_name, p_schema_name);
-  v_table_count := v_table_count + 1;
-
-  -- ─ pos_discounts (descuentos avanzados: cupones, horarios, producto) ───────
-  EXECUTE format('
-    CREATE TABLE %I.pos_discounts (
-      id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      name           VARCHAR(100) NOT NULL,
-      type           VARCHAR(20)  NOT NULL, -- percentage | fixed
-      value          NUMERIC(10,2) NOT NULL,
-      applies_to     VARCHAR(20) DEFAULT ''order'', -- order | product
-      product_id     UUID REFERENCES %I.products(id) ON DELETE SET NULL,
-      min_amount     NUMERIC(12,2) DEFAULT 0,
-      -- cupones
-      code           VARCHAR(50),
-      usage_limit    INT,
-      used_count     INT DEFAULT 0,
-      -- reglas de tiempo
-      days_of_week   INT[], -- 0=domingo ... 6=sábado
-      start_time     TIME,
-      end_time       TIME,
-      start_date     TIMESTAMP,
-      end_date       TIMESTAMP,
-      is_active      BOOLEAN DEFAULT true,
-      created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )', p_schema_name, p_schema_name);
-
-  v_table_count := v_table_count + 1;
-
-  EXECUTE format(
-  'CREATE INDEX %I_pos_discounts_is_active_idx ON %I.pos_discounts (is_active)',
-    p_schema_name, p_schema_name
-  );
-
-  EXECUTE format(
-    'CREATE INDEX %I_pos_discounts_code_idx ON %I.pos_discounts (code)',
-    p_schema_name, p_schema_name
-  );
-
-  EXECUTE format(
-    'CREATE INDEX %I_pos_discounts_product_id_idx ON %I.pos_discounts (product_id)',
-    p_schema_name, p_schema_name
-  );
-
-  -- ─ pos_order_discounts (historial de descuentos aplicados) ────────────────
-  EXECUTE format('
-    CREATE TABLE %I.pos_order_discounts (
-      id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      order_id      UUID NOT NULL REFERENCES %I.pos_orders(id) ON DELETE CASCADE,
-      discount_id   UUID,
-      discount_name VARCHAR(100),
-      amount        NUMERIC(12,2) NOT NULL,
-      created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )', p_schema_name, p_schema_name);
-
-  EXECUTE format(
-    'CREATE INDEX %I_pos_order_discounts_order_id_idx ON %I.pos_order_discounts (order_id)',
-    p_schema_name, p_schema_name
-  );
-
   v_table_count := v_table_count + 1;
 
   -- ─ audit_logs (user_id sin FK — intencional para no bloquear borrado) ───────
@@ -701,36 +643,155 @@ BEGIN
 
   END IF;
 
-  -- ─── ACCOUNTING ─────────────────────────────────────────────────────────
+  -- ─── ACCOUNTING (gastos operativos + cuentas por cobrar/pagar) ──────────────
   IF ANY_MATCH(v_modules, 'accounting') THEN
 
-    -- expenses (sin FK relevante)
+    -- Categorías de gastos (SERIAL id para compatibilidad con routes)
     EXECUTE format('
-      CREATE TABLE %I.expenses (
-        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        date        DATE          NOT NULL,
-        category    VARCHAR(100),
-        description TEXT,
-        amount      NUMERIC(12,2) NOT NULL,
-        reference   VARCHAR(100),
-        created_by  UUID,
-        created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      CREATE TABLE %I.expense_categories (
+        id         SERIAL PRIMARY KEY,
+        name       VARCHAR(100) NOT NULL UNIQUE,
+        color      VARCHAR(7)   DEFAULT ''#95a5a6'',
+        is_active  BOOLEAN      DEFAULT true,
+        created_at TIMESTAMPTZ  DEFAULT NOW(),
+        updated_at TIMESTAMPTZ  DEFAULT NOW()
       )', p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- incomes (sin FK relevante)
     EXECUTE format('
-      CREATE TABLE %I.incomes (
-        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        date        DATE          NOT NULL,
-        source      VARCHAR(100),
-        description TEXT,
-        amount      NUMERIC(12,2) NOT NULL,
+      INSERT INTO %I.expense_categories (name, color) VALUES
+        (''Alquiler'',      ''#f39c12''),
+        (''Servicios'',     ''#3498db''),
+        (''Proveedores'',   ''#2ecc71''),
+        (''Nómina'',        ''#e74c3c''),
+        (''Publicidad'',    ''#9b59b6''),
+        (''Mantenimiento'', ''#1abc9c''),
+        (''Transporte'',    ''#e67e22''),
+        (''Otros'',         ''#95a5a6'')
+      ', p_schema_name);
+
+    -- Gastos operativos
+    EXECUTE format('
+      CREATE TABLE %I.expenses (
+        id          SERIAL PRIMARY KEY,
         reference   VARCHAR(100),
+        description VARCHAR(500),
+        amount      NUMERIC(10,2) NOT NULL DEFAULT 0,
+        date        DATE          NOT NULL DEFAULT CURRENT_DATE,
+        category_id INTEGER REFERENCES %I.expense_categories(id) ON DELETE SET NULL,
+        supplier    VARCHAR(255),
+        notes       TEXT,
         created_by  UUID,
-        created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at  TIMESTAMPTZ DEFAULT NOW(),
+        updated_at  TIMESTAMPTZ DEFAULT NOW()
+      )', p_schema_name, p_schema_name);
+    v_table_count := v_table_count + 1;
+
+    EXECUTE format('CREATE INDEX %I_expenses_date_idx          ON %I.expenses (date)',         p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_expenses_category_id_idx   ON %I.expenses (category_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_expenses_created_at_idx    ON %I.expenses (created_at DESC)', p_schema_name, p_schema_name);
+
+    -- Categorías de ingresos
+    EXECUTE format('
+      CREATE TABLE %I.income_categories (
+        id         SERIAL PRIMARY KEY,
+        name       VARCHAR(100) NOT NULL UNIQUE,
+        color      VARCHAR(7)   DEFAULT ''#27ae60'',
+        created_at TIMESTAMPTZ  DEFAULT NOW()
       )', p_schema_name);
     v_table_count := v_table_count + 1;
+
+    EXECUTE format('
+      INSERT INTO %I.income_categories (name, color) VALUES
+        (''Ventas'',      ''#2ecc71''),
+        (''Servicios'',   ''#3498db''),
+        (''Reembolsos'',  ''#f1c40f''),
+        (''Otros'',       ''#95a5a6'')
+      ', p_schema_name);
+
+    -- Ingresos
+    EXECUTE format('
+      CREATE TABLE %I.incomes (
+        id          SERIAL PRIMARY KEY,
+        date        DATE          NOT NULL DEFAULT CURRENT_DATE,
+        category_id INTEGER REFERENCES %I.income_categories(id) ON DELETE SET NULL,
+        description VARCHAR(500),
+        amount      NUMERIC(10,2) NOT NULL DEFAULT 0,
+        reference   VARCHAR(100),
+        created_by  UUID,
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+      )', p_schema_name, p_schema_name);
+    v_table_count := v_table_count + 1;
+
+    EXECUTE format('CREATE INDEX %I_incomes_date_idx        ON %I.incomes (date)',         p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_incomes_category_id_idx ON %I.incomes (category_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_incomes_created_at_idx  ON %I.incomes (created_at DESC)', p_schema_name, p_schema_name);
+
+    -- Cuentas por pagar
+    EXECUTE format('
+      CREATE TABLE %I.accounts_payable (
+        id             SERIAL PRIMARY KEY,
+        invoice_number VARCHAR(50),
+        supplier_name  VARCHAR(255) NOT NULL,
+        supplier_id    UUID,
+        amount         NUMERIC(10,2) NOT NULL DEFAULT 0,
+        paid_amount    NUMERIC(10,2)          DEFAULT 0,
+        balance        NUMERIC(10,2)          DEFAULT 0,
+        issue_date     DATE         DEFAULT CURRENT_DATE,
+        due_date       DATE         NOT NULL,
+        paid_date      DATE,
+        status         VARCHAR(20)  DEFAULT ''pending'',
+        type           VARCHAR(30)  DEFAULT ''purchase'',
+        description    TEXT,
+        category       VARCHAR(100),
+        notes          TEXT,
+        created_at     TIMESTAMPTZ  DEFAULT NOW(),
+        updated_at     TIMESTAMPTZ  DEFAULT NOW()
+      )', p_schema_name);
+    v_table_count := v_table_count + 1;
+
+    EXECUTE format('CREATE INDEX %I_accounts_payable_status_idx   ON %I.accounts_payable (status)',   p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_accounts_payable_due_date_idx ON %I.accounts_payable (due_date)', p_schema_name, p_schema_name);
+
+    -- Pagos de cuentas por pagar
+    EXECUTE format('
+      CREATE TABLE %I.accounts_payable_payments (
+        id               SERIAL PRIMARY KEY,
+        payable_id       INTEGER NOT NULL REFERENCES %I.accounts_payable(id) ON DELETE CASCADE,
+        payment_date     DATE    DEFAULT CURRENT_DATE,
+        amount           NUMERIC(10,2) NOT NULL,
+        payment_method   VARCHAR(50)   DEFAULT ''cash'',
+        reference_number VARCHAR(100),
+        created_at       TIMESTAMPTZ   DEFAULT NOW()
+      )', p_schema_name, p_schema_name);
+    v_table_count := v_table_count + 1;
+
+    EXECUTE format('CREATE INDEX %I_accounts_payable_payments_payable_id_idx ON %I.accounts_payable_payments (payable_id)', p_schema_name, p_schema_name);
+
+    -- Cuentas por cobrar
+    EXECUTE format('
+      CREATE TABLE %I.accounts_receivable (
+        id           SERIAL PRIMARY KEY,
+        order_number VARCHAR(50),
+        invoice_number VARCHAR(50),
+        customer_id  UUID,
+        customer_name VARCHAR(255),
+        amount       NUMERIC(10,2) NOT NULL DEFAULT 0,
+        paid_amount  NUMERIC(10,2)          DEFAULT 0,
+        balance      NUMERIC(10,2)          DEFAULT 0,
+        issue_date   DATE          DEFAULT CURRENT_DATE,
+        due_date     DATE,
+        status       VARCHAR(20)   DEFAULT ''pending'',
+        description  TEXT,
+        notes        TEXT,
+        created_at   TIMESTAMPTZ   DEFAULT NOW(),
+        updated_at   TIMESTAMPTZ   DEFAULT NOW()
+      )', p_schema_name);
+    v_table_count := v_table_count + 1;
+
+    EXECUTE format('CREATE INDEX %I_accounts_receivable_status_idx      ON %I.accounts_receivable (status)',    p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_accounts_receivable_customer_id_idx ON %I.accounts_receivable (customer_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_accounts_receivable_due_date_idx    ON %I.accounts_receivable (due_date)',  p_schema_name, p_schema_name);
 
   END IF;
 
@@ -1048,6 +1109,36 @@ BEGIN
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
+    -- Segmentos personalizados de clientes
+    EXECUTE format('
+      CREATE TABLE %I.crm_custom_segments (
+        id          SERIAL PRIMARY KEY,
+        name        VARCHAR(255) NOT NULL,
+        description TEXT,
+        color       VARCHAR(20)  DEFAULT ''#6842fe'',
+        conditions  JSONB        DEFAULT ''{}''::jsonb,
+        created_at  TIMESTAMPTZ  DEFAULT NOW(),
+        updated_at  TIMESTAMPTZ  DEFAULT NOW()
+      )', p_schema_name);
+    v_table_count := v_table_count + 1;
+
+    -- Campañas de email
+    EXECUTE format('
+      CREATE TABLE %I.email_campaigns (
+        id         SERIAL PRIMARY KEY,
+        title      VARCHAR(255) NOT NULL,
+        subject    VARCHAR(500) NOT NULL,
+        content    TEXT         NOT NULL,
+        is_active  BOOLEAN      DEFAULT true,
+        sent_at    TIMESTAMPTZ,
+        created_at TIMESTAMPTZ  DEFAULT NOW(),
+        updated_at TIMESTAMPTZ  DEFAULT NOW()
+      )', p_schema_name);
+    v_table_count := v_table_count + 1;
+
+    EXECUTE format('CREATE INDEX %I_email_campaigns_is_active_idx ON %I.email_campaigns (is_active)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_email_campaigns_created_at_idx ON %I.email_campaigns (created_at DESC)', p_schema_name, p_schema_name);
+
   END IF;
 
   -- ─── LOYALTY (FK → customers) ───────────────────────────────────────────
@@ -1140,14 +1231,104 @@ BEGIN
         type       VARCHAR(50) NOT NULL,
         title      VARCHAR(255),
         content    TEXT,
-        is_read    BOOLEAN   DEFAULT false,
-        sent_at    TIMESTAMP,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        is_read    BOOLEAN     DEFAULT false,
+        sent_at    TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW()
       )', p_schema_name, p_schema_name);
     EXECUTE format(
       'CREATE INDEX %I_notifications_user_id_is_read_idx ON %I.notifications (user_id, is_read)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
+
+    -- Plantillas de email
+    EXECUTE format('
+      CREATE TABLE %I.email_templates (
+        id         SERIAL PRIMARY KEY,
+        name       VARCHAR(255) NOT NULL,
+        subject    VARCHAR(500) NOT NULL,
+        body       TEXT         NOT NULL,
+        category   VARCHAR(50)  DEFAULT ''general'',
+        is_active  BOOLEAN      DEFAULT true,
+        created_at TIMESTAMPTZ  DEFAULT NOW(),
+        updated_at TIMESTAMPTZ  DEFAULT NOW()
+      )', p_schema_name);
+    v_table_count := v_table_count + 1;
+
+    EXECUTE format('CREATE INDEX %I_email_templates_is_active_idx  ON %I.email_templates (is_active)',   p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_email_templates_created_at_idx ON %I.email_templates (created_at DESC)', p_schema_name, p_schema_name);
+
+    -- Registro de emails enviados
+    EXECUTE format('
+      CREATE TABLE %I.email_logs (
+        id               SERIAL PRIMARY KEY,
+        template_id      INTEGER,
+        recipient        VARCHAR(500),
+        recipients       JSONB,
+        subject          VARCHAR(500),
+        type             VARCHAR(20)  DEFAULT ''single'',
+        status           VARCHAR(20)  DEFAULT ''pending'',
+        sent_at          TIMESTAMPTZ,
+        error_message    TEXT,
+        invoice_id       INTEGER,
+        invoice_number   VARCHAR(100),
+        recipient_count  INTEGER,
+        created_at       TIMESTAMPTZ  DEFAULT NOW()
+      )', p_schema_name);
+    v_table_count := v_table_count + 1;
+
+    EXECUTE format('CREATE INDEX %I_email_logs_status_idx     ON %I.email_logs (status)',          p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_email_logs_created_at_idx ON %I.email_logs (created_at DESC)', p_schema_name, p_schema_name);
+
+    -- Suscripciones push (WebPush)
+    EXECUTE format('
+      CREATE TABLE %I.push_subscriptions (
+        id          SERIAL PRIMARY KEY,
+        endpoint    TEXT        NOT NULL UNIQUE,
+        p256dh      VARCHAR(500) NOT NULL,
+        auth        VARCHAR(500) NOT NULL,
+        user_agent  TEXT,
+        user_id     UUID,
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+      )', p_schema_name);
+    v_table_count := v_table_count + 1;
+
+    EXECUTE format('CREATE INDEX %I_push_subscriptions_user_id_idx ON %I.push_subscriptions (user_id)', p_schema_name, p_schema_name);
+
+    -- Historial de notificaciones push enviadas
+    EXECUTE format('
+      CREATE TABLE %I.push_notifications_history (
+        id           SERIAL PRIMARY KEY,
+        title        VARCHAR(255) NOT NULL,
+        body         TEXT,
+        icon         VARCHAR(500),
+        url          VARCHAR(500),
+        sent_count   INTEGER      DEFAULT 0,
+        failed_count INTEGER      DEFAULT 0,
+        created_by   UUID,
+        created_at   TIMESTAMPTZ  DEFAULT NOW()
+      )', p_schema_name);
+    v_table_count := v_table_count + 1;
+
+    EXECUTE format('CREATE INDEX %I_push_history_created_at_idx ON %I.push_notifications_history (created_at DESC)', p_schema_name, p_schema_name);
+
+    -- Notificaciones programadas
+    EXECUTE format('
+      CREATE TABLE %I.scheduled_notifications (
+        id          SERIAL PRIMARY KEY,
+        title       VARCHAR(255) NOT NULL,
+        message     TEXT         NOT NULL,
+        type        VARCHAR(50)  NOT NULL,
+        schedule_at TIMESTAMPTZ  NOT NULL,
+        sent_at     TIMESTAMPTZ,
+        status      VARCHAR(20)  DEFAULT ''pending'',
+        error       TEXT,
+        created_by  UUID,
+        created_at  TIMESTAMPTZ  DEFAULT NOW()
+      )', p_schema_name);
+    v_table_count := v_table_count + 1;
+
+    EXECUTE format('CREATE INDEX %I_scheduled_notif_schedule_at_idx ON %I.scheduled_notifications (schedule_at)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_scheduled_notif_status_idx      ON %I.scheduled_notifications (status)',      p_schema_name, p_schema_name);
 
   END IF;
 
@@ -1226,12 +1407,34 @@ BEGIN
       'CREATE INDEX %I_einvoices_created_at_desc_idx ON %I.einvoices (created_at DESC)',
       p_schema_name, p_schema_name);
 
-    -- 🔥 ÍNDICE ADICIONAL para consultas por discount_amount si es necesario
     EXECUTE format(
       'CREATE INDEX %I_einvoices_discount_amount_idx ON %I.einvoices (discount_amount)',
       p_schema_name, p_schema_name);
 
     v_table_count := v_table_count + 1;
+
+    -- Notas de crédito
+    EXECUTE format('
+      CREATE TABLE %I.credit_notes (
+        id                SERIAL PRIMARY KEY,
+        invoice_id        UUID REFERENCES %I.einvoices(id) ON DELETE SET NULL,
+        reference_invoice VARCHAR(50),
+        reason            TEXT NOT NULL,
+        items             JSONB        DEFAULT ''[]'',
+        subtotal          NUMERIC(10,2) DEFAULT 0,
+        iva_amount        NUMERIC(10,2) DEFAULT 0,
+        discount_amount   NUMERIC(10,2) DEFAULT 0,
+        total             NUMERIC(10,2) DEFAULT 0,
+        customer_name     VARCHAR(255),
+        customer_ruc      VARCHAR(20),
+        customer_email    VARCHAR(255),
+        status            VARCHAR(20)  DEFAULT ''emitida'',
+        created_at        TIMESTAMPTZ  DEFAULT NOW()
+      )', p_schema_name, p_schema_name);
+    v_table_count := v_table_count + 1;
+
+    EXECUTE format('CREATE INDEX %I_credit_notes_invoice_id_idx ON %I.credit_notes (invoice_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_credit_notes_created_at_idx ON %I.credit_notes (created_at DESC)', p_schema_name, p_schema_name);
 
   END IF;
 

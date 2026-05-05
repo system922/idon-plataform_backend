@@ -47,6 +47,14 @@ import recipesRoutes         from './routes/recipesRoutes.js';
 import employeesRoutes       from './routes/employeesRoutes.js';
 import attendanceRoutes      from './routes/attendanceRoutes.js';
 import payrollRoutes         from './routes/payrollRoutes.js';
+import expensesCategoriesRoutes from './routes/expensesCategoriesRoutes.js';
+import crmRoutes             from './routes/crmRoutes.js';
+import accountingRoutes           from './routes/accountingRoutes.js';
+import accountingReceivableRoutes  from './routes/accountingReceivable.js';
+import accountingPayableRoutes     from './routes/accountingPayable.js';
+import pushRoutes                 from './routes/pushRoutes.js';
+import scheduledNotificationsRoutes from './routes/scheduledNotificationsRoutes.js';
+import notificationsEmailRoutes   from './routes/notificationsEmailRoutes.js';
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 import { authMiddleware, businessContextMiddleware, adminMiddleware } from './middleware/auth.js';
@@ -116,6 +124,15 @@ app.use('/api/attendance',          ...authBusiness, attendanceRoutes);
 app.use('/api/payroll',             ...authBusiness, payrollRoutes);
 app.use('/api/ordenes',             ...authBusiness, ordenesRoutes);
 app.use('/api/discounts',           ...authBusiness, discountsRoutes);
+app.use('/api/crm',                 ...authBusiness, crmRoutes);
+app.use('/api/accounting',            ...authBusiness, accountingRoutes);
+app.use('/api/accounting',            ...authBusiness, accountingReceivableRoutes);
+app.use('/api/accounting',            ...authBusiness, accountingPayableRoutes);
+app.use('/api/accounting-receivable', ...authBusiness, accountingReceivableRoutes);
+app.use('/api/accounting-payable',    ...authBusiness, accountingPayableRoutes);
+app.use('/api',                       ...authBusiness, pushRoutes);
+app.use('/api',                       ...authBusiness, scheduledNotificationsRoutes);
+app.use('/api/notifications',         ...authBusiness, notificationsEmailRoutes);
 
 app.use('/api/reports',             ...authBusiness, reportsRoutes);
 app.use('/api/print',               ...authBusiness, printRoutes);
@@ -123,6 +140,7 @@ app.use('/api/einvoicing',          ...authBusiness, einvoicingRoutes);
 app.use('/api/business',            ...authBusiness, businessRoutes);
 app.use('/api/sales',               ...authBusiness, salesRouter);
 app.use('/api/purchases',           ...authBusiness, purchasesRouter);
+app.use('/api/expense-categories', ...authBusiness, expensesCategoriesRoutes);
 app.use('/api/hours',               ...authBusiness, hoursRouter);
 app.use('/api/business-status',     ...auth,         businessStatusRoutes);
 
