@@ -6,15 +6,17 @@ import { authMiddleware } from '../middleware/auth.js';
 
 const router = express.Router();
 
-// Genera claves VAPID una vez y guárdalas en .env
-// Comando: webpush generate-vapid-keys
-const vapidPublicKey = process.env.VAPID_PUBLIC_KEY;
+const vapidPublicKey  = process.env.VAPID_PUBLIC_KEY;
 const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY;
-webpush.setVapidDetails(
-  `mailto:${process.env.VAPID_MAIL || 'admin@example.com'}`,
-  vapidPublicKey,
-  vapidPrivateKey
-);
+const vapidEnabled = !!(vapidPublicKey && vapidPrivateKey);
+
+if (vapidEnabled) {
+  webpush.setVapidDetails(
+    `mailto:${process.env.VAPID_MAIL || 'admin@example.com'}`,
+    vapidPublicKey,
+    vapidPrivateKey
+  );
+}
 
 // -------------------------------------------------------------
 // Obtener la clave pública VAPID (para que el frontend la use)
@@ -63,6 +65,7 @@ router.post('/push/send', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     const { title, body, icon, url } = req.body;
+    if (!vapidEnabled) return res.status(503).json({ error: 'Push notifications not configured (VAPID keys missing)' });
     if (!title || !body) return res.status(400).json({ error: 'Title and body required' });
 
     // Obtener todas las suscripciones del tenant (si se filtra por negocio)
