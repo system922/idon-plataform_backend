@@ -441,4 +441,41 @@ router.post('/opening', authMiddleware, businessContextMiddleware, async (req, r
   }
 });
 
+// ===============================
+// 💵 INGRESOS EXTRAS
+// ===============================
+router.get('/income-extra', authMiddleware, businessContextMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+    const date = req.query.date || ecuadorToday();
+    const result = await query(
+      `SELECT * FROM "${schema}".incomes_extras WHERE date = $1 ORDER BY created_at ASC`,
+      [date]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/income-extra', authMiddleware, businessContextMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+    const { date, amount, payment_method, description } = req.body;
+    const userId   = req.user?.id || 'unknown';
+    const userName = [req.user?.firstName, req.user?.lastName].filter(Boolean).join(' ')
+                     || req.user?.email || userId;
+    const result = await query(
+      `INSERT INTO "${schema}".incomes_extras (date, amount, payment_method, description, user_id, user_name)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [date || ecuadorToday(), n(amount), payment_method || 'cash', description || null, userId, userName]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

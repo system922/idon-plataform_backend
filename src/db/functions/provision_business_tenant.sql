@@ -466,6 +466,21 @@ BEGIN
   EXECUTE format('CREATE INDEX %I_cash_register_closing_created_at_desc_idx ON %I.cash_register_closing (created_at DESC)', p_schema_name, p_schema_name);
   v_table_count := v_table_count + 1;
 
+  -- incomes_extras (ingresos extras de caja — no ventas, sí afectan cuadre)
+  EXECUTE format('
+    CREATE TABLE %I.incomes_extras (
+      id             SERIAL PRIMARY KEY,
+      date           DATE           NOT NULL,
+      amount         NUMERIC(10,2)  NOT NULL,
+      payment_method VARCHAR(20)    NOT NULL DEFAULT ''cash'',
+      description    TEXT,
+      user_id        VARCHAR(100),
+      user_name      VARCHAR(200),
+      created_at     TIMESTAMPTZ    DEFAULT NOW()
+    )', p_schema_name);
+  EXECUTE format('CREATE INDEX %I_incomes_extras_date_idx ON %I.incomes_extras (date DESC)', p_schema_name, p_schema_name);
+  v_table_count := v_table_count + 1;
+
   END IF;
 
   -- ─── INVENTORY ──────────────────────────────────────────────────────────
