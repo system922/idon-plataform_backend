@@ -102,19 +102,19 @@ app.use('/api/fiscal', fiscalRoutes);
 
 // ─── Rutas autenticadas + contexto de negocio ─────────────────────────────────
 app.use('/api/settings',            ...authBusiness, posSettingsRoutes);
-
-
-
-
 app.use('/api/core/roles',          ...authBusiness, roleRoutes);
 app.use('/api/core/users',          ...authBusiness, usersRoutes);
 app.use('/api/pos/cash-register',   ...authBusiness, cashRegisterRoutes);
+
+
+
+
 app.use('/api/navigation',          ...authBusiness, navigationRoutes);
 app.use('/api/subscriptions',       ...authBusiness, subscriptionRoutes);
 app.use('/api/customers',           ...authBusiness, CustomersRoutes);
 app.use('/api/products',            ...authBusiness, productosRoutes);
 app.use('/api/categories',          ...authBusiness, categoriesRoutes);
-app.use('/api/expenses',            ...authBusiness, expensesRoutes);
+
 app.use('/api/graphs',              ...authBusiness, graphRoutes);
 app.use('/api/inventory',           ...authBusiness, inventoryRoutes);
 app.use('/api/suppliers',           ...authBusiness, suppliersRoutes);
@@ -140,6 +140,7 @@ app.use('/api/einvoicing',          ...authBusiness, einvoicingRoutes);
 app.use('/api/business',            ...authBusiness, businessRoutes);
 app.use('/api/sales',               ...authBusiness, salesRouter);
 app.use('/api/purchases',           ...authBusiness, purchasesRouter);
+app.use('/api/expenses',            ...authBusiness, expensesRoutes);
 app.use('/api/expense-categories', ...authBusiness, expensesCategoriesRoutes);
 app.use('/api/hours',               ...authBusiness, hoursRouter);
 app.use('/api/business-status',     ...auth,         businessStatusRoutes);

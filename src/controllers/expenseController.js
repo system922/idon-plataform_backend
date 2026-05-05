@@ -47,7 +47,7 @@ export const createExpense = async (req, res) => {
     const schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
 
-    const { amount, description, notes, category_id, created_by, date } = req.body;
+    const { amount, description, reference, category_id, created_by, date } = req.body;
 
     if (!amount || isNaN(Number(amount))) {
       return res.status(400).json({ error: 'El campo amount es requerido y debe ser numérico' });
@@ -56,10 +56,10 @@ export const createExpense = async (req, res) => {
     const targetDate = date || ecuadorToday();
 
     const result = await query(
-      `INSERT INTO "${schema}".expenses (amount, description, notes, category_id, created_by, date)
+      `INSERT INTO "${schema}".expenses (amount, description, reference, category_id, created_by, date)
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [Number(amount), description || null, notes || null, category_id || null, created_by || null, targetDate]
+      [Number(amount), description || null, reference || null, category_id || null, created_by || null, targetDate]
     );
 
     res.status(201).json(result.rows[0]);
