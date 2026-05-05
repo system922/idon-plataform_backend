@@ -126,7 +126,6 @@ app.use('/api/ordenes',             ...authBusiness, ordenesRoutes);
 app.use('/api/discounts',           ...authBusiness, discountsRoutes);
 app.use('/api/crm',                 ...authBusiness, crmRoutes);
 app.use('/api/accounting',            ...authBusiness, accountingRoutes);
-app.use('/api/accounting',            ...authBusiness, accountingReceivableRoutes);
 app.use('/api/accounting',            ...authBusiness, accountingPayableRoutes);
 app.use('/api/accounting-receivable', ...authBusiness, accountingReceivableRoutes);
 app.use('/api/accounting-payable',    ...authBusiness, accountingPayableRoutes);
