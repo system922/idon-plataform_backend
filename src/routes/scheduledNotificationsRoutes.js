@@ -4,11 +4,9 @@ import { query } from '../config/database.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { sendCampaign } from '../services/emailService.js';
-import { sendPushNotification } from '../services/pushService.js'; // lo crearemos ahora
 
 const router = express.Router();
 
-// Función para enviar push (asumiendo que existe un servicio similar al que hicimos en pushRoutes)
 async function sendPushNotification(schema, title, message) {
   const subscriptions = await query(`SELECT endpoint, p256dh, auth FROM "${schema}".push_subscriptions`);
   const payload = JSON.stringify({ title, body: message, icon: '/logo192.png', url: '/' });
