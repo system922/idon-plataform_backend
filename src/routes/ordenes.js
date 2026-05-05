@@ -388,42 +388,64 @@ router.post('/:id/pay-items', authMiddleware, async (req, res) => {
     const { id } = req.params;
     const { item_ids = [], amount_paid, payment_method = 'cash', cliente_id, notes } = req.body;
 
+    console.log('=== pay-items request ===');
+    console.log('order_id:', id);
+    console.log('item_ids recibidos:', item_ids);
+    console.log('tipo del primer item_id:', typeof item_ids[0]);
+
     if (!item_ids.length) {
       return res.status(400).json({ error: 'Debe enviar items a cobrar' });
     }
 
     await client.query('BEGIN');
 
+    // 🔥 CONVERSIÓN: si los IDs son numéricos (product_id), se buscan los UUIDs reales
+    const areNumeric = item_ids.every(id => /^\d+$/.test(String(id)));
+    let realItemIds = item_ids;
+    if (areNumeric) {
+      console.log('Los item_ids parecen product_ids, convirtiendo...');
+      const numericIds = item_ids.map(id => parseInt(id, 10));
+      const found = await client.query(
+        `SELECT id FROM "${schema}".pos_order_items
+         WHERE product_id = ANY($1::int[]) AND order_id = $2 AND paid = false`,
+        [numericIds, id]
+      );
+      if (found.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'No hay items pendientes con esos product_ids' });
+      }
+      realItemIds = found.rows.map(row => row.id);
+      console.log('UUIDs convertidos:', realItemIds);
+    }
+
+    // Obtener items con sus precios (solo los no pagados)
     const itemsRes = await client.query(
-      `SELECT i.*, p.selling_price, p.tax_rate
-      FROM "${schema}".pos_order_items i
-      LEFT JOIN "${schema}".products p ON i.product_id = p.id
-      WHERE i.id = ANY($1::uuid[]) 
-        AND i.order_id = $2
-        AND COALESCE(i.paid, false) = false`,
-      [item_ids, id]
+      `SELECT i.id, i.quantity, p.selling_price, p.tax_rate
+       FROM "${schema}".pos_order_items i
+       LEFT JOIN "${schema}".products p ON i.product_id = p.id
+       WHERE i.id = ANY($1::uuid[]) 
+         AND i.order_id = $2
+         AND COALESCE(i.paid, false) = false`,
+      [realItemIds, id]
     );
 
     const items = itemsRes.rows;
-
     if (!items.length) {
       await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'Items no encontrados' });
+      return res.status(404).json({ error: 'Items no encontrados o ya pagados' });
     }
 
-    let subtotal = 0;
-    let taxTotal = 0;
-    let total = 0;
-
+    let subtotal = 0, taxTotal = 0, total = 0;
     for (const i of items) {
-      const itemSubtotal = i.selling_price * i.quantity;
-      const itemTax = i.tax_rate * i.quantity;
-      
-      subtotal += itemSubtotal;
-      taxTotal += itemTax;
-      total += itemSubtotal + itemTax;
+      const price = i.selling_price || 0;
+      const tax = i.tax_rate || 0;
+      const qty = i.quantity || 1;
+      subtotal += price * qty;
+      taxTotal += tax * qty;
+      total += (price + tax) * qty;
     }
 
+    // Registrar pago
     await client.query(
       `INSERT INTO "${schema}".pos_payments
        (order_id, payment_method, amount, status, paid_at)
@@ -431,40 +453,34 @@ router.post('/:id/pay-items', authMiddleware, async (req, res) => {
       [id, payment_method, total]
     );
 
-    console.log('Item IDs recibidos:', item_ids);
+    // 🔥 ACTUALIZAR paid = TRUE (solo una vez)
     const updateRes = await client.query(
-      `UPDATE "${schema}".pos_order_items SET paid = TRUE WHERE id = ANY($1::uuid[]) RETURNING id`,
-      [item_ids]
-    );
-    console.log('Filas actualizadas:', updateRes.rowCount);
-
-    await client.query(
       `UPDATE "${schema}".pos_order_items
-      SET paid = TRUE
-      WHERE id = ANY($1::uuid[])`,
-      [item_ids]
+       SET paid = TRUE
+       WHERE id = ANY($1::uuid[])
+       RETURNING id`,
+      [realItemIds]
     );
+    console.log(`✅ Items marcados como pagados: ${updateRes.rowCount}`);
 
+    // Calcular restantes
     const remainingRes = await client.query(
-      `SELECT 
-        COALESCE(SUM(p.selling_price * i.quantity), 0) as subtotal,
-        COALESCE(SUM(p.tax_rate * i.quantity), 0) as tax,
-        COALESCE(SUM((p.selling_price + p.tax_rate) * i.quantity), 0) as total
-      FROM "${schema}".pos_order_items i
-      LEFT JOIN "${schema}".products p ON i.product_id = p.id
-      WHERE i.order_id = $1 AND i.paid = FALSE`,
+      `SELECT
+         COALESCE(SUM(p.selling_price * i.quantity), 0) as subtotal,
+         COALESCE(SUM(p.tax_rate * i.quantity), 0) as tax,
+         COALESCE(SUM((p.selling_price + p.tax_rate) * i.quantity), 0) as total
+       FROM "${schema}".pos_order_items i
+       LEFT JOIN "${schema}".products p ON i.product_id = p.id
+       WHERE i.order_id = $1 AND COALESCE(i.paid, false) = false`,
       [id]
     );
 
-    const remainingSubtotal = parseFloat(remainingRes.rows[0].subtotal) || 0;
-    const remainingTax = parseFloat(remainingRes.rows[0].tax) || 0;
-    const remainingTotal = parseFloat(remainingRes.rows[0].total) || 0;
+    const remainingSubtotal = parseFloat(remainingRes.rows[0].subtotal);
+    const remainingTax = parseFloat(remainingRes.rows[0].tax);
+    const remainingTotal = parseFloat(remainingRes.rows[0].total);
+    const newStatus = remainingTotal === 0 ? 'paid' : 'partial';
 
-    let newStatus = 'partial';
-    if (remainingTotal === 0) {
-      newStatus = 'paid';
-    }
-
+    // Actualizar la orden
     await client.query(
       `UPDATE "${schema}".pos_orders
        SET subtotal = $1,
@@ -480,21 +496,14 @@ router.post('/:id/pay-items', authMiddleware, async (req, res) => {
 
     res.json({
       success: true,
-      paid: {
-        subtotal,
-        tax: taxTotal,
-        total
-      },
-      remaining: {
-        subtotal: remainingSubtotal,
-        tax: remainingTax,
-        total: remainingTotal
-      },
+      paid: { subtotal, tax: taxTotal, total },
+      remaining: { subtotal: remainingSubtotal, tax: remainingTax, total: remainingTotal },
       status: newStatus
     });
 
   } catch (err) {
     await client.query('ROLLBACK');
+    console.error('❌ Error en pay-items:', err);
     res.status(500).json({ error: err.message });
   } finally {
     client.release();
