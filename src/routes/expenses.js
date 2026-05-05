@@ -3,9 +3,11 @@ import * as expenseController from '../controllers/expenseController.js';
 
 const router = express.Router();
 
-router.get('/',     expenseController.getAllExpenses);
-router.post('/',    expenseController.createExpense);
+router.get('/',          expenseController.getAllExpenses);      // soporta date_from, date_to, category_id
 router.get('/date/:date', expenseController.getExpensesByDate);
 router.get('/purchases-by-day', expenseController.getPurchasesTotalByDay);
+router.post('/',         expenseController.createExpense);
+router.put('/:id',       expenseController.updateExpense);
+router.delete('/:id',    expenseController.deleteExpense);
 
 export default router;

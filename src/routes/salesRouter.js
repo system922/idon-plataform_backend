@@ -43,11 +43,13 @@ router.get('/today', authMiddleware, async (req, res) => {
 
     const result = await query(
       `SELECT
-         COUNT(*)::INT                      AS tickets_count,
-         COALESCE(SUM(total), 0)::NUMERIC   AS total_cobrado
-       FROM "${schema}".pos_orders
-       WHERE status = 'paid'
-         AND DATE(created_at) = $1`,
+         COUNT(DISTINCT o.id)::INT                                                       AS tickets_count,
+         COALESCE(SUM(CASE WHEN p.amount::text != 'NaN' THEN p.amount ELSE 0 END), 0)   AS total_cobrado
+       FROM "${schema}".pos_orders o
+       JOIN "${schema}".pos_payments p ON p.order_id = o.id
+       WHERE o.status = 'paid'
+         AND p.status = 'completed'
+         AND DATE(o.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Guayaquil') = $1`,
       [targetDate]
     );
 

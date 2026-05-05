@@ -106,9 +106,10 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
         INNER JOIN "${schema}".pos_payments pp 
           ON pp.order_id = po.id
         WHERE
-          DATE(po.created_at AT TIME ZONE 'America/Guayaquil') = $1
+          DATE(po.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Guayaquil') = $1
           AND po.status IN ('paid','completed')
           AND pp.status = 'completed'
+          AND pp.amount::text != 'NaN'
       ),
       metodos AS (
         SELECT 'cash' AS payment_method
@@ -121,6 +122,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
           SUM(amount) AS total_cobrado,
           COUNT(id) AS cantidad_pagos
         FROM pagos_normalizados
+        WHERE payment_method IN ('cash', 'transfer', 'card')
         GROUP BY payment_method
       )
       SELECT
@@ -190,28 +192,31 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
     const summary = await query(
       `
       SELECT
-        COALESCE(SUM(CASE 
+        COALESCE(SUM(CASE
           WHEN LOWER(pp.payment_method) IN ('cash','efectivo')
           AND pp.status = 'completed'
+          AND pp.amount::text != 'NaN'
         THEN pp.amount END), 0) AS cash_system,
 
-        COALESCE(SUM(CASE 
+        COALESCE(SUM(CASE
           WHEN LOWER(pp.payment_method) IN ('transfer','transferencia')
           AND pp.status = 'completed'
+          AND pp.amount::text != 'NaN'
         THEN pp.amount END), 0) AS transfer_system,
 
-        COALESCE(SUM(CASE 
+        COALESCE(SUM(CASE
           WHEN LOWER(pp.payment_method) IN ('card','tarjeta')
           AND pp.status = 'completed'
+          AND pp.amount::text != 'NaN'
         THEN pp.amount END), 0) AS card_system,
 
         COUNT(DISTINCT po.id) AS orders_system
 
       FROM "${schema}".pos_orders po
-      LEFT JOIN "${schema}".pos_payments pp 
+      LEFT JOIN "${schema}".pos_payments pp
         ON pp.order_id = po.id
 
-      WHERE DATE(po.created_at AT TIME ZONE 'America/Guayaquil') = $1
+      WHERE DATE(po.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Guayaquil') = $1
         AND po.status IN ('paid','completed')
       `,
       [date]

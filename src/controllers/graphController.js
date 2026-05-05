@@ -9,8 +9,8 @@ export const getSalesByDay = async (req, res) => {
 
     const params = [];
     let sql = `
-      SELECT to_char(o.created_at, 'YYYY-MM-DD') AS day,
-             COALESCE(SUM(p.amount), 0)           AS total
+      SELECT to_char(o.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Guayaquil', 'YYYY-MM-DD') AS day,
+             COALESCE(SUM(CASE WHEN p.amount::text != 'NaN' THEN p.amount ELSE 0 END), 0) AS total
       FROM "${schema}".pos_orders  o
       JOIN "${schema}".pos_payments p ON p.order_id = o.id
       WHERE o.status = 'paid'
