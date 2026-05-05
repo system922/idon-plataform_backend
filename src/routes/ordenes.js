@@ -397,29 +397,26 @@ router.post('/:id/pay-items', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Debe enviar items a cobrar' });
     }
 
-    // Verificar si los UUIDs existen en la tabla (sin filtrar por paid)
+    // Verificar existencia de items
     const checkExist = await client.query(
       `SELECT id, paid FROM "${schema}".pos_order_items WHERE id = ANY($1::uuid[]) AND order_id = $2`,
       [item_ids, id]
     );
-    console.log('Items encontrados (sin filtrar paid):', checkExist.rows);
     if (checkExist.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'No se encontraron items con esos IDs en esta orden' });
     }
 
-    // Filtrar solo los no pagados (por si alguno ya lo estaba)
     const itemsPorPagar = checkExist.rows.filter(row => !row.paid);
     if (itemsPorPagar.length === 0) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Todos los items ya estaban pagados' });
     }
     const realItemIds = itemsPorPagar.map(row => row.id);
-    console.log('Items a pagar (IDs):', realItemIds);
 
     await client.query('BEGIN');
 
-    // Obtener precios y cantidades de los items a pagar
+    // Obtener precios
     const itemsRes = await client.query(
       `SELECT i.id, i.quantity, p.selling_price, p.tax_rate
        FROM "${schema}".pos_order_items i
@@ -442,36 +439,21 @@ router.post('/:id/pay-items', authMiddleware, async (req, res) => {
       taxTotal += tax * qty;
       total += (price + tax) * qty;
     }
-    console.log('Totales calculados:', { subtotal, taxTotal, total });
 
-    // Insertar pago (verificar que la tabla existe)
-    try {
-      await client.query(
-        `INSERT INTO "${schema}".pos_payments
-         (order_id, payment_method, amount, status, paid_at)
-         VALUES ($1, $2, $3, 'completed', NOW())`,
-        [id, payment_method, total]
-      );
-      console.log('Pago insertado correctamente');
-    } catch (err) {
-      console.error('Error insertando pago:', err);
-      await client.query('ROLLBACK');
-      return res.status(500).json({ error: 'Error al registrar el pago: ' + err.message });
-    }
+    // Insertar pago
+    await client.query(
+      `INSERT INTO "${schema}".pos_payments
+       (order_id, payment_method, amount, status, paid_at)
+       VALUES ($1, $2, $3, 'completed', NOW())`,
+      [id, payment_method, total]
+    );
 
-    // Actualizar paid = TRUE
+    // Marcar items como pagados
     const updateRes = await client.query(
-      `UPDATE "${schema}".pos_order_items
-       SET paid = TRUE
-       WHERE id = ANY($1::uuid[])
-       RETURNING id`,
+      `UPDATE "${schema}".pos_order_items SET paid = TRUE WHERE id = ANY($1::uuid[]) RETURNING id`,
       [realItemIds]
     );
     console.log(`✅ Items marcados como pagados: ${updateRes.rowCount}`);
-    if (updateRes.rowCount !== realItemIds.length) {
-      await client.query('ROLLBACK');
-      return res.status(500).json({ error: `Solo se actualizaron ${updateRes.rowCount} de ${realItemIds.length} items` });
-    }
 
     // Calcular restantes
     const remainingRes = await client.query(
@@ -488,23 +470,35 @@ router.post('/:id/pay-items', authMiddleware, async (req, res) => {
     const remainingSubtotal = parseFloat(remainingRes.rows[0].subtotal);
     const remainingTax = parseFloat(remainingRes.rows[0].tax);
     const remainingTotal = parseFloat(remainingRes.rows[0].total);
-    const newStatus = remainingTotal === 0 ? 'paid' : 'partial';
+    const newStatus = remainingTotal === 0 ? 'paid' : 'pending'; // ← mantener 'pending' si no está pagado
 
     // Actualizar la orden
-    await client.query(
-      `UPDATE "${schema}".pos_orders
-       SET subtotal = $1,
-           tax_amount = $2,
-           total = $3,
-           status = $4,
-           updated_at = NOW()
-       WHERE id = $5`,
-      [remainingSubtotal, remainingTax, remainingTotal, newStatus, id]
-    );
-    console.log(`Orden actualizada. Nuevo estado: ${newStatus}`);
+    if (newStatus === 'paid') {
+      await client.query(
+        `UPDATE "${schema}".pos_orders
+         SET subtotal = $1,
+             tax_amount = $2,
+             total = $3,
+             status = $4,
+             updated_at = NOW()
+         WHERE id = $5`,
+        [remainingSubtotal, remainingTax, remainingTotal, newStatus, id]
+      );
+    } else {
+      // Solo actualizar totales, sin cambiar el status
+      await client.query(
+        `UPDATE "${schema}".pos_orders
+         SET subtotal = $1,
+             tax_amount = $2,
+             total = $3,
+             updated_at = NOW()
+         WHERE id = $4`,
+        [remainingSubtotal, remainingTax, remainingTotal, id]
+      );
+    }
 
     await client.query('COMMIT');
-    console.log('Transacción completada exitosamente');
+    console.log(`Transacción completada. Estado de la orden: ${newStatus}`);
 
     res.json({
       success: true,
@@ -515,12 +509,13 @@ router.post('/:id/pay-items', authMiddleware, async (req, res) => {
 
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('❌ Error en pay-items (catch general):', err);
+    console.error('❌ Error en pay-items:', err);
     res.status(500).json({ error: err.message });
   } finally {
     client.release();
   }
 });
+
 
 /**
  * DELETE /api/ordenes/:id
