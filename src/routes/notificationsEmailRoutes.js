@@ -163,9 +163,12 @@ router.post('/email/send', authMiddleware, async (req, res) => {
     await ensureTables(schema);
     const { to, recipients, subject, html, invoice_id } = req.body;
 
+    const bizRes = await query(`SELECT name FROM public.businesses WHERE id = $1`, [req.user.businessId]);
+    const businessName = bizRes.rows[0]?.name;
+
     if (recipients && Array.isArray(recipients)) {
       try {
-        const result = await sendCampaign({ recipients, subject, html });
+        const result = await sendCampaign({ recipients, subject, html, businessName });
         await query(`
           INSERT INTO "${schema}".email_logs (recipients, subject, type, status, sent_at, recipient_count)
           VALUES ($1, $2, 'campaign', $3, NOW(), $4)
@@ -181,7 +184,7 @@ router.post('/email/send', authMiddleware, async (req, res) => {
     } else {
       if (!to) return res.status(400).json({ success: false, error: 'Destinatario requerido' });
       try {
-        await sendGenericEmail({ to, subject, html });
+        await sendGenericEmail({ to, subject, html, businessName });
         await query(`
           INSERT INTO "${schema}".email_logs (recipient, subject, type, status, sent_at, invoice_id)
           VALUES ($1, $2, 'single', 'sent', NOW(), $3)

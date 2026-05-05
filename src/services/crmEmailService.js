@@ -2,14 +2,19 @@ import { Resend } from 'resend';
 import logger from '../utils/logger.js';
 
 const resend = new Resend(process.env.RESEND_API_KEY);
-const FROM = process.env.FROM_EMAIL || 'Sistema <onboarding@resend.dev>';
+const NOTIFICATIONS_ADDRESS = process.env.NOTIFICATIONS_EMAIL || process.env.FROM_EMAIL || 'onboarding@resend.dev';
+
+function buildFrom(businessName) {
+  const name = businessName || 'Idon Plataforma';
+  return `${name} <${NOTIFICATIONS_ADDRESS}>`;
+}
 
 /**
  * Función base para enviar correos (no usarla directamente, usar las específicas)
  */
-async function sendEmail({ to, subject, html, attachments = [] }) {
+async function sendEmail({ to, subject, html, attachments = [], businessName }) {
   const payload = {
-    from: FROM,
+    from: buildFrom(businessName),
     to: Array.isArray(to) ? to : [to],
     subject,
     html,
@@ -31,13 +36,13 @@ async function sendEmail({ to, subject, html, attachments = [] }) {
  * @param {string} html
  * @param {number} batchSize - máx por lote (Resend permite hasta 50 en BCC)
  */
-export async function sendCampaign({ recipients, subject, html, batchSize = 50 }) {
+export async function sendCampaign({ recipients, subject, html, batchSize = 50, businessName }) {
   const results = { sent: 0, failed: 0, errors: [] };
   for (let i = 0; i < recipients.length; i += batchSize) {
     const batch = recipients.slice(i, i + batchSize);
     try {
       const { data, error } = await resend.emails.send({
-        from: FROM,
+        from: buildFrom(businessName),
         bcc: batch,
         subject,
         html,
@@ -57,8 +62,8 @@ export async function sendCampaign({ recipients, subject, html, batchSize = 50 }
 /**
  * Correo genérico a un solo destinatario (para notificaciones, alertas, etc.)
  */
-export async function sendGenericEmail({ to, subject, html }) {
-  return sendEmail({ to, subject, html });
+export async function sendGenericEmail({ to, subject, html, businessName }) {
+  return sendEmail({ to, subject, html, businessName });
 }
 
 /**

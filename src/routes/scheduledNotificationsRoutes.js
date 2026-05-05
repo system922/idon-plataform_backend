@@ -3,7 +3,7 @@ import schedule from 'node-schedule';
 import { query } from '../config/database.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 import { authMiddleware } from '../middleware/auth.js';
-import { sendCampaign } from '../services/emailService.js';
+import { sendCampaign } from '../services/crmEmailService.js';
 
 const router = express.Router();
 
@@ -84,7 +84,9 @@ async function scheduleNotification(schema, notification) {
         const customers = await query(`SELECT email FROM "${schema}".customers WHERE email IS NOT NULL AND email != ''`);
         const emails = customers.rows.map(c => c.email);
         if (emails.length) {
-          await sendCampaign({ recipients: emails, subject: title, html: `<p>${message}</p>` });
+          const bizRes = await query(`SELECT name FROM public.businesses WHERE schema_name = $1`, [schema]);
+          const businessName = bizRes.rows[0]?.name;
+          await sendCampaign({ recipients: emails, subject: title, html: `<p>${message}</p>`, businessName });
         }
       }
       await query(`UPDATE "${schema}".scheduled_notifications SET status = 'sent', sent_at = NOW() WHERE id = $1`, [id]);
