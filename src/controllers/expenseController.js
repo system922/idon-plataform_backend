@@ -59,6 +59,32 @@ export const getExpensesByDate = async (req, res) => {
   }
 };
 
+// ─── Resumen de gastos para el dashboard (solo total y conteo por fecha) ───
+export const getExpensesSummaryForDashboard = async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { date } = req.query;
+    if (!date) return res.status(400).json({ error: 'Fecha requerida' });
+
+    const result = await query(
+      `SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS count
+       FROM "${schema}".expenses
+       WHERE date = $1`,
+      [date]
+    );
+
+    res.json({
+      total: parseFloat(result.rows[0].total),
+      count: parseInt(result.rows[0].count, 10)
+    });
+  } catch (e) {
+    console.error('Error en getExpensesSummaryForDashboard:', e);
+    res.status(500).json({ error: 'Error obteniendo resumen de gastos', detail: e.message });
+  }
+};
+
 // Crear gasto/egreso
 export const createExpense = async (req, res) => {
   try {
