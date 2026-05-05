@@ -32,6 +32,31 @@ router.post('/', authMiddleware, async (req, res) => {
   res.json(result.rows[0]);
 });
 
+// Ventas de hoy para el dashboard
+router.get('/today', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { date } = req.query;
+    const targetDate = date || new Date().toISOString().split('T')[0];
+
+    const result = await query(
+      `SELECT
+         COUNT(*)::INT                      AS tickets_count,
+         COALESCE(SUM(total), 0)::NUMERIC   AS total_cobrado
+       FROM "${schema}".pos_orders
+       WHERE status = 'paid'
+         AND DATE(created_at) = $1`,
+      [targetDate]
+    );
+
+    res.json(result.rows[0] || { tickets_count: 0, total_cobrado: 0 });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Detalle por ID
 router.get('/:id', authMiddleware, async (req, res) => {
   const schema = await getSchemaName(req);
