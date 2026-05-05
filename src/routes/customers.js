@@ -84,6 +84,75 @@ router.get('/', authMiddleware, async (req, res) => {
  * GET /api/customers/:id
  * Obtiene un cliente específico
  */
+router.get('/stats', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const result = await query(
+      `SELECT
+         COUNT(*) as total_customers,
+         COUNT(CASE WHEN is_active = true THEN 1 END) as active_customers,
+         COUNT(CASE WHEN is_active = false THEN 1 END) as inactive_customers,
+         COUNT(CASE WHEN created_at > NOW() - INTERVAL '30 days' THEN 1 END) as new_last_30_days,
+         (SELECT COUNT(DISTINCT customer_id) FROM "${schema}".pos_orders WHERE customer_id IS NOT NULL) as customers_with_orders
+       FROM "${schema}".customers`
+    );
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Error al obtener estadísticas:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/by-document', authMiddleware, async (req, res) => {
+  try {
+    const { document_number, document_type } = req.query;
+    if (!document_number) return res.status(400).json({ error: 'document_number requerido' });
+
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const result = await query(
+      `SELECT id, name, email, phone, document_number, document_type, address, notes
+       FROM "${schema}".customers
+       WHERE document_number = $1
+       LIMIT 1`,
+      [document_number]
+    );
+
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Cliente no encontrado' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/cedula', authMiddleware, async (req, res) => {
+  try {
+    const { cedula } = req.query;
+    if (!cedula) return res.status(400).json({ error: 'cedula es requerida' });
+
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    // Limpia el parámetro y busca con ILIKE y TRIM
+    const cleanCedula = cedula.trim();
+    const result = await query(
+      `SELECT id, name, email, phone, document_number
+       FROM "${schema}".customers
+       WHERE TRIM(document_number) = $1`,
+      [cleanCedula]
+    );
+
+    if (result.rows.length === 0) return res.json([]);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/:id', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -264,85 +333,6 @@ router.delete('/:id', authMiddleware, async (req, res) => {
   } catch (err) {
     console.error('Error al eliminar cliente:', err);
     res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
- * GET /api/customers/stats
- * Obtiene estadísticas de clientes
- */
-router.get('/stats', authMiddleware, async (req, res) => {
-  try {
-    const schema = await getSchemaName(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
-
-    const result = await query(
-      `SELECT 
-         COUNT(*) as total_customers,
-         COUNT(CASE WHEN is_active = true THEN 1 END) as active_customers,
-         COUNT(CASE WHEN is_active = false THEN 1 END) as inactive_customers,
-         COUNT(CASE WHEN created_at > NOW() - INTERVAL '30 days' THEN 1 END) as new_last_30_days,
-         (SELECT COUNT(DISTINCT customer_id) FROM "${schema}".pos_orders WHERE customer_id IS NOT NULL) as customers_with_orders
-       FROM "${schema}".customers`
-    );
-
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error('Error al obtener estadísticas:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/**
- * GET /api/customers/by-document?document_number=xxx&document_type=cedula|ruc
- * Busca un cliente por número y tipo de documento.
- */
-router.get('/by-document', authMiddleware, async (req, res) => {
-  try {
-    const { document_number, document_type } = req.query;
-    if (!document_number) return res.status(400).json({ error: 'document_number requerido' });
-
-    const schema = await getSchemaName(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
-
-    const result = await query(
-      `SELECT id, name, email, phone, document_number, document_type, address, notes
-       FROM "${schema}".customers
-       WHERE document_number = $1
-       LIMIT 1`,
-      [document_number]
-    );
-
-    if (result.rows.length === 0) return res.status(404).json({ error: 'Cliente no encontrado' });
-    res.json(result.rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/**
- * GET /api/clientes?cedula=xxx (legacy)
- */
-router.get('/cedula', authMiddleware, async (req, res) => {
-  try {
-    const { cedula } = req.query;
-    if (!cedula) return res.status(400).json({ error: 'cedula es requerida' });
-
-    const schema = await getSchemaName(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
-
-    const result = await query(
-      `SELECT id, name, email, phone, document_number
-       FROM "${schema}".customers
-       WHERE document_number = $1
-       LIMIT 1`,
-      [cedula]
-    );
-
-    if (result.rows.length === 0) return res.json([]);
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
 });
 

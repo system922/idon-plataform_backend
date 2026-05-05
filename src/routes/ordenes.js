@@ -431,6 +431,13 @@ router.post('/:id/pay-items', authMiddleware, async (req, res) => {
       [id, payment_method, total]
     );
 
+    console.log('Item IDs recibidos:', item_ids);
+    const updateRes = await client.query(
+      `UPDATE "${schema}".pos_order_items SET paid = TRUE WHERE id = ANY($1::uuid[]) RETURNING id`,
+      [item_ids]
+    );
+    console.log('Filas actualizadas:', updateRes.rowCount);
+
     await client.query(
       `UPDATE "${schema}".pos_order_items
       SET paid = TRUE
