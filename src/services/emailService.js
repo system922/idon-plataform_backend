@@ -72,3 +72,23 @@ export async function sendInvoiceEmail(inv, pdfBuf, to, businessName) {
   logger.info({ emailId: data?.id, to, invoice: inv.invoice_number }, 'Invoice email sent');
   return data;
 }
+
+/**
+ * Envía un correo a múltiples destinatarios (campañas / notificaciones programadas).
+ * @param {{ recipients: string[], subject: string, html: string }} opts
+ */
+export async function sendCampaign({ recipients, subject, html }) {
+  if (!recipients?.length) return { sent: 0 };
+  const { data, error } = await resend.emails.send({
+    from:    FROM,
+    to:      recipients,
+    subject,
+    html,
+  });
+  if (error) {
+    logger.error({ err: error }, 'Resend campaign error');
+    throw new Error(error.message || 'Error al enviar campaña');
+  }
+  logger.info({ emailId: data?.id, count: recipients.length }, 'Campaign sent');
+  return data;
+}
