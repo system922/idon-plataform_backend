@@ -1,7 +1,7 @@
-// controllers/accountingController.js
 import { query, getClient } from '../config/database.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 
+// ─── Helper para asegurar la tabla ──────────────────────────────────────────
 async function ensureReceivablesTable(schema) {
   await query(`
     CREATE TABLE IF NOT EXISTS "${schema}".accounts_receivable (
