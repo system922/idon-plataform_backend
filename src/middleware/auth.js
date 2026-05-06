@@ -81,6 +81,11 @@ export const adminMiddleware = (req, res, next) => {
 };
 
 export const businessContextMiddleware = (req, res, next) => {
+  // Admin platform routes never require a business context
+  if (req.path.startsWith('/admin') || req.originalUrl.includes('/api/admin')) {
+    return next();
+  }
+
   logger.info('[BUSINESS] Verificando contexto de negocio. req.user:', req.user);
 
   if (!req.user || !req.user.businessId) {

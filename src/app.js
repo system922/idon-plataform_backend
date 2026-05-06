@@ -126,8 +126,6 @@ app.use('/api/discounts',           ...authBusiness, discountsRoutes);
 app.use('/api/crm',                 ...authBusiness, crmRoutes);
 app.use('/api/accounting-receivable', ...authBusiness, accountingReceivableRoutes);
 app.use('/api/accounting-payable',    ...authBusiness, accountingPayableRoutes);
-app.use('/api',                       ...authBusiness, pushRoutes);
-app.use('/api',                       ...authBusiness, scheduledNotificationsRoutes);
 app.use('/api/notifications',         ...authBusiness, notificationsEmailRoutes);
 
 app.use('/api/reports',             ...authBusiness, reportsRoutes);
@@ -151,6 +149,10 @@ app.use('/api/admin/fiscal-config',  ...authAdmin, fiscalConfigRoutes);
 app.use('/api/admin/payments',       ...authAdmin, paymentsAdminRoutes);
 app.use('/api/admin/billing-history',...authAdmin, billingHistoryRoutes);
 app.use('/api/notifications-admin',  ...authAdmin, notificationsAdminRoutes);
+
+// Push + scheduled — must be AFTER admin routes so /api/admin/* isn't intercepted by businessContextMiddleware
+app.use('/api',                       ...authBusiness, pushRoutes);
+app.use('/api',                       ...authBusiness, scheduledNotificationsRoutes);
 
 // ─── Error handlers ───────────────────────────────────────────────────────────
 app.use(notFoundHandler);
