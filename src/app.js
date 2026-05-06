@@ -10,21 +10,29 @@ import securityRoutes        from './routes/security.js';
 import usersRoutes           from './routes/users.js';
 import cashRegisterRoutes    from './routes/cashRegister.js';
 import businessStatusRoutes  from './routes/businessStatus.js';
-import businessTypeRoutes_r  from './routes/businessTypeRoutes.js';
+import businessTypeRoutes_r  from './routes/businessTypeRoutes.js'; // alias para ruta pública
 import authRoutes            from './routes/auth.js';
 import registerRoutes        from './routes/register.js';
-import adminRoutes           from './routes/admin.js';
+
+// ─── Admin routes (una por sección del sidebar) ───────────────────────────────
+import adminDashboardRoutes  from './routes/admin/dashboard.js';
+import adminRequestsRoutes   from './routes/admin/requests.js';
+import adminClientsRoutes    from './routes/admin/clients.js';
+import adminModulesRoutes    from './routes/admin/modules.js';
+import adminFeaturesRoutes   from './routes/admin/features.js';
+import adminPaymentsRoutes   from './routes/admin/payments.js';
+import adminUsersRoutes      from './routes/admin/users.js';
+import adminRolesRoutes      from './routes/admin/roles.js';
+import adminSettingsRoutes   from './routes/admin/settings.js';
+import adminAuditRoutes      from './routes/admin/audit.js';
+
 import catalogRoutes         from './routes/catalog.js';
 import navigationRoutes      from './routes/navigation.js';
 import notificationsAdminRoutes from './routes/notificationsAdmin.js';
 import subscriptionRoutes    from './routes/subscription.js';
-import moduleRoutes          from './routes/moduleRoutes.js';
-import featureRoutes         from './routes/featureRoutes.js';
 import businessTypeRoutes    from './routes/businessTypeRoutes.js';
 import roleRoutes            from './routes/roleRoutes.js';
 import fiscalConfigRoutes    from './routes/fiscalConfigRoutes.js';
-import paymentsAdminRoutes   from './routes/paymentsAdmin.js';
-import billingHistoryRoutes  from './routes/billingHistoryRoutes.js';
 import businessOwnersRoutes  from './routes/businessOwners.js';
 import CustomersRoutes       from './routes/customers.js';
 import productosRoutes       from './routes/productos.js';
@@ -141,16 +149,20 @@ app.use('/api/expense-categories', ...authBusiness, expensesCategoriesRoutes);
 app.use('/api/hours',               ...authBusiness, hoursRouter);
 app.use('/api/business-status',     ...auth,         businessStatusRoutes);
 
-// ─── Rutas de admin ───────────────────────────────────────────────────────────
-app.use('/api/admin',                         adminRoutes);
-app.use('/api/admin/modules',        ...authAdmin, moduleRoutes);
-app.use('/api/admin/features',       ...authAdmin, featureRoutes);
-app.use('/api/admin/business-types', ...authAdmin, businessTypeRoutes);
-app.use('/api/admin/roles',          ...authAdmin, roleRoutes);
-app.use('/api/admin/fiscal-config',  ...authAdmin, fiscalConfigRoutes);
-app.use('/api/admin/payments',       ...authAdmin, paymentsAdminRoutes);
-app.use('/api/admin/billing-history',...authAdmin, billingHistoryRoutes);
-app.use('/api/notifications-admin',  ...authAdmin, notificationsAdminRoutes);
+// ─── Rutas de admin (una por sección del sidebar) ─────────────────────────────
+app.use('/api/admin', ...authAdmin, adminDashboardRoutes);  // General → Dashboard
+app.use('/api/admin', ...authAdmin, adminRequestsRoutes);   // Negocios → Solicitudes
+app.use('/api/admin', ...authAdmin, adminClientsRoutes);    // Negocios → Gestión de Clientes
+app.use('/api/admin', ...authAdmin, adminModulesRoutes);    // Sistema  → Módulos
+app.use('/api/admin', ...authAdmin, adminFeaturesRoutes);   // Sistema  → Funcionalidades
+app.use('/api/admin', ...authAdmin, adminPaymentsRoutes);   // Comercial → Pagos
+app.use('/api/admin', ...authAdmin, adminUsersRoutes);      // Usuarios → Gestión de Usuarios
+app.use('/api/admin', ...authAdmin, adminRolesRoutes);      // Usuarios → Roles y Permisos
+app.use('/api/admin', ...authAdmin, adminSettingsRoutes);   // Global   → Configuración
+app.use('/api/admin', ...authAdmin, adminAuditRoutes);      // Global   → Auditoría
+app.use('/api/admin/business-types',  ...authAdmin, businessTypeRoutes);  // Sistema → Tipos de Negocio
+app.use('/api/admin/fiscal-config',   ...authAdmin, fiscalConfigRoutes);  // Global  → Config Fiscal
+app.use('/api/notifications-admin',   ...authAdmin, notificationsAdminRoutes);
 
 // Push + scheduled — must be AFTER admin routes so /api/admin/* isn't intercepted by businessContextMiddleware
 app.use('/api',                       ...authBusiness, pushRoutes);
