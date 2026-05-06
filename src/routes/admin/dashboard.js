@@ -12,8 +12,8 @@ router.get('/stats', async (req, res, next) => {
       query('SELECT COUNT(*) FROM public.businesses WHERE is_active = TRUE'),
       query("SELECT COUNT(*) FROM public.business_registration_requests WHERE status = 'pending'"),
       query('SELECT COUNT(*) FROM public.modules'),
-      query(`SELECT COALESCE(SUM(amount_monthly),0) as total FROM public.subscriptions
-             WHERE status = 'active' AND date_trunc('month', created_at) = date_trunc('month', NOW())`),
+      query(`SELECT COALESCE(SUM(total_amount),0) as total FROM public.subscriptions
+             WHERE status = 'active' AND billing_period = 'monthly'`),
       query('SELECT COUNT(*) FROM public.users'),
       query('SELECT COUNT(*) FROM public.features'),
     ]);
