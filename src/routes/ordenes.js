@@ -46,30 +46,32 @@ router.post('/', authMiddleware, async (req, res) => {
       customerName = cRes.rows[0]?.name || null;
     }
 
-    // Calcular totales desde products
+    // Calcular totales y validar productos en un solo loop
     let calculatedSubtotal = 0;
     let calculatedTax = 0;
     let calculatedTotal = 0;
+    const productosData = [];
 
     for (const item of items) {
       const productRes = await client.query(
-        `SELECT selling_price, tax_rate FROM "${schema}".products WHERE id = $1`,
+        `SELECT id, name, selling_price, tax_rate FROM "${schema}".products WHERE id = $1`,
         [item.product_id]
       );
-      
+
       if (productRes.rows.length === 0) {
         await client.query('ROLLBACK');
         return res.status(400).json({ error: `Producto no encontrado: ${item.product_id}` });
       }
-      
+
       const product = productRes.rows[0];
       const quantity = item.quantity || 1;
       const itemSubtotal = product.selling_price * quantity;
       const itemTax = product.tax_rate * quantity;
-      
+
       calculatedSubtotal += itemSubtotal;
       calculatedTax += itemTax;
       calculatedTotal += itemSubtotal + itemTax;
+      productosData.push({ ...product, quantity, notes: item.notes || null });
     }
 
     const insertRes = await client.query(
@@ -94,35 +96,22 @@ router.post('/', authMiddleware, async (req, res) => {
 
     const pedido = insertRes.rows[0];
 
-    // Insertar items - SOLO guardamos product_id y quantity (product_name viene de products en el GET)
+    // Insertar items incluyendo product_name para el socket/respuesta
     const insertedItems = [];
-    for (const item of items) {
-      // Verificar que el producto existe
-      const productCheck = await client.query(
-        `SELECT id FROM "${schema}".products WHERE id = $1`,
-        [item.product_id]
-      );
-      
-      if (productCheck.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: `Producto no encontrado: ${item.product_id}` });
-      }
-      
-      const quantity = item.quantity || 1;
-
+    for (const prod of productosData) {
       const itemRes = await client.query(
         `INSERT INTO "${schema}".pos_order_items
            (order_id, product_id, quantity, notes)
          VALUES ($1, $2, $3, $4)
          RETURNING *`,
-        [
-          pedido.id,
-          item.product_id,
-          quantity,
-          item.notes || null,
-        ]
+        [pedido.id, prod.id, prod.quantity, prod.notes]
       );
-      insertedItems.push(itemRes.rows[0]);
+      insertedItems.push({
+        ...itemRes.rows[0],
+        product_name:  prod.name,
+        selling_price: prod.selling_price,
+        tax_rate:      prod.tax_rate,
+      });
     }
 
     await client.query('COMMIT');
