@@ -5,8 +5,9 @@ import { query } from '../config/database.js';
 import { successResponse, errorResponse } from '../utils/response.js';
 import logger from '../utils/logger.js';
 
-const router = express.Router();
 
+const router = express.Router();
+// ── POST /api/auth/register ─────────────────────────────────────
 router.post('/register', async (req, res, next) => {
   try {
     const { email, firstName, lastName, password, documentNumber } = req.body;
