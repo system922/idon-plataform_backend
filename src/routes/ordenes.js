@@ -8,7 +8,7 @@ const router = express.Router();
 
 /**
  * POST /api/ordenes
- * Crea una nueva orden POS
+ * Crea una nueva orden POS con numeración diaria
  */
 router.post('/', authMiddleware, async (req, res) => {
   const client = await getClient();
@@ -32,10 +32,32 @@ router.post('/', authMiddleware, async (req, res) => {
 
     await client.query('BEGIN');
 
-    const countRes = await client.query(
-      `SELECT COUNT(*) AS cnt FROM "${schema}".pos_orders`
-    );
-    const orderNumber = String(parseInt(countRes.rows[0].cnt, 10) + 1).padStart(4, '0');
+    // 🔥 OBTENER FECHA ACTUAL (TIMEZONE Ecuador)
+    const tzResult = await client.query(`SELECT NOW() AT TIME ZONE 'America/Guayaquil' as current_date`);
+    const today = tzResult.rows[0].current_date.toISOString().split('T')[0];
+
+    // 🔥 TABLA PARA CONTROL DE CONTADOR DIARIO (crear si no existe)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS "${schema}".daily_order_counter (
+        id SERIAL PRIMARY KEY,
+        order_date DATE NOT NULL UNIQUE,
+        last_number INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // 🔥 OBTENER O INSERTAR CONTADOR DEL DÍA - ESTA ES LA CLAVE
+    const counterResult = await client.query(`
+      INSERT INTO "${schema}".daily_order_counter (order_date, last_number)
+      VALUES ($1, 1)
+      ON CONFLICT (order_date) 
+      DO UPDATE SET last_number = daily_order_counter.last_number + 1
+      RETURNING last_number
+    `, [today]);
+
+    const dailyNumber = counterResult.rows[0].last_number;
+    const orderNumber = String(dailyNumber).padStart(4, '0');
 
     let customerName = null;
     if (cliente_id) {
@@ -46,7 +68,7 @@ router.post('/', authMiddleware, async (req, res) => {
       customerName = cRes.rows[0]?.name || null;
     }
 
-    // Calcular totales y validar productos en un solo loop
+    // Calcular totales y validar productos
     let calculatedSubtotal = 0;
     let calculatedTax = 0;
     let calculatedTotal = 0;
@@ -74,6 +96,7 @@ router.post('/', authMiddleware, async (req, res) => {
       productosData.push({ ...product, quantity, notes: item.notes || null });
     }
 
+    // 🔥 INSERTAR ORDEN CON EL NÚMERO DIARIO
     const insertRes = await client.query(
       `INSERT INTO "${schema}".pos_orders
          (order_number, order_type, status,
@@ -96,7 +119,7 @@ router.post('/', authMiddleware, async (req, res) => {
 
     const pedido = insertRes.rows[0];
 
-    // Insertar items incluyendo product_name para el socket/respuesta
+    // Insertar items
     const insertedItems = [];
     for (const prod of productosData) {
       const itemRes = await client.query(
@@ -135,12 +158,21 @@ router.post('/', authMiddleware, async (req, res) => {
     res.status(201).json(responsePayload);
   } catch (err) {
     await client.query('ROLLBACK');
+    console.error('Error al crear orden:', err);
+    
+    // 🔥 MANEJAR ERROR DE DUPLICADO
+    if (err.code === '23505') {
+      return res.status(409).json({ 
+        error: 'Conflicto al generar número de orden. Por favor intente nuevamente.',
+        retry: true 
+      });
+    }
+    
     res.status(500).json({ error: err.message });
   } finally {
     client.release();
   }
 });
-
 /**
  * GET /api/ordenes
  * Lista órdenes con sus items (todo desde products mediante JOIN)
