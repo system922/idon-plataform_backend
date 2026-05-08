@@ -26,6 +26,17 @@ export const findAll = async (schema, includeInactive = false) => {
   return rows;
 };
 
+export const findByCategory = async (schema, category_id, includeInactive = false) => {
+  const where = includeInactive ? 'WHERE p.category_id = $1' : 'WHERE p.category_id = $1 AND p.is_active = true';
+  const { rows } = await query(
+    `SELECT ${SELECT} FROM "${schema}".products p
+     LEFT JOIN "${schema}".categories c ON p.category_id = c.id
+     ${where} ORDER BY p.name ASC`,
+    [category_id]
+  );
+  return rows;
+};
+
 export const findById = async (schema, id) => {
   const { rows } = await query(
     `SELECT ${SELECT} FROM "${schema}".products p
@@ -53,49 +64,128 @@ export const findCategoryId = async (schema, categoria) => {
   return rows[0]?.id ?? null;
 };
 
+export const findOrCreateCategory = async (schema, categoryName) => {
+  if (!categoryName) return null;
+  
+  // Buscar categoría existente
+  const findResult = await query(
+    `SELECT id FROM "${schema}".categories WHERE LOWER(name) = LOWER($1) LIMIT 1`,
+    [categoryName]
+  );
+  
+  if (findResult.rows.length > 0) {
+    return findResult.rows[0].id;
+  }
+  
+  // Crear nueva categoría
+  const insertResult = await query(
+    `INSERT INTO "${schema}".categories (name) VALUES ($1) RETURNING id`,
+    [categoryName]
+  );
+  
+  return insertResult.rows[0].id;
+};
+
 export const getFiscalRates = async () => {
   try {
     const { rows } = await query(
-      `SELECT iva_rate, iva_rate_reduced FROM public.fiscal_config LIMIT 1`
+      `SELECT iva_rate, iva_rate_reduced FROM public.fiscal_config WHERE is_active = TRUE LIMIT 1`
     );
     const row = rows[0] ?? {};
     return {
-      iva_rate:         Number(row.iva_rate         ?? 0.15),
-      iva_rate_reduced: Number(row.iva_rate_reduced ?? 0.00),
+      iva_rate: Number(row.iva_rate ?? 0.15),
+      iva_rate_reduced: Number(row.iva_rate_reduced ?? 0.05),
     };
   } catch {
-    return { iva_rate: 0.15, iva_rate_reduced: 0.0 };
+    return { iva_rate: 0.15, iva_rate_reduced: 0.05 };
   }
 };
 
 export const insert = async (schema, d) => {
   const { rows } = await query(
     `INSERT INTO "${schema}".products
-     (code,name,description,category_id,selling_price,unit_cost,
-      tax_rate,is_taxable,is_active,sku,barcode,stock,min_stock)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true,$9,$10,$11,$12)
+     (code, name, description, category_id, selling_price, unit_cost,
+      tax_rate, is_taxable, is_active, sku, barcode, stock, min_stock)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      RETURNING *`,
     [
-      `PROD-${Date.now().toString(36).toUpperCase()}`,
+      d.code || `PROD-${Date.now().toString(36).toUpperCase()}`,
       d.name, d.description, d.category_id,
       d.sellingPrice, d.unitCost, d.taxRate, d.isTaxable,
-      d.sku, genEAN13(), d.stock, d.minStock,
+      d.isActive !== false, d.sku, d.barcode || genEAN13(), d.stock || 0, d.minStock || 0,
     ]
   );
   return rows[0];
 };
 
 export const updateById = async (schema, id, d) => {
+  const updates = [];
+  const values = [];
+  let idx = 1;
+
+  if (d.name !== undefined && d.name !== null) {
+    updates.push(`name = $${idx++}`);
+    values.push(d.name);
+  }
+  if (d.sellingPrice !== undefined && d.sellingPrice !== null) {
+    updates.push(`selling_price = $${idx++}`);
+    values.push(d.sellingPrice);
+  }
+  if (d.taxRate !== undefined && d.taxRate !== null) {
+    updates.push(`tax_rate = $${idx++}`);
+    values.push(d.taxRate);
+  }
+  if (d.isTaxable !== undefined && d.isTaxable !== null) {
+    updates.push(`is_taxable = $${idx++}`);
+    values.push(d.isTaxable);
+  }
+  if (d.isActive !== undefined && d.isActive !== null) {
+    updates.push(`is_active = $${idx++}`);
+    values.push(d.isActive);
+  }
+  if (d.stock !== undefined && d.stock !== null) {
+    updates.push(`stock = $${idx++}`);
+    values.push(d.stock);
+  }
+  if (d.category_id !== undefined) {
+    updates.push(`category_id = $${idx++}`);
+    values.push(d.category_id === '' ? null : d.category_id);
+  }
+  if (d.description !== undefined && d.description !== null) {
+    updates.push(`description = $${idx++}`);
+    values.push(d.description);
+  }
+  if (d.unit_cost !== undefined && d.unit_cost !== null) {
+    updates.push(`unit_cost = $${idx++}`);
+    values.push(d.unit_cost);
+  }
+  if (d.sku !== undefined && d.sku !== null) {
+    updates.push(`sku = $${idx++}`);
+    values.push(d.sku);
+  }
+  if (d.barcode !== undefined && d.barcode !== null) {
+    updates.push(`barcode = $${idx++}`);
+    values.push(d.barcode);
+  }
+  if (d.min_stock !== undefined && d.min_stock !== null) {
+    updates.push(`min_stock = $${idx++}`);
+    values.push(d.min_stock);
+  }
+
+  if (updates.length === 0) {
+    const { rows } = await query(
+      `SELECT * FROM "${schema}".products WHERE id = $1`,
+      [id]
+    );
+    return rows[0];
+  }
+
+  updates.push(`updated_at = NOW()`);
+  values.push(id);
+
   const { rows } = await query(
-    `UPDATE "${schema}".products SET
-       name          = COALESCE($1, name),
-       selling_price = COALESCE($2, selling_price),
-       tax_rate      = COALESCE($3, tax_rate),
-       is_taxable    = COALESCE($4, is_taxable),
-       stock         = COALESCE($5, stock),
-       updated_at    = NOW()
-     WHERE id = $6 RETURNING *`,
-    [d.name, d.sellingPrice, d.taxRate, d.isTaxable, d.stock, id]
+    `UPDATE "${schema}".products SET ${updates.join(', ')} WHERE id = $${idx} RETURNING *`,
+    values
   );
   return rows[0];
 };
@@ -107,4 +197,5 @@ export const softDelete = async (schema, id) => {
     [id]
   );
   if (!rows.length) throw new Error('Producto no encontrado');
+  return rows[0];
 };
