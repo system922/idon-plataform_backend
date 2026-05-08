@@ -3,7 +3,7 @@ import { query } from '../config/database.js';
 const SELECT = `
   p.id, p.code, p.name, p.description,
   p.category_id, c.name AS category_name,
-  p.selling_price AS price, p.unit_cost,
+  p.selling_price, p.unit_cost,
   p.tax_rate, p.is_taxable, p.is_active,
   p.sku, p.barcode, p.stock, p.min_stock,
   p.created_at, p.updated_at
