@@ -94,15 +94,6 @@ export const remove = async (req, res) => {
   }
 };
 
-export const getFiscalRates = async (req, res) => {
-  try {
-    const rates = await productService.getFiscalRates();
-    res.json(rates);
-  } catch (err) {
-    console.error('Error en getFiscalRates:', err);
-    res.status(500).json({ error: err.message });
-  }
-};
 
 export const getNextCode = async (req, res) => {
   try {
@@ -116,6 +107,7 @@ export const getNextCode = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
 
 export const getFiscalRates = async (req, res) => {
   try {
