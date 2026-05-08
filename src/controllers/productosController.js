@@ -67,7 +67,6 @@ export const update = async (req, res) => {
 
     const { id } = req.params;
     
-    // Verificar que el producto existe
     const existingProduct = await productService.getById(schema, id);
     if (!existingProduct) {
       return res.status(404).json({ error: 'Producto no encontrado' });
@@ -94,7 +93,6 @@ export const remove = async (req, res) => {
   }
 };
 
-
 export const getNextCode = async (req, res) => {
   try {
     const schema = getSchema(req, res);
@@ -107,7 +105,6 @@ export const getNextCode = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-
 
 export const getFiscalRates = async (req, res) => {
   try {

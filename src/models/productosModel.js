@@ -67,7 +67,6 @@ export const findCategoryId = async (schema, categoria) => {
 export const findOrCreateCategory = async (schema, categoryName) => {
   if (!categoryName) return null;
   
-  // Buscar categoría existente
   const findResult = await query(
     `SELECT id FROM "${schema}".categories WHERE LOWER(name) = LOWER($1) LIMIT 1`,
     [categoryName]
@@ -77,7 +76,6 @@ export const findOrCreateCategory = async (schema, categoryName) => {
     return findResult.rows[0].id;
   }
   
-  // Crear nueva categoría
   const insertResult = await query(
     `INSERT INTO "${schema}".categories (name) VALUES ($1) RETURNING id`,
     [categoryName]
@@ -92,11 +90,26 @@ export const getFiscalRates = async () => {
       `SELECT iva_rate, iva_rate_reduced FROM public.fiscal_config WHERE is_active = TRUE LIMIT 1`
     );
     const row = rows[0] ?? {};
+    
+    // ✅ CONVERSIÓN CRÍTICA: Si la tasa es > 1, es porcentaje (15 → 0.15)
+    let ivaRate = Number(row.iva_rate ?? 0.15);
+    let ivaRateReduced = Number(row.iva_rate_reduced ?? 0.05);
+    
+    if (ivaRate > 1) {
+      ivaRate = ivaRate / 100;
+    }
+    if (ivaRateReduced > 1) {
+      ivaRateReduced = ivaRateReduced / 100;
+    }
+    
+    console.log('📊 Tasas fiscales desde BD:', { ivaRate, ivaRateReduced });
+    
     return {
-      iva_rate: Number(row.iva_rate ?? 0.15),
-      iva_rate_reduced: Number(row.iva_rate_reduced ?? 0.05),
+      iva_rate: ivaRate,
+      iva_rate_reduced: ivaRateReduced,
     };
-  } catch {
+  } catch (error) {
+    console.error('Error getFiscalRates:', error);
     return { iva_rate: 0.15, iva_rate_reduced: 0.05 };
   }
 };
