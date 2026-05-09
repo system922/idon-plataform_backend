@@ -11,7 +11,6 @@ router.get('/test-employees', authMiddleware, async (req, res) => {
     const schema = await getSchemaName(req);
     console.log('🔍 Schema para diagnóstico:', schema);
     
-    // Verificar si la tabla existe
     const tableCheck = await query(`
       SELECT EXISTS (
         SELECT FROM information_schema.tables 
@@ -45,7 +44,6 @@ router.get('/test-employees', authMiddleware, async (req, res) => {
 
 /* ================= CREAR TABLAS SI NO EXISTEN ================== */
 async function ensureTablesExist(schema) {
-  // Crear tabla de nóminas
   await query(`
     CREATE TABLE IF NOT EXISTS ${schema}.employee_payrolls (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -60,14 +58,13 @@ async function ensureTablesExist(schema) {
       deductions DECIMAL(12,2) DEFAULT 0,
       gross_salary DECIMAL(12,2) DEFAULT 0,
       net_salary DECIMAL(12,2) DEFAULT 0,
-      status VARCHAR(20) DEFAULT 'pending',
+      status VARCHAR(20) DEFAULT 'generated',
       notes TEXT,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       payment_type VARCHAR(20) DEFAULT 'hourly'
     )
   `);
 
-  // Crear tabla de detalles de nómina
   await query(`
     CREATE TABLE IF NOT EXISTS ${schema}.employee_payroll_details (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -93,10 +90,8 @@ router.post('/generate', authMiddleware, async (req, res) => {
     
     if (!start || !end) return res.status(400).json({ error: 'Fechas requeridas' });
 
-    // Asegurar que las tablas existen
     await ensureTablesExist(schema);
 
-    // Obtener empleados activos
     const employeesRes = await query(`
       SELECT 
         id, 
@@ -115,7 +110,6 @@ router.post('/generate', authMiddleware, async (req, res) => {
 
     const result = [];
 
-    // Calcular días del período
     const startDate = new Date(start);
     const endDate = new Date(end);
     const daysInPeriod = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
@@ -126,10 +120,7 @@ router.post('/generate', authMiddleware, async (req, res) => {
       console.log(`💰 Procesando: ${emp.full_name}, salary=${salary}`);
       
       if (payment_type === 'daily') {
-        // PAGO DIARIO: Paga el sueldo fijo de la BD (por día)
         const total_pay = salary * daysInPeriod;
-        
-        console.log(`  - Pago Diario: $${total_pay} (${daysInPeriod} días x $${salary})`);
         
         result.push({
           employee_id: emp.id,
@@ -145,13 +136,9 @@ router.post('/generate', authMiddleware, async (req, res) => {
           payment_type: 'daily'
         });
       } else {
-        // PAGO POR HORAS: Calcula valor hora y multiplica
-        // Asumiendo jornada de 8 horas diarias
         const hourly_rate = salary / 8;
         const total_hours = 8 * daysInPeriod;
         const total_pay = hourly_rate * total_hours;
-        
-        console.log(`  - Pago por Horas: $${total_pay.toFixed(2)} (${total_hours} horas x $${hourly_rate.toFixed(2)})`);
         
         result.push({
           employee_id: emp.id,
@@ -179,7 +166,6 @@ router.post('/generate', authMiddleware, async (req, res) => {
 });
 
 /* ========================= GUARDAR NÓMINA ======================== */
-/* ========================= GUARDAR NÓMINA ======================== */
 router.post('/', authMiddleware, async (req, res) => {
   let client = null;
   try {
@@ -199,44 +185,28 @@ router.post('/', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'rows debe ser un array no vacío' });
     }
 
-    // Mostrar datos de la primera fila para debug
-    console.log('📋 Primera fila a guardar:', JSON.stringify(rows[0], null, 2));
-
-    // Asegurar que las tablas existen
     await ensureTablesExist(schema);
 
-    // Calcular días del período
     const startDate = new Date(start);
     const endDate = new Date(end);
     const daysInPeriod = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
-    console.log(`📅 Días en período: ${daysInPeriod}`);
 
     let savedCount = 0;
     const errors = [];
 
     for (const r of rows) {
       try {
-        console.log(`  💾 Procesando fila ${savedCount + 1}: ${r.full_name}`, {
-          employee_id: r.employee_id,
-          total_pay: r.total_pay,
-          daily_rate: r.daily_rate,
-          hourly_rate: r.hourly_rate
-        });
-        
-        // Validar que tenemos employee_id
         if (!r.employee_id) {
           console.error(`  ❌ Fila sin employee_id para: ${r.full_name}`);
           errors.push(`Fila sin employee_id: ${r.full_name}`);
           continue;
         }
 
-        // 1. Eliminar duplicados
+        // Eliminar duplicados existentes (incluyendo los pagados para regenerar)
         const deleteResult = await query(`
           DELETE FROM ${schema}.employee_payrolls
           WHERE employee_id = $1 AND period_start = $2 AND period_end = $3 AND payment_type = $4
         `, [r.employee_id, start, end, payment_type]);
-        
-        console.log(`     ✅ Eliminados: ${deleteResult.rowCount} registros duplicados`);
 
         let base_salary_value;
         let total_pay_value;
@@ -248,10 +218,7 @@ router.post('/', authMiddleware, async (req, res) => {
           base_salary_value = Number(r.hourly_rate) || 0;
           total_pay_value = Number(r.total_pay) || 0;
         }
-        
-        console.log(`     Base salary: ${base_salary_value}, Total pay: ${total_pay_value}`);
 
-        // 2. Insertar cabecera
         const insertPayroll = await query(`
           INSERT INTO ${schema}.employee_payrolls (
             employee_id, period_start, period_end, payment_type,
@@ -280,26 +247,20 @@ router.post('/', authMiddleware, async (req, res) => {
           errors.push(`No se pudo obtener ID: ${r.full_name}`);
           continue;
         }
-        
-        console.log(`     ✅ Insertado payroll_id: ${payrollId}`);
 
-        // 3. Insertar detalles
         if (payment_type === 'daily') {
           await query(`
             INSERT INTO ${schema}.employee_payroll_details (payroll_id, concept, type, amount)
             VALUES ($1, $2, 'daily_wage', $3)
           `, [payrollId, `Sueldo fijo diario x ${daysInPeriod} días`, total_pay_value]);
-          console.log(`     ✅ Insertado detalle pago diario`);
         } else {
           await query(`
             INSERT INTO ${schema}.employee_payroll_details (payroll_id, concept, type, amount)
             VALUES ($1, $2, 'hourly_wage', $3)
           `, [payrollId, `Horas trabajadas x ${daysInPeriod} días`, total_pay_value]);
-          console.log(`     ✅ Insertado detalle pago por horas`);
         }
         
         savedCount++;
-        console.log(`  ✅ Guardado exitoso: ${r.full_name} - $${total_pay_value.toFixed(2)}`);
         
       } catch (rowError) {
         console.error(`  ❌ Error guardando fila para ${r.full_name}:`, rowError.message);
@@ -308,10 +269,6 @@ router.post('/', authMiddleware, async (req, res) => {
     }
 
     console.log(`✅ Nómina guardada: ${savedCount} de ${rows.length} empleados`);
-    
-    if (errors.length > 0) {
-      console.log('⚠️ Errores encontrados:', errors);
-    }
     
     res.json({ 
       success: true, 
@@ -327,24 +284,23 @@ router.post('/', authMiddleware, async (req, res) => {
   }
 });
 
-/* =============== CONSULTAR NÓMINA GUARDADA ================ */
+/* =============== CONSULTAR NÓMINA GUARDADA (SOLO NO PAGADAS) ================ */
 router.get('/saved', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     const { start, end, payment_type = 'hourly' } = req.query;
     
-    console.log('📋 Consultando nómina guardada:', { start, end, payment_type });
+    console.log('📋 Consultando nómina guardada (no pagadas):', { start, end, payment_type });
     
     if (!start || !end) return res.status(400).json({ error: 'Fechas requeridas' });
 
-    // Calcular días en el período
     const startDate = new Date(start);
     const endDate = new Date(end);
     const daysInPeriod = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
-    console.log(`📅 Días en período: ${daysInPeriod}`);
 
     await ensureTablesExist(schema);
 
+    // FILTRO: SOLO status != 'paid'
     const payrollRes = await query(`
       SELECT 
         p.id as payroll_id, 
@@ -354,10 +310,14 @@ router.get('/saved', authMiddleware, async (req, res) => {
         p.extra_hours, 
         p.base_salary,
         p.gross_salary as total_pay,
-        p.payment_type
+        p.payment_type,
+        p.status
       FROM ${schema}.employee_payrolls p
       JOIN ${schema}.employees e ON e.id = p.employee_id
-      WHERE p.period_start = $1 AND p.period_end = $2 AND p.payment_type = $3
+      WHERE p.period_start = $1 
+        AND p.period_end = $2 
+        AND p.payment_type = $3
+        AND p.status != 'paid'
       ORDER BY e.full_name
     `, [start, end, payment_type]);
     
@@ -372,10 +332,11 @@ router.get('/saved', authMiddleware, async (req, res) => {
       hourly_rate: row.payment_type === 'hourly' ? Number(row.base_salary) : 0,
       daily_rate: row.payment_type === 'daily' ? Number(row.base_salary) : 0,
       total_pay: Number(row.total_pay) || 0,
-      payment_type: row.payment_type
+      payment_type: row.payment_type,
+      status: row.status
     }));
     
-    console.log(`📊 Nóminas encontradas: ${transformed.length}`);
+    console.log(`📊 Nóminas no pagadas encontradas: ${transformed.length}`);
     res.json(transformed);
 
   } catch (err) {
@@ -425,7 +386,6 @@ router.post('/diagnostic', authMiddleware, async (req, res) => {
     if (rows && rows.length > 0) {
       console.log('Primera fila:', JSON.stringify(rows[0], null, 2));
       
-      // Verificar si el empleado existe en la BD
       const employeeCheck = await query(`
         SELECT id, full_name, status FROM ${schema}.employees WHERE id = $1
       `, [rows[0].employee_id]);
@@ -440,15 +400,15 @@ router.post('/diagnostic', authMiddleware, async (req, res) => {
   }
 });
 
-/* =============== OBTENER TODAS LAS NÓMINAS GUARDADAS (AGRUPADAS) ================ */
+/* =============== OBTENER TODAS LAS NÓMINAS GUARDADAS AGRUPADAS (SOLO NO PAGADAS) ================ */
 router.get('/all-saved', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    console.log('📋 Consultando todas las nóminas guardadas en schema:', schema);
+    console.log('📋 Consultando todas las nóminas guardadas no pagadas en schema:', schema);
     
     await ensureTablesExist(schema);
     
-    // Obtener todas las nóminas con información de empleados
+    // FILTRO: SOLO status != 'paid'
     const payrollsRes = await query(`
       SELECT 
         p.id as payroll_id,
@@ -466,12 +426,12 @@ router.get('/all-saved', authMiddleware, async (req, res) => {
         e.salary
       FROM ${schema}.employee_payrolls p
       JOIN ${schema}.employees e ON e.id = p.employee_id
+      WHERE p.status != 'paid'
       ORDER BY p.period_start DESC, p.created_at DESC
     `);
     
-    console.log(`📊 Nóminas encontradas: ${payrollsRes.rows.length}`);
+    console.log(`📊 Nóminas no pagadas encontradas: ${payrollsRes.rows.length}`);
     
-    // Agrupar por fecha de inicio y fin
     const groupedPayrolls = new Map();
     
     payrollsRes.rows.forEach(payroll => {
@@ -501,12 +461,13 @@ router.get('/all-saved', authMiddleware, async (req, res) => {
         base_salary: Number(payroll.base_salary) || 0,
         payment_type: payroll.payment_type,
         daily_rate: payroll.payment_type === 'daily' ? (Number(payroll.base_salary) || 0) : 0,
-        hourly_rate: payroll.payment_type === 'hourly' ? (Number(payroll.base_salary) || 0) : 0
+        hourly_rate: payroll.payment_type === 'hourly' ? (Number(payroll.base_salary) || 0) : 0,
+        status: payroll.status
       });
     });
     
     const result = Array.from(groupedPayrolls.values());
-    console.log(`📊 Grupos de nóminas: ${result.length}`);
+    console.log(`📊 Grupos de nóminas no pagadas: ${result.length}`);
     
     res.json(result);
     
@@ -516,13 +477,13 @@ router.get('/all-saved', authMiddleware, async (req, res) => {
   }
 });
 
-/* =============== OBTENER DETALLE DE NÓMINA POR FECHA ================ */
+/* =============== OBTENER DETALLE DE NÓMINA POR FECHA (SOLO NO PAGADAS) ================ */
 router.get('/saved-by-date', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     const { start_date, end_date } = req.query;
     
-    console.log('📋 Consultando detalle de nómina por fecha:', { start_date, end_date, schema });
+    console.log('📋 Consultando detalle de nómina por fecha (solo no pagadas):', { start_date, end_date, schema });
     
     if (!start_date || !end_date) {
       return res.status(400).json({ error: 'start_date y end_date son requeridos' });
@@ -530,12 +491,11 @@ router.get('/saved-by-date', authMiddleware, async (req, res) => {
     
     await ensureTablesExist(schema);
     
-    // Calcular días en el período para mostrar correctamente
     const startDate = new Date(start_date);
     const endDate = new Date(end_date);
     const daysInPeriod = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
-    console.log(`📅 Días en período: ${daysInPeriod}`);
     
+    // FILTRO: SOLO status != 'paid'
     const payrollsRes = await query(`
       SELECT 
         p.id as payroll_id,
@@ -553,13 +513,14 @@ router.get('/saved-by-date', authMiddleware, async (req, res) => {
         e.salary
       FROM ${schema}.employee_payrolls p
       JOIN ${schema}.employees e ON e.id = p.employee_id
-      WHERE p.period_start = $1 AND p.period_end = $2
+      WHERE p.period_start = $1 
+        AND p.period_end = $2
+        AND p.status != 'paid'
       ORDER BY e.full_name
     `, [start_date, end_date]);
     
-    console.log(`📊 Detalles encontrados: ${payrollsRes.rows.length}`);
+    console.log(`📊 Detalles no pagados encontrados: ${payrollsRes.rows.length}`);
     
-    // Transformar los datos para el frontend
     const transformed = payrollsRes.rows.map(row => ({
       payroll_id: row.payroll_id,
       employee_id: row.employee_id,
@@ -571,7 +532,8 @@ router.get('/saved-by-date', authMiddleware, async (req, res) => {
       hourly_rate: row.payment_type === 'hourly' ? (Number(row.base_salary) || 0) : 0,
       daily_rate: row.payment_type === 'daily' ? (Number(row.base_salary) || 0) : Number(row.salary) || 0,
       total_pay: Number(row.total_pay) || 0,
-      payment_type: row.payment_type
+      payment_type: row.payment_type,
+      status: row.status
     }));
     
     res.json(transformed);
@@ -582,7 +544,7 @@ router.get('/saved-by-date', authMiddleware, async (req, res) => {
   }
 });
 
-/* =============== ELIMINAR NÓMINA (opcional) ================ */
+/* =============== ELIMINAR NÓMINA ================ */
 router.delete('/:payroll_id', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -596,7 +558,6 @@ router.delete('/:payroll_id', authMiddleware, async (req, res) => {
     
     await ensureTablesExist(schema);
     
-    // Los detalles se eliminan automáticamente por CASCADE
     const result = await query(`
       DELETE FROM ${schema}.employee_payrolls
       WHERE id = $1
@@ -616,7 +577,7 @@ router.delete('/:payroll_id', authMiddleware, async (req, res) => {
   }
 });
 
-/* =============== REGISTRAR PAGO DE NÓMINA (crea gasto automáticamente) ================ */
+/* =============== REGISTRAR PAGO DE NÓMINA ================ */
 router.post('/pay', authMiddleware, async (req, res) => {
   let client = null;
   try {
@@ -629,10 +590,8 @@ router.post('/pay', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'payroll_id y amount válido son requeridos' });
     }
     
-    // Obtener o crear categoría de gasto para nómina
     let payrollCategoryId = null;
     
-    // Buscar categoría existente
     const catResult = await query(`
       SELECT id FROM "${schema}".expense_categories 
       WHERE LOWER(name) = 'nómina' OR LOWER(name) = 'nomina'
@@ -642,7 +601,6 @@ router.post('/pay', authMiddleware, async (req, res) => {
     if (catResult.rows.length > 0) {
       payrollCategoryId = catResult.rows[0].id;
     } else {
-      // Crear categoría de nómina
       const insertCat = await query(`
         INSERT INTO "${schema}".expense_categories (name, description, color)
         VALUES ('Nómina', 'Pagos de nómina a empleados', '#10b981')
@@ -651,7 +609,6 @@ router.post('/pay', authMiddleware, async (req, res) => {
       payrollCategoryId = insertCat.rows[0].id;
     }
     
-    // Crear el gasto
     const expenseResult = await query(`
       INSERT INTO "${schema}".expenses (amount, description, reference, category_id, created_by, date)
       VALUES ($1, $2, $3, $4, $5, CURRENT_DATE)
@@ -664,18 +621,29 @@ router.post('/pay', authMiddleware, async (req, res) => {
       user_id || null
     ]);
     
-    // Actualizar estado de la nómina a 'paid'
     await query(`
       UPDATE "${schema}".employee_payrolls 
       SET status = 'paid', payment_date = CURRENT_DATE
       WHERE id = $1
     `, [payroll_id]);
-    
-    console.log(`✅ Pago registrado: ${expenseResult.rows[0].id}`);
+
+    await query(`
+      INSERT INTO "${schema}".audit_log (
+        user_id, action, table_name, description, new_values, created_at
+      ) VALUES (
+        $1, $2, $3, $4, $5, NOW()
+      )
+    `, [
+      user_id || null,
+      'payroll_payment',
+      'expenses',
+      `Pago de nómina a ${employee_name} por $${amount} - Método: ${payment_method === 'cash' ? 'Efectivo' : 'Transferencia'}`,
+      JSON.stringify({ amount, employee_id, employee_name, payment_method, payroll_id })
+    ]);
     
     res.json({ 
       success: true, 
-      message: 'Pago registrado correctamente',
+      message: `Pago de nómina a ${employee_name} por $${amount} registrado correctamente`,
       expense_id: expenseResult.rows[0].id
     });
     
