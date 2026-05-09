@@ -616,4 +616,73 @@ router.delete('/:payroll_id', authMiddleware, async (req, res) => {
   }
 });
 
+/* =============== REGISTRAR PAGO DE NÓMINA (crea gasto automáticamente) ================ */
+router.post('/pay', authMiddleware, async (req, res) => {
+  let client = null;
+  try {
+    const schema = await getSchemaName(req);
+    const { payroll_id, employee_id, employee_name, amount, payment_method, user_id } = req.body;
+    
+    console.log('💰 Registrando pago de nómina:', { payroll_id, employee_name, amount, payment_method });
+    
+    if (!payroll_id || !amount || amount <= 0) {
+      return res.status(400).json({ error: 'payroll_id y amount válido son requeridos' });
+    }
+    
+    // Obtener o crear categoría de gasto para nómina
+    let payrollCategoryId = null;
+    
+    // Buscar categoría existente
+    const catResult = await query(`
+      SELECT id FROM "${schema}".expense_categories 
+      WHERE LOWER(name) = 'nómina' OR LOWER(name) = 'nomina'
+      LIMIT 1
+    `);
+    
+    if (catResult.rows.length > 0) {
+      payrollCategoryId = catResult.rows[0].id;
+    } else {
+      // Crear categoría de nómina
+      const insertCat = await query(`
+        INSERT INTO "${schema}".expense_categories (name, description, color)
+        VALUES ('Nómina', 'Pagos de nómina a empleados', '#10b981')
+        RETURNING id
+      `);
+      payrollCategoryId = insertCat.rows[0].id;
+    }
+    
+    // Crear el gasto
+    const expenseResult = await query(`
+      INSERT INTO "${schema}".expenses (amount, description, reference, category_id, created_by, date)
+      VALUES ($1, $2, $3, $4, $5, CURRENT_DATE)
+      RETURNING id
+    `, [
+      amount,
+      `Pago de nómina a ${employee_name} - ${payment_method === 'cash' ? 'Efectivo' : 'Transferencia'}`,
+      `Payroll ID: ${payroll_id}`,
+      payrollCategoryId,
+      user_id || null
+    ]);
+    
+    // Actualizar estado de la nómina a 'paid'
+    await query(`
+      UPDATE "${schema}".employee_payrolls 
+      SET status = 'paid', payment_date = CURRENT_DATE
+      WHERE id = $1
+    `, [payroll_id]);
+    
+    console.log(`✅ Pago registrado: ${expenseResult.rows[0].id}`);
+    
+    res.json({ 
+      success: true, 
+      message: 'Pago registrado correctamente',
+      expense_id: expenseResult.rows[0].id
+    });
+    
+  } catch (err) {
+    console.error('Error registrando pago de nómina:', err);
+    res.status(500).json({ error: 'Error registrando pago: ' + err.message });
+  }
+});
+
 export default router;
