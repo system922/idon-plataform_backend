@@ -628,7 +628,7 @@ router.post('/pay', authMiddleware, async (req, res) => {
     `, [payroll_id]);
 
     await query(`
-      INSERT INTO "${schema}".audit_log (
+      INSERT INTO "${schema}".audit_logs (
         user_id, action, table_name, description, new_values, created_at
       ) VALUES (
         $1, $2, $3, $4, $5, NOW()
