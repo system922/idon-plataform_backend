@@ -440,4 +440,180 @@ router.post('/diagnostic', authMiddleware, async (req, res) => {
   }
 });
 
+/* =============== OBTENER TODAS LAS NÓMINAS GUARDADAS (AGRUPADAS) ================ */
+router.get('/all-saved', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    console.log('📋 Consultando todas las nóminas guardadas en schema:', schema);
+    
+    await ensureTablesExist(schema);
+    
+    // Obtener todas las nóminas con información de empleados
+    const payrollsRes = await query(`
+      SELECT 
+        p.id as payroll_id,
+        p.employee_id,
+        p.period_start as start_date,
+        p.period_end as end_date,
+        p.payment_type,
+        p.base_salary,
+        p.total_hours,
+        p.extra_hours,
+        p.gross_salary as total_pay,
+        p.status,
+        p.created_at,
+        e.full_name,
+        e.salary
+      FROM ${schema}.employee_payrolls p
+      JOIN ${schema}.employees e ON e.id = p.employee_id
+      ORDER BY p.period_start DESC, p.created_at DESC
+    `);
+    
+    console.log(`📊 Nóminas encontradas: ${payrollsRes.rows.length}`);
+    
+    // Agrupar por fecha de inicio y fin
+    const groupedPayrolls = new Map();
+    
+    payrollsRes.rows.forEach(payroll => {
+      const key = `${payroll.start_date}|${payroll.end_date}`;
+      
+      if (!groupedPayrolls.has(key)) {
+        groupedPayrolls.set(key, {
+          start_date: payroll.start_date,
+          end_date: payroll.end_date,
+          payment_type: payroll.payment_type,
+          total_amount: 0,
+          total_employees: 0,
+          employees: []
+        });
+      }
+      
+      const group = groupedPayrolls.get(key);
+      group.total_amount += Number(payroll.total_pay) || 0;
+      group.total_employees += 1;
+      group.employees.push({
+        payroll_id: payroll.payroll_id,
+        employee_id: payroll.employee_id,
+        full_name: payroll.full_name,
+        total_hours: Number(payroll.total_hours) || 0,
+        extra_hours: Number(payroll.extra_hours) || 0,
+        total_pay: Number(payroll.total_pay) || 0,
+        base_salary: Number(payroll.base_salary) || 0,
+        payment_type: payroll.payment_type,
+        daily_rate: payroll.payment_type === 'daily' ? (Number(payroll.base_salary) || 0) : 0,
+        hourly_rate: payroll.payment_type === 'hourly' ? (Number(payroll.base_salary) || 0) : 0
+      });
+    });
+    
+    const result = Array.from(groupedPayrolls.values());
+    console.log(`📊 Grupos de nóminas: ${result.length}`);
+    
+    res.json(result);
+    
+  } catch (err) {
+    console.error('Error obteniendo todas las nóminas:', err);
+    res.status(500).json({ error: 'Error obteniendo nóminas: ' + err.message });
+  }
+});
+
+/* =============== OBTENER DETALLE DE NÓMINA POR FECHA ================ */
+router.get('/saved-by-date', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    const { start_date, end_date } = req.query;
+    
+    console.log('📋 Consultando detalle de nómina por fecha:', { start_date, end_date, schema });
+    
+    if (!start_date || !end_date) {
+      return res.status(400).json({ error: 'start_date y end_date son requeridos' });
+    }
+    
+    await ensureTablesExist(schema);
+    
+    // Calcular días en el período para mostrar correctamente
+    const startDate = new Date(start_date);
+    const endDate = new Date(end_date);
+    const daysInPeriod = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
+    console.log(`📅 Días en período: ${daysInPeriod}`);
+    
+    const payrollsRes = await query(`
+      SELECT 
+        p.id as payroll_id,
+        p.employee_id,
+        p.period_start as start_date,
+        p.period_end as end_date,
+        p.payment_type,
+        p.base_salary,
+        p.total_hours,
+        p.extra_hours,
+        p.gross_salary as total_pay,
+        p.status,
+        p.created_at,
+        e.full_name,
+        e.salary
+      FROM ${schema}.employee_payrolls p
+      JOIN ${schema}.employees e ON e.id = p.employee_id
+      WHERE p.period_start = $1 AND p.period_end = $2
+      ORDER BY e.full_name
+    `, [start_date, end_date]);
+    
+    console.log(`📊 Detalles encontrados: ${payrollsRes.rows.length}`);
+    
+    // Transformar los datos para el frontend
+    const transformed = payrollsRes.rows.map(row => ({
+      payroll_id: row.payroll_id,
+      employee_id: row.employee_id,
+      full_name: row.full_name,
+      total_hours: Number(row.total_hours) || 0,
+      extra_hours: Number(row.extra_hours) || 0,
+      days_worked: daysInPeriod,
+      total_days: daysInPeriod,
+      hourly_rate: row.payment_type === 'hourly' ? (Number(row.base_salary) || 0) : 0,
+      daily_rate: row.payment_type === 'daily' ? (Number(row.base_salary) || 0) : Number(row.salary) || 0,
+      total_pay: Number(row.total_pay) || 0,
+      payment_type: row.payment_type
+    }));
+    
+    res.json(transformed);
+    
+  } catch (err) {
+    console.error('Error consultando detalle por fecha:', err);
+    res.status(500).json({ error: 'Error consultando detalle: ' + err.message });
+  }
+});
+
+/* =============== ELIMINAR NÓMINA (opcional) ================ */
+router.delete('/:payroll_id', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    const { payroll_id } = req.params;
+    
+    console.log('🗑️ Eliminando nómina:', payroll_id);
+    
+    if (!payroll_id) {
+      return res.status(400).json({ error: 'payroll_id requerido' });
+    }
+    
+    await ensureTablesExist(schema);
+    
+    // Los detalles se eliminan automáticamente por CASCADE
+    const result = await query(`
+      DELETE FROM ${schema}.employee_payrolls
+      WHERE id = $1
+      RETURNING id
+    `, [payroll_id]);
+    
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Nómina no encontrada' });
+    }
+    
+    console.log(`✅ Nómina eliminada: ${payroll_id}`);
+    res.json({ success: true, message: 'Nómina eliminada correctamente' });
+    
+  } catch (err) {
+    console.error('Error eliminando nómina:', err);
+    res.status(500).json({ error: 'Error eliminando nómina: ' + err.message });
+  }
+});
+
 export default router;
