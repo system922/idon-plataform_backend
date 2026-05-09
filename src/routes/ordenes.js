@@ -32,9 +32,14 @@ router.post('/', authMiddleware, async (req, res) => {
 
     await client.query('BEGIN');
 
-    // 🔥 OBTENER FECHA ACTUAL (TIMEZONE Ecuador)
-    const tzResult = await client.query(`SELECT NOW() AT TIME ZONE 'America/Guayaquil' as current_date`);
-    const today = tzResult.rows[0].current_date.toISOString().split('T')[0];
+    // 🔥 OBTENER FECHA ACTUAL DE ECUADOR (CORREGIDO)
+    // Usamos CURRENT_DATE con timezone para obtener la fecha correcta
+    const tzResult = await client.query(`
+      SELECT CURRENT_DATE AT TIME ZONE 'America/Guayaquil' as ecuador_date
+    `);
+    const today = tzResult.rows[0].ecuador_date;
+    
+    console.log('📅 Fecha Ecuador para contador:', today);
 
     // 🔥 TABLA PARA CONTROL DE CONTADOR DIARIO (crear si no existe)
     await client.query(`
@@ -47,7 +52,7 @@ router.post('/', authMiddleware, async (req, res) => {
       )
     `);
 
-    // 🔥 OBTENER O INSERTAR CONTADOR DEL DÍA - ESTA ES LA CLAVE
+    // 🔥 OBTENER O INSERTAR CONTADOR DEL DÍA
     const counterResult = await client.query(`
       INSERT INTO "${schema}".daily_order_counter (order_date, last_number)
       VALUES ($1, 1)
@@ -58,6 +63,8 @@ router.post('/', authMiddleware, async (req, res) => {
 
     const dailyNumber = counterResult.rows[0].last_number;
     const orderNumber = String(dailyNumber).padStart(4, '0');
+    
+    console.log(`📊 Contador para ${today}: ${dailyNumber} → Orden #${orderNumber}`);
 
     let customerName = null;
     if (cliente_id) {
@@ -173,6 +180,7 @@ router.post('/', authMiddleware, async (req, res) => {
     client.release();
   }
 });
+
 /**
  * GET /api/ordenes
  * Lista órdenes con sus items (todo desde products mediante JOIN)
@@ -230,6 +238,7 @@ router.get('/', authMiddleware, async (req, res) => {
 
     res.json(result.rows);
   } catch (err) {
+    console.error('Error en GET /ordenes:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -278,6 +287,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
 
     res.json(result.rows[0]);
   } catch (err) {
+    console.error('Error en GET /ordenes/:id:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -390,6 +400,7 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
     res.json(updatedOrder);
   } catch (err) {
     await client.query('ROLLBACK');
+    console.error('Error en PATCH /ordenes/:id/status:', err);
     res.status(500).json({ error: err.message });
   } finally {
     client.release();
@@ -491,7 +502,7 @@ router.post('/:id/pay-items', authMiddleware, async (req, res) => {
     const remainingSubtotal = parseFloat(remainingRes.rows[0].subtotal);
     const remainingTax = parseFloat(remainingRes.rows[0].tax);
     const remainingTotal = parseFloat(remainingRes.rows[0].total);
-    const newStatus = remainingTotal === 0 ? 'paid' : 'pending'; // ← mantener 'pending' si no está pagado
+    const newStatus = remainingTotal === 0 ? 'paid' : 'pending';
 
     // Actualizar la orden
     if (newStatus === 'paid') {
@@ -506,7 +517,6 @@ router.post('/:id/pay-items', authMiddleware, async (req, res) => {
         [remainingSubtotal, remainingTax, remainingTotal, newStatus, id]
       );
     } else {
-      // Solo actualizar totales, sin cambiar el status
       await client.query(
         `UPDATE "${schema}".pos_orders
          SET subtotal = $1,
@@ -537,7 +547,6 @@ router.post('/:id/pay-items', authMiddleware, async (req, res) => {
   }
 });
 
-
 /**
  * DELETE /api/ordenes/:id
  */
@@ -560,6 +569,7 @@ router.delete('/:id', authMiddleware, async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     await client.query('ROLLBACK');
+    console.error('Error en DELETE /ordenes/:id:', err);
     res.status(500).json({ error: err.message });
   } finally {
     client.release();
@@ -617,6 +627,7 @@ router.patch('/:id', authMiddleware, async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     await client.query('ROLLBACK');
+    console.error('Error en PATCH /ordenes/:id:', err);
     res.status(500).json({ error: err.message });
   } finally {
     client.release();
