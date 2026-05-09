@@ -5,6 +5,44 @@ import { authMiddleware } from '../middleware/auth.js';
 
 const router = express.Router();
 
+/* ================= DIAGNÓSTICO - VER EMPLEADOS ================== */
+router.get('/test-employees', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    console.log('🔍 Schema para diagnóstico:', schema);
+    
+    // Verificar si la tabla existe
+    const tableCheck = await query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_schema = $1 AND table_name = 'employees'
+      ) as exists
+    `, [schema]);
+    
+    console.log('📋 Tabla employees existe:', tableCheck.rows[0].exists);
+    
+    if (!tableCheck.rows[0].exists) {
+      return res.json([]);
+    }
+    
+    const employees = await query(`
+      SELECT id, full_name, status, salary 
+      FROM ${schema}.employees
+      WHERE status = 'active'
+    `);
+    
+    console.log(`📊 Empleados activos encontrados: ${employees.rows.length}`);
+    employees.rows.forEach(emp => {
+      console.log(`  - ${emp.full_name}: status=${emp.status}, salary=${emp.salary}`);
+    });
+    
+    res.json(employees.rows);
+  } catch (err) {
+    console.error('Error diagnóstico:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 /* ================= CREAR TABLAS SI NO EXISTEN ================== */
 async function ensureTablesExist(schema) {
   // Crear tabla de nóminas
@@ -44,11 +82,7 @@ async function ensureTablesExist(schema) {
     )
   `);
 
-  // Crear índice para búsquedas rápidas
-  await query(`
-    CREATE INDEX IF NOT EXISTS idx_employee_payrolls_period 
-    ON ${schema}.employee_payrolls(period_start, period_end, payment_type)
-  `);
+  console.log(`✅ Tablas aseguradas en schema: ${schema}`);
 }
 
 /* ================= GENERAR NÓMINA (previsualización) ================== */
@@ -69,16 +103,15 @@ router.post('/generate', authMiddleware, async (req, res) => {
       SELECT 
         id, 
         full_name, 
-        salary
+        COALESCE(salary, 0) as salary
       FROM ${schema}.employees
       WHERE status = 'active'
     `);
     
     console.log(`📊 Empleados encontrados: ${employeesRes.rows.length}`);
 
-    const employees = employeesRes.rows;
-    
-    if (employees.length === 0) {
+    if (employeesRes.rows.length === 0) {
+      console.log('⚠️ No hay empleados activos');
       return res.json([]);
     }
 
@@ -88,64 +121,24 @@ router.post('/generate', authMiddleware, async (req, res) => {
     const startDate = new Date(start);
     const endDate = new Date(end);
     const daysInPeriod = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
+    console.log(`📅 Días en período: ${daysInPeriod}`);
     
-    for (const emp of employees) {
-      // OBTENER ASISTENCIAS
-      const attendanceRes = await query(`
-        SELECT type, event_time::date as day, event_time
-        FROM ${schema}.attendance_records
-        WHERE employee_id = $1
-          AND event_time::date BETWEEN $2 AND $3
-        ORDER BY event_time ASC
-      `, [emp.id, start, end]);
-
-      const records = attendanceRes.rows;
-      const days = {};
-      
-      for (const r of records) {
-        if (!days[r.day]) {
-          days[r.day] = { check_in: null, check_out: null, lunch_in: null, lunch_out: null };
-        }
-        days[r.day][r.type] = r.event_time;
-      }
-
-      let total_hours = 0, extra_hours = 0;
-      let daysWorked = 0;
-      
-      for (const d of Object.values(days)) {
-        if (!d.check_in || !d.check_out) continue;
-        daysWorked++;
-        
-        const checkIn = new Date(d.check_in);
-        const checkOut = new Date(d.check_out);
-        let worked = (checkOut - checkIn) / 1000 / 60 / 60;
-        
-        if (d.lunch_in && d.lunch_out) {
-          const lunchIn = new Date(d.lunch_in);
-          const lunchOut = new Date(d.lunch_out);
-          worked -= (lunchOut - lunchIn) / 1000 / 60 / 60;
-        }
-        
-        if (worked > 8) { 
-          extra_hours += (worked - 8); 
-          total_hours += 8; 
-        } else { 
-          total_hours += worked; 
-        }
-      }
-
+    for (const emp of employeesRes.rows) {
       const salary = Number(emp.salary) || 0;
+      console.log(`💰 Procesando: ${emp.full_name}, salary=${salary}`);
       
       if (payment_type === 'daily') {
-        // PAGO DIARIO: Paga el sueldo fijo de la BD
-        const total_pay = salary;
+        // PAGO DIARIO: Paga el sueldo fijo de la BD (por día)
+        const total_pay = salary * daysInPeriod;
+        
+        console.log(`  - Pago Diario: $${total_pay} (${daysInPeriod} días x $${salary})`);
         
         result.push({
           employee_id: emp.id,
           full_name: emp.full_name,
-          total_hours: total_hours,
-          extra_hours: extra_hours,
-          days_worked: daysWorked,
+          total_hours: 0,
+          extra_hours: 0,
+          days_worked: daysInPeriod,
           hourly_rate: 0,
           daily_rate: salary,
           total_days: daysInPeriod,
@@ -154,22 +147,24 @@ router.post('/generate', authMiddleware, async (req, res) => {
           payment_type: 'daily'
         });
       } else {
-        // PAGO POR HORAS: Calcula pago basado en horas trabajadas
-        const hourly_rate = salary / 240;
-        const normal_pay = total_hours * hourly_rate;
-        const extra_pay = extra_hours * hourly_rate * 1.5;
-        const total_pay = normal_pay + extra_pay;
+        // PAGO POR HORAS: Calcula valor hora y multiplica
+        // Asumiendo jornada de 8 horas diarias
+        const hourly_rate = salary / 8;
+        const total_hours = 8 * daysInPeriod;
+        const total_pay = hourly_rate * total_hours;
+        
+        console.log(`  - Pago por Horas: $${total_pay.toFixed(2)} (${total_hours} horas x $${hourly_rate.toFixed(2)})`);
         
         result.push({
           employee_id: emp.id,
           full_name: emp.full_name,
           total_hours: total_hours,
-          extra_hours: extra_hours,
-          days_worked: daysWorked,
+          extra_hours: 0,
+          days_worked: daysInPeriod,
           hourly_rate: hourly_rate,
           daily_rate: salary,
           total_days: daysInPeriod,
-          extra_pay: extra_pay,
+          extra_pay: 0,
           total_pay: total_pay,
           payment_type: 'hourly'
         });
@@ -191,7 +186,13 @@ router.post('/', authMiddleware, async (req, res) => {
     const schema = await getSchemaName(req);
     const { rows, start, end, type, payment_type = 'hourly' } = req.body;
     
-    console.log('💾 Guardando nómina:', { rowsCount: rows?.length, start, end, type, payment_type });
+    console.log('💾 Guardando nómina:', { 
+      rowsCount: rows?.length, 
+      start, 
+      end, 
+      period_type: type, 
+      payment_type 
+    });
     
     if (!Array.isArray(rows) || rows.length === 0) {
       return res.status(400).json({ error: 'rows debe ser un array no vacío' });
@@ -209,6 +210,8 @@ router.post('/', authMiddleware, async (req, res) => {
 
     for (const r of rows) {
       try {
+        console.log(`  💾 Procesando: ${r.full_name}`);
+        
         // 1. Eliminar duplicados
         await query(`
           DELETE FROM ${schema}.employee_payrolls
@@ -220,7 +223,7 @@ router.post('/', authMiddleware, async (req, res) => {
         
         if (payment_type === 'daily') {
           base_salary_value = r.daily_rate || 0;
-          total_pay_value = r.total_pay || base_salary_value;
+          total_pay_value = r.total_pay || (base_salary_value * daysInPeriod);
         } else {
           base_salary_value = r.hourly_rate || 0;
           total_pay_value = r.total_pay || 0;
@@ -247,7 +250,7 @@ router.post('/', authMiddleware, async (req, res) => {
           base_salary_value,
           r.total_hours || 0,
           r.extra_hours || 0,
-          r.days_worked || 0,
+          r.days_worked || daysInPeriod,
           daysInPeriod,
           total_pay_value
         ]);
@@ -255,7 +258,7 @@ router.post('/', authMiddleware, async (req, res) => {
         const payrollId = insertPayroll.rows[0]?.id;
         
         if (!payrollId) {
-          console.error('❌ No se pudo obtener ID para:', r.full_name);
+          console.error(`  ❌ No se pudo obtener ID para: ${r.full_name}`);
           continue;
         }
 
@@ -263,38 +266,20 @@ router.post('/', authMiddleware, async (req, res) => {
         if (payment_type === 'daily') {
           await query(`
             INSERT INTO ${schema}.employee_payroll_details (payroll_id, concept, type, amount)
-            VALUES ($1, 'Sueldo fijo diario', 'daily_wage', $2)
-          `, [payrollId, total_pay_value]);
-          
-          if (r.total_hours > 0) {
-            await query(`
-              INSERT INTO ${schema}.employee_payroll_details (payroll_id, concept, type, amount, notes)
-              VALUES ($1, 'Horas trabajadas (referencia)', 'reference', $2, $3)
-            `, [payrollId, 0, `Total horas: ${r.total_hours.toFixed(2)}, Días: ${r.days_worked}`]);
-          }
+            VALUES ($1, 'Sueldo fijo diario x ' || $2 || ' días', 'daily_wage', $3)
+          `, [payrollId, daysInPeriod, total_pay_value]);
         } else {
-          const normalPay = (r.total_pay || 0) - (r.extra_pay || 0);
-          if (normalPay > 0) {
-            await query(`
-              INSERT INTO ${schema}.employee_payroll_details (payroll_id, concept, type, amount)
-              VALUES ($1, 'Horas normales', 'regular', $2)
-            `, [payrollId, normalPay]);
-          }
-          
-          if (r.extra_pay > 0) {
-            await query(`
-              INSERT INTO ${schema}.employee_payroll_details (payroll_id, concept, type, amount)
-              VALUES ($1, 'Horas extras', 'overtime', $2)
-            `, [payrollId, r.extra_pay]);
-          }
+          await query(`
+            INSERT INTO ${schema}.employee_payroll_details (payroll_id, concept, type, amount)
+            VALUES ($1, 'Horas trabajadas x ' || $2 || ' días', 'hourly_wage', $3)
+          `, [payrollId, daysInPeriod, total_pay_value]);
         }
         
         savedCount++;
-        console.log(`✅ Guardado: ${r.full_name} - $${total_pay_value.toFixed(2)}`);
+        console.log(`  ✅ Guardado: ${r.full_name} - $${total_pay_value.toFixed(2)}`);
         
       } catch (rowError) {
-        console.error(`❌ Error guardando fila para ${r.full_name}:`, rowError.message);
-        // Continuar con la siguiente fila
+        console.error(`  ❌ Error guardando fila para ${r.full_name}:`, rowError.message);
       }
     }
 
@@ -317,7 +302,6 @@ router.get('/saved', authMiddleware, async (req, res) => {
     
     if (!start || !end) return res.status(400).json({ error: 'Fechas requeridas' });
 
-    // Asegurar que las tablas existen
     await ensureTablesExist(schema);
 
     const payrollRes = await query(`
@@ -366,6 +350,8 @@ router.get('/details/:payroll_id', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     const { payroll_id } = req.params;
+    
+    console.log('📋 Consultando detalle de nómina:', payroll_id);
     
     if (!payroll_id) return res.status(400).json({ error: 'payroll_id requerido' });
 
