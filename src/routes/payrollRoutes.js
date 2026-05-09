@@ -84,13 +84,21 @@ async function ensureTablesExist(schema) {
 router.post('/generate', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    const { start, end, payment_type = 'hourly' } = req.body;
+    const { start, end, payment_type = 'hourly', employee_ids } = req.body;
     
-    console.log('📝 Generando nómina:', { start, end, payment_type, schema });
+    console.log('📝 Generando nómina:', { start, end, payment_type, employee_ids, schema });
     
     if (!start || !end) return res.status(400).json({ error: 'Fechas requeridas' });
 
     await ensureTablesExist(schema);
+
+    let params = [];
+    let whereClause = "WHERE status = 'active'";
+    
+    if (employee_ids && Array.isArray(employee_ids) && employee_ids.length > 0) {
+      whereClause += " AND id = ANY($1)";
+      params = [employee_ids];
+    }
 
     const employeesRes = await query(`
       SELECT 
@@ -98,8 +106,8 @@ router.post('/generate', authMiddleware, async (req, res) => {
         full_name, 
         COALESCE(salary, 0) as salary
       FROM ${schema}.employees
-      WHERE status = 'active'
-    `);
+      ${whereClause}
+    `, params);
     
     console.log(`📊 Empleados encontrados: ${employeesRes.rows.length}`);
 
