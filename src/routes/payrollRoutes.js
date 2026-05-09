@@ -48,32 +48,30 @@ async function ensureTablesExist(schema) {
   // Crear tabla de nóminas
   await query(`
     CREATE TABLE IF NOT EXISTS ${schema}.employee_payrolls (
-      id SERIAL PRIMARY KEY,
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       employee_id UUID NOT NULL,
       period_start DATE NOT NULL,
       period_end DATE NOT NULL,
-      period_type VARCHAR(20) DEFAULT 'monthly',
-      payment_type VARCHAR(20) DEFAULT 'hourly',
+      payment_date DATE,
       base_salary DECIMAL(12,2) DEFAULT 0,
       total_hours DECIMAL(10,2) DEFAULT 0,
       extra_hours DECIMAL(10,2) DEFAULT 0,
-      days_worked INTEGER DEFAULT 0,
-      total_days INTEGER DEFAULT 0,
       bonuses DECIMAL(12,2) DEFAULT 0,
       deductions DECIMAL(12,2) DEFAULT 0,
       gross_salary DECIMAL(12,2) DEFAULT 0,
       net_salary DECIMAL(12,2) DEFAULT 0,
-      status VARCHAR(20) DEFAULT 'generated',
+      status VARCHAR(20) DEFAULT 'pending',
+      notes TEXT,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      payment_type VARCHAR(20) DEFAULT 'hourly'
     )
   `);
 
   // Crear tabla de detalles de nómina
   await query(`
     CREATE TABLE IF NOT EXISTS ${schema}.employee_payroll_details (
-      id SERIAL PRIMARY KEY,
-      payroll_id INTEGER REFERENCES ${schema}.employee_payrolls(id) ON DELETE CASCADE,
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      payroll_id UUID REFERENCES ${schema}.employee_payrolls(id) ON DELETE CASCADE,
       concept VARCHAR(100) NOT NULL,
       type VARCHAR(50) NOT NULL,
       amount DECIMAL(12,2) NOT NULL,
@@ -256,26 +254,22 @@ router.post('/', authMiddleware, async (req, res) => {
         // 2. Insertar cabecera
         const insertPayroll = await query(`
           INSERT INTO ${schema}.employee_payrolls (
-            employee_id, period_start, period_end, period_type, payment_type,
-            base_salary, total_hours, extra_hours, days_worked, total_days,
-            bonuses, deductions, gross_salary, net_salary, status
+            employee_id, period_start, period_end, payment_type,
+            base_salary, total_hours, extra_hours,
+            bonuses, deductions, gross_salary, net_salary, status, notes
           ) VALUES (
-            $1, $2, $3, $4, $5,
-            $6, $7, $8, $9, $10,
-            0, 0,
-            $11, $11, 'generated'
+            $1, $2, $3, $4,
+            $5, $6, $7,
+            0, 0, $8, $8, 'generated', ''
           ) RETURNING id
         `, [
           r.employee_id,
           start,
           end,
-          type || 'monthly',
           payment_type,
           base_salary_value,
           Number(r.total_hours) || 0,
           Number(r.extra_hours) || 0,
-          Number(r.days_worked) || daysInPeriod,
-          daysInPeriod,
           total_pay_value
         ]);
         
@@ -352,8 +346,6 @@ router.get('/saved', authMiddleware, async (req, res) => {
         e.full_name, 
         p.total_hours,
         p.extra_hours, 
-        p.days_worked,
-        p.total_days,
         p.base_salary,
         p.gross_salary as total_pay,
         p.payment_type
@@ -369,8 +361,8 @@ router.get('/saved', authMiddleware, async (req, res) => {
       full_name: row.full_name,
       total_hours: Number(row.total_hours) || 0,
       extra_hours: Number(row.extra_hours) || 0,
-      days_worked: Number(row.days_worked) || 0,
-      total_days: Number(row.total_days) || 0,
+      days_worked: daysInPeriod,
+      total_days: daysInPeriod,
       hourly_rate: row.payment_type === 'hourly' ? Number(row.base_salary) : 0,
       daily_rate: row.payment_type === 'daily' ? Number(row.base_salary) : 0,
       total_pay: Number(row.total_pay) || 0,
