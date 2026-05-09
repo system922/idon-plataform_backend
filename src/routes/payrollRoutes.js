@@ -337,6 +337,12 @@ router.get('/saved', authMiddleware, async (req, res) => {
     
     if (!start || !end) return res.status(400).json({ error: 'Fechas requeridas' });
 
+    // Calcular días en el período
+    const startDate = new Date(start);
+    const endDate = new Date(end);
+    const daysInPeriod = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
+    console.log(`📅 Días en período: ${daysInPeriod}`);
+
     await ensureTablesExist(schema);
 
     const payrollRes = await query(`
