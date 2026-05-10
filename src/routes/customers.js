@@ -7,56 +7,59 @@ const router = express.Router();
 
 // Función auxiliar para verificar si hay facturación electrónica COMPLETAMENTE configurada
 async function hasEinvoicing(schema) {
-  const result = await query(
-    `SELECT 
-       COUNT(*) as count,
-       ruc,
-       razon_social,
-       nombre_comercial,
-       direccion_matriz,
-       ambiente,
-       serie_estab,
-       serie_pto_emision,
-       secuencial_actual,
-       has_signature,
-       p12_path,
-       p12_password
-     FROM "${schema}".einvoice_config 
-     WHERE id = 1`,
-    []
-  );
-  
-  if (result.rows.length === 0 || parseInt(result.rows[0].count) === 0) {
+  try {
+    // Verificar si la tabla existe
+    const tableCheck = await query(
+      `SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_schema = $1 AND table_name = 'einvoice_config'
+      )`,
+      [schema]
+    );
+    
+    if (!tableCheck.rows[0].exists) {
+      return false;
+    }
+    
+    // Verificar si existe un registro válido y completamente configurado
+    const result = await query(
+      `SELECT EXISTS (
+        SELECT 1 
+        FROM "${schema}".einvoice_config 
+        WHERE id = 1 
+          AND ruc IS NOT NULL 
+          AND ruc != ''
+          AND razon_social IS NOT NULL 
+          AND razon_social != ''
+          AND nombre_comercial IS NOT NULL 
+          AND nombre_comercial != ''
+          AND direccion_matriz IS NOT NULL 
+          AND direccion_matriz != ''
+          AND ambiente IN ('1', '2')
+          AND serie_estab IS NOT NULL 
+          AND serie_estab != ''
+          AND serie_pto_emision IS NOT NULL 
+          AND serie_pto_emision != ''
+          AND secuencial_actual > 0
+          AND has_signature = true
+          AND p12_path IS NOT NULL 
+          AND p12_path != ''
+          AND p12_password IS NOT NULL 
+          AND p12_password != ''
+      ) as is_configured`,
+      []
+    );
+    
+    return result.rows[0]?.is_configured || false;
+    
+  } catch (error) {
+    // Si la tabla no existe, capturamos el error y retornamos false
+    if (error.code === '42P01') { // undefined_table
+      return false;
+    }
+    console.error('Error checking einvoicing config:', error);
     return false;
   }
-  
-  const config = result.rows[0];
-  
-  // Verificar que todos los campos críticos estén presentes y válidos
-  const hasRequiredFields = 
-    config.ruc && 
-    config.ruc.trim().length > 0 &&
-    config.razon_social && 
-    config.razon_social.trim().length > 0 &&
-    config.nombre_comercial && 
-    config.nombre_comercial.trim().length > 0 &&
-    config.direccion_matriz && 
-    config.direccion_matriz.trim().length > 0 &&
-    config.ambiente && 
-    (config.ambiente === '1' || config.ambiente === '2') && // 1=Pruebas, 2=Producción
-    config.serie_estab && 
-    config.serie_estab.trim().length > 0 &&
-    config.serie_pto_emision && 
-    config.serie_pto_emision.trim().length > 0 &&
-    config.secuencial_actual && 
-    config.secuencial_actual > 0 &&
-    config.has_signature === true &&
-    config.p12_path && 
-    config.p12_path.trim().length > 0 &&
-    config.p12_password && 
-    config.p12_password.trim().length > 0;
-  
-  return hasRequiredFields;
 }
 
 /**
