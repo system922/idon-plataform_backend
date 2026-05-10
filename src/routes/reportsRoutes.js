@@ -779,4 +779,105 @@ router.get('/products-sold', authMiddleware, async (req, res) => {
   }
 });
 
+// ─── REPORTE AVANZADO ────────────────────────────────────────────────────────
+
+/**
+ * GET /api/reports/advanced
+ * Obtiene reporte avanzado con ventas y gastos por período
+ * Query params: from (YYYY-MM-DD), to (YYYY-MM-DD), groupBy (day, month, week)
+ */
+router.get('/advanced', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { from = null, to = null, groupBy = 'day' } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ error: 'from and to dates are required' });
+    }
+
+    const useEinvoicing = await hasEinvoicing(schema);
+    
+    let dateFormatGroup = '';
+    let dateFormatLabel = '';
+    
+    switch(groupBy) {
+      case 'week':
+        dateFormatGroup = `DATE_TRUNC('week', t.created_at)`;
+        dateFormatLabel = `DATE_TRUNC('week', t.created_at)`;
+        break;
+      case 'month':
+        dateFormatGroup = `DATE_TRUNC('month', t.created_at)`;
+        dateFormatLabel = `DATE_TRUNC('month', t.created_at)`;
+        break;
+      case 'day':
+      default:
+        dateFormatGroup = `DATE(t.created_at)`;
+        dateFormatLabel = `DATE(t.created_at)`;
+    }
+
+    let tableName = useEinvoicing ? 'einvoicing_invoices' : 'pos_orders';
+    let statusFilter = useEinvoicing ? `t.status = 'autorizada'` : `t.status = 'paid'`;
+
+    // Obtener ventas por período
+    const salesResult = await query(
+      `SELECT 
+         ${dateFormatLabel} as date,
+         COALESCE(SUM(t.total), 0) as total_sales,
+         COUNT(*) as numero_transacciones,
+         COUNT(DISTINCT t.customer_id) as clientes_unicos
+       FROM "${schema}".${tableName} t
+       WHERE DATE(t.created_at) >= $1 
+         AND DATE(t.created_at) <= $2
+         AND ${statusFilter}
+       GROUP BY ${dateFormatGroup}
+       ORDER BY date ASC`,
+      [from, to]
+    );
+
+    // Obtener gastos por período
+    const expensesResult = await query(
+      `SELECT 
+         ${dateFormatLabel} as date,
+         COALESCE(SUM(e.monto), 0) as total_expenses
+       FROM "${schema}".gastos e
+       WHERE DATE(e.fecha) >= $1 
+         AND DATE(e.fecha) <= $2
+       GROUP BY ${dateFormatGroup}
+       ORDER BY date ASC`,
+      [from, to]
+    );
+
+    // Obtener cuentas por cobrar (deudas de clientes)
+    const receivablesResult = await query(
+      `SELECT 
+         ${dateFormatLabel} as date,
+         COALESCE(SUM(ar.monto), 0) as total_receivable
+       FROM "${schema}".cuentas_por_cobrar ar
+       WHERE DATE(ar.fecha_creacion) >= $1 
+         AND DATE(ar.fecha_creacion) <= $2
+         AND ar.estado = 'pendiente'
+       GROUP BY ${dateFormatGroup}
+       ORDER BY date ASC`,
+      [from, to]
+    );
+
+    res.json({
+      success: true,
+      sales: salesResult.rows,
+      expenses: expensesResult.rows,
+      receivables: receivablesResult.rows,
+      metadata: {
+        invoiceSource: useEinvoicing ? 'einvoicing' : 'pos',
+        dateRange: { from, to },
+        groupBy
+      }
+    });
+  } catch (err) {
+    console.error('Error al generar reporte avanzado:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 export default router;
