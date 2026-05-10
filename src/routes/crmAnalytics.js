@@ -5,42 +5,13 @@ import { authMiddleware } from '../middleware/auth.js';
 
 const router = express.Router();
 
-// Función auxiliar para verificar si hay facturación electrónica
-async function hasEinvoicing(schema) {
+// Función para determinar qué fuente de datos usar
+async function getDataSource(schema) {
   try {
-    // Primero verificar si hay facturas electrónicas autorizadas
-    const hasInvoices = await query(
+    // 1. Verificar si hay facturación electrónica configurada Y con datos
+    const hasEinvoiceConfig = await query(
       `SELECT EXISTS (
-        SELECT 1 FROM "${schema}".einvoices 
-        WHERE status = 'autorizada' 
-        LIMIT 1
-      ) as has_invoices`,
-      []
-    );
-    
-    if (hasInvoices.rows[0]?.has_invoices) {
-      console.log('[hasEinvoicing] Hay facturas electrónicas, usando einvoices');
-      return true;
-    }
-    
-    // Si no hay facturas, verificar configuración
-    const tableCheck = await query(
-      `SELECT EXISTS (
-        SELECT FROM information_schema.tables 
-        WHERE table_schema = $1 AND table_name = 'einvoice_config'
-      )`,
-      [schema]
-    );
-    
-    if (!tableCheck.rows[0].exists) {
-      console.log('[hasEinvoicing] Tabla einvoice_config no existe');
-      return false;
-    }
-    
-    const result = await query(
-      `SELECT EXISTS (
-        SELECT 1 
-        FROM "${schema}".einvoice_config 
+        SELECT 1 FROM "${schema}".einvoice_config 
         WHERE id = 1 
           AND ruc IS NOT NULL AND ruc != ''
           AND razon_social IS NOT NULL AND razon_social != ''
@@ -48,13 +19,50 @@ async function hasEinvoicing(schema) {
       []
     );
     
-    const isConfigured = result.rows[0]?.is_configured || false;
-    console.log(`[hasEinvoicing] Configurada: ${isConfigured}`);
+    const isConfigured = hasEinvoiceConfig.rows[0]?.is_configured || false;
     
-    return isConfigured;
+    if (isConfigured) {
+      // Verificar si hay facturas electrónicas con datos
+      const hasEinvoiceData = await query(
+        `SELECT EXISTS (
+          SELECT 1 FROM "${schema}".einvoices 
+          WHERE status IN ('emitida', 'autorizada', 'valid', 'AUTORIZADO', 'paid')
+          LIMIT 1
+        ) as has_data`,
+        []
+      );
+      
+      if (hasEinvoiceData.rows[0]?.has_data) {
+        console.log('[getDataSource] Usando facturación electrónica (einvoices)');
+        return {
+          source: 'einvoicing',
+          ordersTable: 'einvoices',
+          customerIdField: 'customer_ruc',
+          statusCondition: `status IN ('emitida', 'autorizada', 'valid', 'AUTORIZADO', 'paid')`,
+          taxColumn: 'iva_amount'
+        };
+      }
+    }
+    
+    // 2. Fallback a POS
+    console.log('[getDataSource] Usando POS (pos_orders)');
+    return {
+      source: 'pos',
+      ordersTable: 'pos_orders',
+      customerIdField: 'customer_id',
+      statusCondition: `status = 'paid'`,
+      taxColumn: 'tax_amount'
+    };
+    
   } catch (error) {
-    console.error('Error checking einvoicing config:', error);
-    return false;
+    console.error('[getDataSource] Error, usando POS por defecto:', error);
+    return {
+      source: 'pos',
+      ordersTable: 'pos_orders',
+      customerIdField: 'customer_id',
+      statusCondition: `status = 'paid'`,
+      taxColumn: 'tax_amount'
+    };
   }
 }
 
@@ -69,48 +77,42 @@ router.get('/analytics/debug', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Business context required' });
     }
 
-    const useEinvoicing = await hasEinvoicing(schema);
+    const dataSource = await getDataSource(schema);
     
     // Verificar datos en einvoices
-    const einvoicesCount = await query(
-      `SELECT COUNT(*) as count, COALESCE(SUM(total), 0) as total 
-       FROM "${schema}".einvoices 
-       WHERE status = 'autorizada'`,
-      []
-    );
+    let einvoicesCount = { rows: [{ count: 0, total: 0 }] };
+    let posOrdersCount = { rows: [{ count: 0, total: 0 }] };
     
-    // Verificar datos en pos_orders
-    const posOrdersCount = await query(
-      `SELECT COUNT(*) as count, COALESCE(SUM(total), 0) as total 
-       FROM "${schema}".pos_orders 
-       WHERE status = 'paid'`,
-      []
-    );
+    try {
+      einvoicesCount = await query(
+        `SELECT COUNT(*) as count, COALESCE(SUM(total), 0) as total 
+         FROM "${schema}".einvoices 
+         WHERE ${dataSource.statusCondition}`,
+        []
+      );
+    } catch (e) {}
     
-    // Verificar clientes con transacciones
-    const customersWithSales = await query(
-      `SELECT COUNT(DISTINCT c.id) as count
-       FROM "${schema}".customers c
-       WHERE EXISTS (
-         SELECT 1 FROM "${schema}".einvoices e 
-         WHERE e.customer_ruc = c.document_number AND e.status = 'autorizada'
-       )`,
-      []
-    );
+    try {
+      posOrdersCount = await query(
+        `SELECT COUNT(*) as count, COALESCE(SUM(total), 0) as total 
+         FROM "${schema}".pos_orders 
+         WHERE status = 'paid'`,
+        []
+      );
+    } catch (e) {}
 
     res.json({
       success: true,
       data: {
-        useEinvoicing,
+        source: dataSource.source,
         einvoices: {
-          count: parseInt(einvoicesCount.rows[0].count),
-          total: parseFloat(einvoicesCount.rows[0].total)
+          count: parseInt(einvoicesCount.rows[0]?.count || 0),
+          total: parseFloat(einvoicesCount.rows[0]?.total || 0)
         },
         pos_orders: {
-          count: parseInt(posOrdersCount.rows[0].count),
-          total: parseFloat(posOrdersCount.rows[0].total)
-        },
-        customers_with_sales: parseInt(customersWithSales.rows[0].count)
+          count: parseInt(posOrdersCount.rows[0]?.count || 0),
+          total: parseFloat(posOrdersCount.rows[0]?.total || 0)
+        }
       }
     });
   } catch (err) {
@@ -130,18 +132,18 @@ router.get('/analytics/summary', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Business context required' });
     }
 
-    const useEinvoicing = await hasEinvoicing(schema);
+    const dataSource = await getDataSource(schema);
     
     let totalRevenueQuery = '';
     let totalOrdersQuery = '';
     let avgTicketQuery = '';
     let customersLast30dQuery = '';
     
-    if (useEinvoicing) {
-      totalRevenueQuery = `(SELECT COALESCE(SUM(total), 0) FROM "${schema}".einvoices WHERE status = 'autorizada')`;
-      totalOrdersQuery = `(SELECT COUNT(*) FROM "${schema}".einvoices WHERE status = 'autorizada')`;
-      avgTicketQuery = `(SELECT COALESCE(AVG(total), 0) FROM "${schema}".einvoices WHERE status = 'autorizada')`;
-      customersLast30dQuery = `(SELECT COUNT(DISTINCT customer_ruc) FROM "${schema}".einvoices WHERE status = 'autorizada' AND created_at > NOW() - INTERVAL '30 days')`;
+    if (dataSource.source === 'einvoicing') {
+      totalRevenueQuery = `(SELECT COALESCE(SUM(total), 0) FROM "${schema}".einvoices WHERE ${dataSource.statusCondition})`;
+      totalOrdersQuery = `(SELECT COUNT(*) FROM "${schema}".einvoices WHERE ${dataSource.statusCondition})`;
+      avgTicketQuery = `(SELECT COALESCE(AVG(total), 0) FROM "${schema}".einvoices WHERE ${dataSource.statusCondition})`;
+      customersLast30dQuery = `(SELECT COUNT(DISTINCT customer_ruc) FROM "${schema}".einvoices WHERE ${dataSource.statusCondition} AND created_at > NOW() - INTERVAL '30 days')`;
     } else {
       totalRevenueQuery = `(SELECT COALESCE(SUM(total), 0) FROM "${schema}".pos_orders WHERE status = 'paid')`;
       totalOrdersQuery = `(SELECT COUNT(*) FROM "${schema}".pos_orders WHERE status = 'paid')`;
@@ -162,7 +164,10 @@ router.get('/analytics/summary', authMiddleware, async (req, res) => {
 
     res.json({
       success: true,
-      data: result.rows[0]
+      data: result.rows[0],
+      metadata: {
+        invoiceSource: dataSource.source
+      }
     });
   } catch (err) {
     console.error('Error en summary:', err);
@@ -181,17 +186,13 @@ router.get('/analytics/customer-segments', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Business context required' });
     }
 
-    const useEinvoicing = await hasEinvoicing(schema);
+    const dataSource = await getDataSource(schema);
     
-    let ordersTable = '';
     let joinCondition = '';
-    
-    if (useEinvoicing) {
-      ordersTable = 'einvoices';
-      joinCondition = 'e.customer_ruc = c.document_number';
+    if (dataSource.source === 'einvoicing') {
+      joinCondition = `e.customer_ruc = c.document_number AND ${dataSource.statusCondition}`;
     } else {
-      ordersTable = 'pos_orders';
-      joinCondition = 'e.customer_id = c.id';
+      joinCondition = `e.customer_id = c.id AND e.status = 'paid'`;
     }
 
     const result = await query(
@@ -203,11 +204,9 @@ router.get('/analytics/customer-segments', authMiddleware, async (req, res) => {
           c.is_active,
           COUNT(e.id) as total_orders,
           COALESCE(SUM(e.total), 0) as total_spent,
-          COALESCE(AVG(e.total), 0) as avg_spent,
-          MAX(e.created_at) as last_order_date,
-          MIN(e.created_at) as first_order_date
+          COALESCE(AVG(e.total), 0) as avg_spent
         FROM "${schema}".customers c
-        LEFT JOIN "${schema}".${ordersTable} e ON ${joinCondition} AND e.status = 'autorizada'
+        LEFT JOIN "${schema}".${dataSource.ordersTable} e ON ${joinCondition}
         GROUP BY c.id
       ),
       segments AS (
@@ -227,6 +226,7 @@ router.get('/analytics/customer-segments', authMiddleware, async (req, res) => {
         COALESCE(AVG(total_spent), 0) as avg_spent,
         COALESCE(AVG(total_orders), 0) as avg_orders
       FROM segments
+      WHERE segment IS NOT NULL
       GROUP BY segment
       ORDER BY 
         CASE segment
@@ -260,7 +260,7 @@ router.get('/analytics/top-customers', authMiddleware, async (req, res) => {
     }
 
     const { limit = 10, period = 'all' } = req.query;
-    const useEinvoicing = await hasEinvoicing(schema);
+    const dataSource = await getDataSource(schema);
     
     let dateFilter = '';
     if (period === 'month') {
@@ -269,15 +269,11 @@ router.get('/analytics/top-customers', authMiddleware, async (req, res) => {
       dateFilter = `AND e.created_at > NOW() - INTERVAL '7 days'`;
     }
     
-    let ordersTable = '';
     let joinCondition = '';
-    
-    if (useEinvoicing) {
-      ordersTable = 'einvoices';
-      joinCondition = 'e.customer_ruc = c.document_number';
+    if (dataSource.source === 'einvoicing') {
+      joinCondition = `e.customer_ruc = c.document_number AND ${dataSource.statusCondition}`;
     } else {
-      ordersTable = 'pos_orders';
-      joinCondition = 'e.customer_id = c.id';
+      joinCondition = `e.customer_id = c.id AND e.status = 'paid'`;
     }
 
     const result = await query(
@@ -291,8 +287,9 @@ router.get('/analytics/top-customers', authMiddleware, async (req, res) => {
          COALESCE(AVG(e.total), 0) as avg_ticket,
          MAX(e.created_at) as last_order
        FROM "${schema}".customers c
-       INNER JOIN "${schema}".${ordersTable} e ON ${joinCondition} AND e.status = 'autorizada' ${dateFilter}
+       INNER JOIN "${schema}".${dataSource.ordersTable} e ON ${joinCondition} ${dateFilter}
        GROUP BY c.id, c.name, c.email, c.document_number
+       HAVING COALESCE(SUM(e.total), 0) > 0
        ORDER BY total_spent DESC
        LIMIT $1`,
       [parseInt(limit)]
@@ -319,24 +316,29 @@ router.get('/analytics/sales-by-hour', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Business context required' });
     }
 
-    const useEinvoicing = await hasEinvoicing(schema);
-    const ordersTable = useEinvoicing ? 'einvoices' : 'pos_orders';
-    const statusFilter = useEinvoicing ? "status = 'autorizada'" : "status = 'paid'";
+    const dataSource = await getDataSource(schema);
+    
+    let whereCondition = '';
+    if (dataSource.source === 'einvoicing') {
+      whereCondition = `WHERE ${dataSource.statusCondition}`;
+    } else {
+      whereCondition = `WHERE status = 'paid'`;
+    }
 
     const result = await query(
       `SELECT 
          EXTRACT(HOUR FROM created_at) as hour,
          COALESCE(SUM(total), 0) as total_sales,
          COUNT(*) as order_count
-       FROM "${schema}".${ordersTable}
-       WHERE ${statusFilter}
+       FROM "${schema}".${dataSource.ordersTable}
+       ${whereCondition}
        GROUP BY EXTRACT(HOUR FROM created_at)
        ORDER BY hour`,
       []
     );
 
     // Completar horas faltantes (0-23)
-    const hoursMap = new Map(result.rows.map(r => [r.hour, r]));
+    const hoursMap = new Map(result.rows.map(r => [Number(r.hour), r]));
     const completeHours = [];
     for (let i = 0; i < 24; i++) {
       if (hoursMap.has(i)) {
@@ -367,9 +369,14 @@ router.get('/analytics/sales-by-day', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Business context required' });
     }
 
-    const useEinvoicing = await hasEinvoicing(schema);
-    const ordersTable = useEinvoicing ? 'einvoices' : 'pos_orders';
-    const statusFilter = useEinvoicing ? "status = 'autorizada'" : "status = 'paid'";
+    const dataSource = await getDataSource(schema);
+    
+    let whereCondition = '';
+    if (dataSource.source === 'einvoicing') {
+      whereCondition = `WHERE ${dataSource.statusCondition}`;
+    } else {
+      whereCondition = `WHERE status = 'paid'`;
+    }
 
     const result = await query(
       `SELECT 
@@ -385,8 +392,8 @@ router.get('/analytics/sales-by-day', authMiddleware, async (req, res) => {
          END as day_name,
          COALESCE(SUM(total), 0) as total_sales,
          COUNT(*) as order_count
-       FROM "${schema}".${ordersTable}
-       WHERE ${statusFilter}
+       FROM "${schema}".${dataSource.ordersTable}
+       ${whereCondition}
        GROUP BY EXTRACT(DOW FROM created_at)
        ORDER BY day_of_week`,
       []
@@ -414,13 +421,17 @@ router.get('/analytics/monthly-trend', authMiddleware, async (req, res) => {
     }
 
     const { months = 6 } = req.query;
-    const useEinvoicing = await hasEinvoicing(schema);
+    const dataSource = await getDataSource(schema);
     
-    const ordersTable = useEinvoicing ? 'einvoices' : 'pos_orders';
-    const statusFilter = useEinvoicing ? "status = 'autorizada'" : "status = 'paid'";
+    let whereCondition = '';
+    if (dataSource.source === 'einvoicing') {
+      whereCondition = `WHERE ${dataSource.statusCondition}`;
+    } else {
+      whereCondition = `WHERE status = 'paid'`;
+    }
     
     let uniqueCustomersField = '';
-    if (useEinvoicing) {
+    if (dataSource.source === 'einvoicing') {
       uniqueCustomersField = 'COUNT(DISTINCT customer_ruc) as unique_customers';
     } else {
       uniqueCustomersField = 'COUNT(DISTINCT customer_id) as unique_customers';
@@ -433,8 +444,8 @@ router.get('/analytics/monthly-trend', authMiddleware, async (req, res) => {
          TO_CHAR(DATE_TRUNC('month', created_at), 'YYYY-MM') as month_key,
          COALESCE(SUM(total), 0) as total_sales,
          ${uniqueCustomersField}
-       FROM "${schema}".${ordersTable}
-       WHERE ${statusFilter}
+       FROM "${schema}".${dataSource.ordersTable}
+       ${whereCondition}
          AND created_at > NOW() - INTERVAL '${months} months'
        GROUP BY EXTRACT(YEAR FROM created_at), EXTRACT(MONTH FROM created_at), DATE_TRUNC('month', created_at)
        ORDER BY year, month`,
@@ -462,17 +473,13 @@ router.get('/analytics/customer-lifetime-value', authMiddleware, async (req, res
       return res.status(400).json({ error: 'Business context required' });
     }
 
-    const useEinvoicing = await hasEinvoicing(schema);
+    const dataSource = await getDataSource(schema);
     
-    let ordersTable = '';
     let joinCondition = '';
-    
-    if (useEinvoicing) {
-      ordersTable = 'einvoices';
-      joinCondition = 'e.customer_ruc = c.document_number';
+    if (dataSource.source === 'einvoicing') {
+      joinCondition = `e.customer_ruc = c.document_number AND ${dataSource.statusCondition}`;
     } else {
-      ordersTable = 'pos_orders';
-      joinCondition = 'e.customer_id = c.id';
+      joinCondition = `e.customer_id = c.id AND e.status = 'paid'`;
     }
 
     const result = await query(
@@ -480,10 +487,9 @@ router.get('/analytics/customer-lifetime-value', authMiddleware, async (req, res
         SELECT 
           c.id,
           COALESCE(SUM(e.total), 0) as total_spent,
-          COUNT(e.id) as total_orders,
-          EXTRACT(DAY FROM (NOW() - MIN(e.created_at))) as days_active
+          COUNT(e.id) as total_orders
         FROM "${schema}".customers c
-        LEFT JOIN "${schema}".${ordersTable} e ON ${joinCondition} AND e.status = 'autorizada'
+        LEFT JOIN "${schema}".${dataSource.ordersTable} e ON ${joinCondition}
         GROUP BY c.id
       )
       SELECT 
