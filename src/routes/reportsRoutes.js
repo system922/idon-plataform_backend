@@ -6,7 +6,6 @@ import { authMiddleware } from '../middleware/auth.js';
 const router = express.Router();
 
 // Función auxiliar para detectar fuente de datos
-// Función auxiliar para detectar fuente de datos
 async function getDataSource(schema, startDate = null, endDate = null) {
   try {
     let dateFilter = '';
@@ -306,6 +305,10 @@ router.get('/products/categories', authMiddleware, async (req, res) => {
  * GET /api/reports/products-sold
  * Reporte de productos vendidos (MEJORADO)
  */
+/**
+ * GET /api/reports/products-sold
+ * Reporte de productos vendidos (CORREGIDO - DEBUG)
+ */
 router.get('/products-sold', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -320,122 +323,137 @@ router.get('/products-sold', authMiddleware, async (req, res) => {
       endDate = null
     } = req.query;
     
-    // Construir filtro de fecha según período o fechas personalizadas
+    console.log('[ProductsSold] Params:', { periodo, categoria, order_by, limit, startDate, endDate });
+    
+    // Construir filtro de fecha
     let dateFilter = '';
     let queryParams = [];
-    let paramCounter = 1;
     
     if (startDate && endDate) {
-      // Usar fechas personalizadas
-      dateFilter = `DATE(created_at) >= $${paramCounter} AND DATE(created_at) <= $${paramCounter + 1}`;
+      dateFilter = `DATE(e.created_at) >= $1::DATE AND DATE(e.created_at) <= $2::DATE`;
       queryParams.push(startDate, endDate);
-      paramCounter += 2;
     } else {
-      // Usar período predefinido
       switch(periodo) {
         case 'day':
-          dateFilter = `created_at >= CURRENT_DATE AND created_at < CURRENT_DATE + INTERVAL '1 day'`;
+          dateFilter = `e.created_at >= CURRENT_DATE AND e.created_at < CURRENT_DATE + INTERVAL '1 day'`;
           break;
         case 'week':
-          dateFilter = `created_at >= CURRENT_DATE - INTERVAL '7 days'`;
+          dateFilter = `e.created_at >= CURRENT_DATE - INTERVAL '7 days'`;
           break;
         case 'month':
-          dateFilter = `created_at >= DATE_TRUNC('month', CURRENT_DATE)`;
+          dateFilter = `e.created_at >= DATE_TRUNC('month', CURRENT_DATE)`;
           break;
         case 'quarter':
-          dateFilter = `created_at >= DATE_TRUNC('quarter', CURRENT_DATE)`;
+          dateFilter = `e.created_at >= DATE_TRUNC('quarter', CURRENT_DATE)`;
           break;
         case 'year':
-          dateFilter = `created_at >= DATE_TRUNC('year', CURRENT_DATE)`;
+          dateFilter = `e.created_at >= DATE_TRUNC('year', CURRENT_DATE)`;
           break;
         default:
-          dateFilter = `created_at >= DATE_TRUNC('month', CURRENT_DATE)`;
+          dateFilter = `e.created_at >= DATE_TRUNC('month', CURRENT_DATE)`;
       }
     }
 
     // Definir ordenamiento
     let orderByClause = 'cantidad_vendida DESC';
-    switch(order_by) {
-      case 'total':
-        orderByClause = 'total_vendido DESC';
-        break;
-      case 'name':
-        orderByClause = 'nombre_producto ASC';
-        break;
-      case 'quantity':
-      default:
-        orderByClause = 'cantidad_vendida DESC';
-    }
+    if (order_by === 'total') orderByClause = 'total_vendido DESC';
+    else if (order_by === 'name') orderByClause = 'nombre_producto ASC';
 
-    const dataSource = await getDataSource(schema);
+    const dataSource = await getDataSource(schema, startDate, endDate);
+    console.log('[ProductsSold] DataSource:', dataSource);
+    
     let result = { rows: [] };
     let usedSource = dataSource.source;
 
-    // Intentar obtener datos de einvoices primero
-    if (dataSource.source === 'einvoicing') {
+    // ─── Intentar con einvoices ───
+    if (dataSource.source === 'einvoicing' || dataSource.source === 'none') {
       try {
-        let categoryFilter = '';
-        let params = [...queryParams];
+        // PRIMERO: Ver la estructura de los items
+        const sampleQuery = `
+          SELECT e.id, e.items
+          FROM "${schema}".einvoices e
+          WHERE ${dateFilter}
+            AND e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO')
+          LIMIT 1
+        `;
+        const sampleResult = await query(sampleQuery, queryParams.length > 0 ? queryParams : []);
+        console.log('[ProductsSold] Sample einvoice items:', JSON.stringify(sampleResult.rows[0]?.items).substring(0, 500));
         
-        // Agregar límite
-        params.push(parseInt(limit) || 50);
+        // Consulta principal con mejor manejo de tipos
+        let params = queryParams.length > 0 ? [...queryParams] : [];
+        let whereConditions = [dateFilter];
+        whereConditions.push(`e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO')`);
         
         if (categoria) {
-          categoryFilter = `AND item->>'category' = $${paramCounter}`;
+          const catParamIndex = params.length + 1;
+          whereConditions.push(`item->>'category' = $${catParamIndex}`);
           params.push(categoria);
-          paramCounter++;
         }
         
-        const whereClause = dateFilter ? `WHERE ${dateFilter} AND e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO') ${categoryFilter}` : `WHERE e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO') ${categoryFilter}`;
+        const whereClause = `WHERE ${whereConditions.join(' AND ')}`;
+        const limitParamIndex = params.length + 1;
         
         const queryText = `
           SELECT 
-            COALESCE(item->>'id', item->>'product_id', 'unknown') as id,
+            COALESCE(item->>'id', item->>'product_id', item->>'code') as id,
             COALESCE(item->>'sku', item->>'code', '') as sku,
-            COALESCE(item->>'name', item->>'product_name', 'Producto sin nombre') as nombre_producto,
-            COALESCE(SUM(CAST(item->>'quantity' AS INTEGER)), 0) as cantidad_vendida,
-            COALESCE(SUM(CAST(item->>'quantity' AS INTEGER) * CAST(COALESCE(item->>'price', '0') AS NUMERIC)), 0) as total_vendido,
+            COALESCE(item->>'name', item->>'product_name', item->>'description', 'Producto sin nombre') as nombre_producto,
+            COALESCE(SUM(CAST(COALESCE(item->>'quantity', item->>'qty', '0') AS INTEGER)), 0) as cantidad_vendida,
+            COALESCE(SUM(
+              CAST(COALESCE(item->>'quantity', item->>'qty', '0') AS INTEGER) * 
+              CAST(COALESCE(item->>'price', item->>'unit_price', item->>'total', '0') AS NUMERIC)
+            ), 0) as total_vendido,
             COALESCE(item->>'category', 'Sin categoría') as categoria,
             COUNT(DISTINCT e.id) as numero_transacciones
           FROM "${schema}".einvoices e,
                jsonb_array_elements(e.items) as item
           ${whereClause}
-          GROUP BY item->>'id', item->>'sku', item->>'name', item->>'category'
-          HAVING COALESCE(SUM(CAST(item->>'quantity' AS INTEGER)), 0) > 0
+          GROUP BY item->>'id', item->>'product_id', item->>'code', item->>'sku', 
+                   item->>'name', item->>'product_name', item->>'description', item->>'category'
+          HAVING COALESCE(SUM(CAST(COALESCE(item->>'quantity', item->>'qty', '0') AS INTEGER)), 0) > 0
           ORDER BY ${orderByClause}
-          LIMIT $${params.length}
+          LIMIT $${limitParamIndex}
         `;
-        
-        result = await query(queryText, params);
-        
-        if (result.rows.length > 0) {
-          usedSource = 'einvoicing';
-        }
-      } catch (err) {
-        console.warn('Einvoices products query failed:', err.message);
-      }
-    }
-    
-    // Si no hay datos de einvoices o no es la fuente principal, intentar con POS
-    if (result.rows.length === 0 && dataSource.source !== 'none') {
-      try {
-        let categoryFilter = '';
-        let params = [...queryParams];
-        let currentParam = params.length + 1;
         
         params.push(parseInt(limit) || 50);
         
+        console.log('[ProductsSold] Einvoices Query:', queryText.substring(0, 500));
+        console.log('[ProductsSold] Params:', params);
+        
+        result = await query(queryText, params);
+        console.log('[ProductsSold] Einvoices Row count:', result.rows.length);
+        
+        if (result.rows.length > 0) {
+          usedSource = 'einvoicing';
+          console.log('[ProductsSold] First row sample:', result.rows[0]);
+        }
+      } catch (err) {
+        console.error('[ProductsSold] Einvoices query error:', err.message);
+        console.error('[ProductsSold] Full error:', err);
+      }
+    }
+    
+    // ─── Intentar con POS si no hay datos ───
+    if (result.rows.length === 0) {
+      try {
+        const posDateFilter = dateFilter.replace(/e\.created_at/g, 'o.created_at');
+        
+        let params = queryParams.length > 0 ? [...queryParams] : [];
+        let whereConditions = [posDateFilter];
+        whereConditions.push(`o.status = 'paid'`);
+        
         if (categoria) {
-          categoryFilter = `AND c.id = $${currentParam}`;
+          const catParamIndex = params.length + 1;
+          whereConditions.push(`c.id = $${catParamIndex}`);
           params.push(categoria);
-          currentParam++;
         }
         
-        const whereClause = dateFilter ? `WHERE ${dateFilter} AND o.status = 'paid' ${categoryFilter}` : `WHERE o.status = 'paid' ${categoryFilter}`;
+        const whereClause = `WHERE ${whereConditions.join(' AND ')}`;
+        const limitParamIndex = params.length + 1;
         
         const queryText = `
           SELECT 
-            p.id::text,
+            p.id::text as id,
             COALESCE(p.code, '') as sku,
             COALESCE(p.name, 'Producto sin nombre') as nombre_producto,
             COALESCE(SUM(oi.quantity), 0) as cantidad_vendida,
@@ -450,25 +468,35 @@ router.get('/products-sold', authMiddleware, async (req, res) => {
           GROUP BY p.id, p.code, p.name, c.name
           HAVING COALESCE(SUM(oi.quantity), 0) > 0
           ORDER BY ${orderByClause}
-          LIMIT $${params.length}
+          LIMIT $${limitParamIndex}
         `;
         
+        params.push(parseInt(limit) || 50);
+        
+        console.log('[ProductsSold] POS Query:', queryText.substring(0, 500));
+        console.log('[ProductsSold] Params:', params);
+        
         result = await query(queryText, params);
+        console.log('[ProductsSold] POS Row count:', result.rows.length);
         
         if (result.rows.length > 0) {
           usedSource = 'pos';
+          console.log('[ProductsSold] First row:', result.rows[0]);
         }
       } catch (err) {
-        console.warn('POS products query failed:', err.message);
+        console.error('[ProductsSold] POS query error:', err.message);
       }
     }
 
-    // Formatear números para asegurar que sean válidos
+    // Formatear resultados
     const formattedRows = result.rows.map(row => ({
       ...row,
       cantidad_vendida: parseInt(row.cantidad_vendida) || 0,
-      total_vendido: parseFloat(row.total_vendido) || 0
+      total_vendido: parseFloat(row.total_vendido) || 0,
+      numero_transacciones: parseInt(row.numero_transacciones) || 0
     }));
+
+    console.log('[ProductsSold] Final count:', formattedRows.length);
 
     res.json({
       success: true,
@@ -483,8 +511,12 @@ router.get('/products-sold', authMiddleware, async (req, res) => {
       }
     });
   } catch (err) {
-    console.error('Error al generar reporte de productos:', err);
-    res.status(500).json({ success: false, error: err.message });
+    console.error('[ProductsSold] Fatal error:', err);
+    res.status(500).json({ 
+      success: false, 
+      error: err.message,
+      data: []
+    });
   }
 });
 
