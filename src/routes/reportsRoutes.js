@@ -488,13 +488,10 @@ router.get('/products-sold', authMiddleware, async (req, res) => {
   }
 });
 
+
 /**
  * GET /api/reports/products-stats
- * Estadísticas rápidas de productos (NUEVO ENDPOINT)
- */
-/**
- * GET /api/reports/products-stats
- * Estadísticas rápidas de productos (CORREGIDO)
+ * Estadísticas rápidas de productos
  */
 router.get('/products-stats', authMiddleware, async (req, res) => {
   try {
@@ -513,7 +510,6 @@ router.get('/products-stats', authMiddleware, async (req, res) => {
       queryParams = [startDate, endDate];
     } else {
       // Período predefinido
-      queryParams = [];
       switch(periodo) {
         case 'day':
           dateFilter = `created_at >= CURRENT_DATE AND created_at < CURRENT_DATE + INTERVAL '1 day'`;
@@ -536,6 +532,8 @@ router.get('/products-stats', authMiddleware, async (req, res) => {
     }
 
     const dataSource = await getDataSource(schema, startDate, endDate);
+    console.log('[ProductsStats] DataSource:', dataSource);
+    
     let stats = {
       total_productos_vendidos: 0,
       total_ventas: 0,
@@ -543,110 +541,137 @@ router.get('/products-stats', authMiddleware, async (req, res) => {
       ticket_promedio: 0
     };
 
-    // Intentar con einvoices si es la fuente detectada
-    if (dataSource.source === 'einvoicing' || dataSource.source === 'none') {
+    // Intentar con einvoices si hay datos
+    if (dataSource.source === 'einvoicing') {
       try {
         let queryText;
         let params;
         
         if (queryParams.length > 0) {
+          // Con fechas personalizadas
           queryText = `
             SELECT 
               COALESCE(SUM(CAST(item->>'quantity' AS INTEGER)), 0) as total_cantidad,
-              COALESCE(SUM(CAST(item->>'quantity' AS INTEGER) * CAST(COALESCE(item->>'price', item->>'total', '0') AS NUMERIC)), 0) as total_monto,
+              COALESCE(SUM(
+                CAST(item->>'quantity' AS INTEGER) * 
+                CAST(COALESCE(item->>'price', item->>'unit_price', '0') AS NUMERIC)
+              ), 0) as total_monto,
               COUNT(DISTINCT COALESCE(item->>'id', item->>'code', item->>'name')) as productos_distintos
             FROM "${schema}".einvoices e,
                  jsonb_array_elements(e.items) as item
             WHERE ${dateFilter}
-              AND e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO', 'paid')
+              AND e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO')
           `;
           params = queryParams;
         } else {
+          // Sin fechas personalizadas (usando período)
           queryText = `
             SELECT 
               COALESCE(SUM(CAST(item->>'quantity' AS INTEGER)), 0) as total_cantidad,
-              COALESCE(SUM(CAST(item->>'quantity' AS INTEGER) * CAST(COALESCE(item->>'price', item->>'total', '0') AS NUMERIC)), 0) as total_monto,
+              COALESCE(SUM(
+                CAST(item->>'quantity' AS INTEGER) * 
+                CAST(COALESCE(item->>'price', item->>'unit_price', '0') AS NUMERIC)
+              ), 0) as total_monto,
               COUNT(DISTINCT COALESCE(item->>'id', item->>'code', item->>'name')) as productos_distintos
             FROM "${schema}".einvoices e,
                  jsonb_array_elements(e.items) as item
             WHERE ${dateFilter}
-              AND e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO', 'paid')
+              AND e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO')
           `;
           params = [];
         }
         
-        console.log('Stats Query:', queryText, 'Params:', params);
+        console.log('[ProductsStats] Einvoices Query:', queryText);
+        console.log('[ProductsStats] Params:', params);
         
         const result = await query(queryText, params);
+        console.log('[ProductsStats] Einvoices Result:', result.rows[0]);
         
-        if (result.rows[0] && result.rows[0].total_cantidad > 0) {
-          stats.total_productos_vendidos = parseInt(result.rows[0].total_cantidad) || 0;
-          stats.total_ventas = parseFloat(result.rows[0].total_monto) || 0;
-          stats.productos_distintos = parseInt(result.rows[0].productos_distintos) || 0;
+        if (result.rows[0]) {
+          const totalCantidad = parseInt(result.rows[0].total_cantidad) || 0;
+          const totalMonto = parseFloat(result.rows[0].total_monto) || 0;
+          const productosDistintos = parseInt(result.rows[0].productos_distintos) || 0;
+          
+          if (totalCantidad > 0) {
+            stats.total_productos_vendidos = totalCantidad;
+            stats.total_ventas = totalMonto;
+            stats.productos_distintos = productosDistintos;
+          }
         }
       } catch (err) {
-        console.warn('Einvoices stats query failed:', err.message);
+        console.warn('[ProductsStats] Einvoices query failed:', err.message);
       }
     }
     
-    // Si no hay datos o la fuente es POS, intentar con POS
-    if (stats.total_productos_vendidos === 0 && dataSource.source !== 'einvoicing') {
+    // Si no hay datos de einvoices, intentar con POS
+    if (stats.total_productos_vendidos === 0) {
       try {
         let queryText;
         let params;
         
+        // En POS, la fecha está en pos_orders.created_at
+        const posDateFilter = dateFilter.replace(/created_at/g, 'o.created_at');
+        
         if (queryParams.length > 0) {
+          // Con fechas personalizadas
           queryText = `
             SELECT 
               COALESCE(SUM(oi.quantity), 0) as total_cantidad,
-              COALESCE(SUM(oi.quantity * COALESCE(oi.price, p.selling_price, 0)), 0) as total_monto,
-              COUNT(DISTINCT p.id) as productos_distintos
+              COALESCE(SUM(oi.quantity * p.selling_price), 0) as total_monto,
+              COUNT(DISTINCT oi.product_id) as productos_distintos
             FROM "${schema}".pos_order_items oi
             INNER JOIN "${schema}".pos_orders o ON oi.order_id = o.id
             INNER JOIN "${schema}".products p ON oi.product_id = p.id
-            WHERE ${dateFilter.replace(/created_at/g, 'o.created_at')}
+            WHERE ${posDateFilter}
               AND o.status = 'paid'
           `;
           params = queryParams;
         } else {
+          // Sin fechas personalizadas
           queryText = `
             SELECT 
               COALESCE(SUM(oi.quantity), 0) as total_cantidad,
-              COALESCE(SUM(oi.quantity * COALESCE(oi.price, p.selling_price, 0)), 0) as total_monto,
-              COUNT(DISTINCT p.id) as productos_distintos
+              COALESCE(SUM(oi.quantity * p.selling_price), 0) as total_monto,
+              COUNT(DISTINCT oi.product_id) as productos_distintos
             FROM "${schema}".pos_order_items oi
             INNER JOIN "${schema}".pos_orders o ON oi.order_id = o.id
             INNER JOIN "${schema}".products p ON oi.product_id = p.id
-            WHERE ${dateFilter.replace(/created_at/g, 'o.created_at')}
+            WHERE ${posDateFilter}
               AND o.status = 'paid'
           `;
           params = [];
         }
         
-        console.log('POS Stats Query:', queryText, 'Params:', params);
+        console.log('[ProductsStats] POS Query:', queryText);
+        console.log('[ProductsStats] Params:', params);
         
         const result = await query(queryText, params);
+        console.log('[ProductsStats] POS Result:', result.rows[0]);
         
         if (result.rows[0]) {
-          stats.total_productos_vendidos = parseInt(result.rows[0].total_cantidad) || 0;
-          stats.total_ventas = parseFloat(result.rows[0].total_monto) || 0;
-          stats.productos_distintos = parseInt(result.rows[0].productos_distintos) || 0;
+          const totalCantidad = parseInt(result.rows[0].total_cantidad) || 0;
+          const totalMonto = parseFloat(result.rows[0].total_monto) || 0;
+          const productosDistintos = parseInt(result.rows[0].productos_distintos) || 0;
+          
+          stats.total_productos_vendidos = totalCantidad;
+          stats.total_ventas = totalMonto;
+          stats.productos_distintos = productosDistintos;
         }
       } catch (err) {
-        console.warn('POS stats query failed:', err.message);
+        console.warn('[ProductsStats] POS query failed:', err.message);
       }
     }
 
-    // Calcular ticket promedio
+    // Calcular ticket promedio (por producto distinto)
     stats.ticket_promedio = stats.productos_distintos > 0 
       ? stats.total_ventas / stats.productos_distintos 
       : 0;
 
-    // Redondear valores
+    // Redondear valores a 2 decimales
     stats.total_ventas = Math.round(stats.total_ventas * 100) / 100;
     stats.ticket_promedio = Math.round(stats.ticket_promedio * 100) / 100;
 
-    console.log('Stats calculados:', stats);
+    console.log('[ProductsStats] Final stats:', stats);
 
     res.json({
       success: true,
@@ -654,11 +679,11 @@ router.get('/products-stats', authMiddleware, async (req, res) => {
       metadata: {
         invoiceSource: dataSource.source,
         periodo,
-        dateFilter
+        dateFilter: dateFilter
       }
     });
   } catch (err) {
-    console.error('Error al obtener estadísticas:', err);
+    console.error('[ProductsStats] Error:', err);
     res.status(500).json({ 
       success: false, 
       error: err.message,
