@@ -8,7 +8,7 @@ const router = express.Router();
 
 /**
  * POST /api/ordenes
- * Crea una nueva orden POS con numeración diaria (CONCURRENTE SEGURO)
+ * Crea una nueva orden POS con numeración diaria (USANDO FUNCIÓN DE BD)
  */
 router.post('/', authMiddleware, async (req, res) => {
   const client = await getClient();
@@ -32,57 +32,27 @@ router.post('/', authMiddleware, async (req, res) => {
 
     await client.query('BEGIN');
 
-    // Obtener fecha actual de Ecuador
-    const tzResult = await client.query(`
-      SELECT CURRENT_DATE AT TIME ZONE 'America/Guayaquil' as ecuador_date
-    `);
-    const today = tzResult.rows[0].ecuador_date;
-    
-    console.log('📅 Fecha Ecuador para contador:', today);
-
     // Crear tabla para control de contador diario (si no existe)
     await client.query(`
       CREATE TABLE IF NOT EXISTS "${schema}".daily_order_counter (
         id SERIAL PRIMARY KEY,
         order_date DATE NOT NULL UNIQUE,
         last_number INTEGER NOT NULL DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMP DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'America/Guayaquil'),
+        updated_at TIMESTAMP DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'America/Guayaquil')
       )
     `);
 
-    // 🔥 SOLUCIÓN CONCURRENTE: Insertar el registro si no existe (sin incrementar)
-    await client.query(`
-      INSERT INTO "${schema}".daily_order_counter (order_date, last_number)
-      VALUES ($1, 0)
-      ON CONFLICT (order_date) DO NOTHING
-    `, [today]);
-
-    // 🔥 BLOQUEAR LA FILA para evitar concurrencia
-    const lockResult = await client.query(`
-      SELECT last_number FROM "${schema}".daily_order_counter
-      WHERE order_date = $1
-      FOR UPDATE
-    `, [today]);
-
-    if (lockResult.rows.length === 0) {
-      throw new Error('No se pudo obtener el contador para la fecha');
-    }
-
-    // Incrementar el contador de forma segura
-    const currentNumber = lockResult.rows[0].last_number;
-    const newNumber = currentNumber + 1;
+    // 🔥🔥🔥 USAR LA FUNCIÓN DE BASE DE DATOS - SIMPLE, SEGURA Y CON HORA ECUADOR 🔥🔥🔥
+    // La función get_next_order_number() obtiene la fecha de Ecuador automáticamente
+    const counterResult = await client.query(`
+      SELECT ${schema}.get_next_order_number() as next_number
+    `);
     
-    await client.query(`
-      UPDATE "${schema}".daily_order_counter
-      SET last_number = $1, updated_at = NOW()
-      WHERE order_date = $2
-    `, [newNumber, today]);
-
-    const dailyNumber = newNumber;
+    const dailyNumber = counterResult.rows[0].next_number;
     const orderNumber = String(dailyNumber).padStart(4, '0');
     
-    console.log(`📊 Contador para ${today}: ${dailyNumber} → Orden #${orderNumber}`);
+    console.log(`📊 Orden #${orderNumber} generada con función de BD`);
 
     let customerName = null;
     if (cliente_id) {
@@ -185,7 +155,7 @@ router.post('/', authMiddleware, async (req, res) => {
     await client.query('ROLLBACK');
     console.error('Error al crear orden:', err);
     
-    // Manejar error de duplicado
+    // Manejar error de duplicado (por si acaso)
     if (err.code === '23505') {
       return res.status(409).json({ 
         error: 'Conflicto al generar número de orden. Por favor intente nuevamente.',
