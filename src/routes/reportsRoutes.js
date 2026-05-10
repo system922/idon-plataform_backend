@@ -11,14 +11,11 @@ const router = express.Router();
  * ============================================
  */
 
-// Detectar fuente de datos priorizando einvoices (facturas electrónicas)
 async function getDataSource(schema) {
   try {
-    // Verificar einvoices con orden relacionada
     const einvoicesCheck = await query(
       `SELECT COUNT(*) as count 
        FROM "${schema}".einvoices e
-       INNER JOIN "${schema}".pos_orders o ON e.order_id = o.id
        WHERE e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO')`
     );
     
@@ -26,7 +23,6 @@ async function getDataSource(schema) {
       return { source: 'einvoicing' };
     }
     
-    // Verificar pos_orders pagadas
     const posCheck = await query(
       `SELECT COUNT(*) as count 
        FROM "${schema}".pos_orders 
@@ -44,8 +40,7 @@ async function getDataSource(schema) {
   }
 }
 
-// Construir filtro de fechas para consultas SQL
-function buildDateFilter(periodo, startDate, endDate, tableAlias = 'o') {
+function buildDateFilter(periodo, startDate, endDate, tableAlias = 'e') {
   let dateFilter = '';
   let queryParams = [];
   
@@ -77,37 +72,73 @@ function buildDateFilter(periodo, startDate, endDate, tableAlias = 'o') {
   return { dateFilter, queryParams };
 }
 
-// Obtener totales consistentes desde einvoices
-async function getEinvoicesTotals(schema, dateFilter, queryParams) {
+/**
+ * CONSULTA BASE UNIFICADA PARA TOTALES DE VENTAS
+ * Esta es la ÚNICA fuente de verdad para totales
+ */
+async function getSalesTotals(schema, periodo, startDate, endDate) {
+  const dataSource = await getDataSource(schema);
+  const { dateFilter, queryParams } = buildDateFilter(periodo, startDate, endDate, 'e');
+  
   let params = queryParams.length > 0 ? [...queryParams] : [];
   
-  const sql = queryParams.length > 0
-    ? `
+  if (dataSource.source === 'einvoicing') {
+    // Total desde facturas electrónicas
+    const sql = `
       SELECT 
-        COUNT(DISTINCT e.id) as total_facturas,
+        COUNT(DISTINCT e.id) as total_ordenes,
         COALESCE(SUM(e.total), 0) as total_ingresos,
         COALESCE(SUM(e.subtotal), 0) as total_subtotal,
         COALESCE(SUM(e.iva_amount), 0) as total_iva,
-        COUNT(DISTINCT e.customer_ruc) as clientes_unicos
+        COUNT(DISTINCT e.customer_ruc) as clientes_unicos,
+        CASE 
+          WHEN COUNT(DISTINCT e.id) > 0 
+          THEN COALESCE(SUM(e.total), 0) / COUNT(DISTINCT e.id) 
+          ELSE 0 
+        END as ticket_promedio
       FROM "${schema}".einvoices e
-      INNER JOIN "${schema}".pos_orders o ON e.order_id = o.id
-      WHERE ${dateFilter.replace(/o\./g, 'e.')}
-        AND e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO')
-    `
-    : `
-      SELECT 
-        COUNT(DISTINCT e.id) as total_facturas,
-        COALESCE(SUM(e.total), 0) as total_ingresos,
-        COALESCE(SUM(e.subtotal), 0) as total_subtotal,
-        COALESCE(SUM(e.iva_amount), 0) as total_iva,
-        COUNT(DISTINCT e.customer_ruc) as clientes_unicos
-      FROM "${schema}".einvoices e
-      INNER JOIN "${schema}".pos_orders o ON e.order_id = o.id
-      WHERE ${dateFilter.replace(/o\./g, 'e.')}
+      WHERE ${dateFilter}
         AND e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO')
     `;
+    
+    const result = await query(sql, params);
+    return {
+      source: 'einvoicing',
+      totals: result.rows[0] || { total_ordenes: 0, total_ingresos: 0, total_subtotal: 0, total_iva: 0, clientes_unicos: 0, ticket_promedio: 0 }
+    };
+  }
   
-  return await query(sql, params);
+  if (dataSource.source === 'pos') {
+    // Total desde órdenes POS pagadas
+    const posDateFilter = dateFilter.replace(/e\./g, 'o.');
+    const sql = `
+      SELECT 
+        COUNT(DISTINCT o.id) as total_ordenes,
+        COALESCE(SUM(o.total), 0) as total_ingresos,
+        COALESCE(SUM(o.subtotal), 0) as total_subtotal,
+        COALESCE(SUM(o.tax_amount), 0) as total_iva,
+        COUNT(DISTINCT o.customer_id) as clientes_unicos,
+        CASE 
+          WHEN COUNT(DISTINCT o.id) > 0 
+          THEN COALESCE(SUM(o.total), 0) / COUNT(DISTINCT o.id) 
+          ELSE 0 
+        END as ticket_promedio
+      FROM "${schema}".pos_orders o
+      WHERE ${posDateFilter}
+        AND o.status = 'paid'
+    `;
+    
+    const result = await query(sql, params);
+    return {
+      source: 'pos',
+      totals: result.rows[0] || { total_ordenes: 0, total_ingresos: 0, total_subtotal: 0, total_iva: 0, clientes_unicos: 0, ticket_promedio: 0 }
+    };
+  }
+  
+  return {
+    source: 'none',
+    totals: { total_ordenes: 0, total_ingresos: 0, total_subtotal: 0, total_iva: 0, clientes_unicos: 0, ticket_promedio: 0 }
+  };
 }
 
 /**
@@ -139,30 +170,24 @@ router.get('/sales', authMiddleware, async (req, res) => {
       });
     }
     
-    const { dateFilter, queryParams } = buildDateFilter(periodo, startDate, endDate, 'o');
+    const { queryParams } = buildDateFilter(periodo, startDate, endDate, 'e');
     let params = queryParams.length > 0 ? [...queryParams] : [];
-    let whereClause = '';
-    let countQuery = '';
-    let selectQuery = '';
+    let countQuery, selectQuery;
     
     if (dataSource.source === 'einvoicing') {
-      // Ventas desde facturas electrónicas con su orden relacionada
-      const dateFilterEinvoice = dateFilter.replace(/o\./g, 'e.');
+      const whereClause = params.length > 0
+        ? `WHERE DATE(e.created_at) >= $1::DATE AND DATE(e.created_at) <= $2::DATE AND e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO')`
+        : `WHERE e.created_at >= DATE_TRUNC('month', CURRENT_DATE) AND e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO')`;
       
-      whereClause = `WHERE ${dateFilterEinvoice} AND e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO')`;
+      countQuery = `SELECT COUNT(*) as total FROM "${schema}".einvoices e ${whereClause}`;
       
-      countQuery = `
-        SELECT COUNT(*) as total 
-        FROM "${schema}".einvoices e
-        ${whereClause}
-      `;
+      const limitIdx = params.length + 1;
+      const offsetIdx = params.length + 2;
       
       selectQuery = `
         SELECT 
           e.id,
           e.invoice_number as numero_factura,
-          e.order_id,
-          o.order_number,
           e.customer_name as cliente_nombre,
           e.customer_ruc as cliente_cedula,
           e.created_at as fecha,
@@ -171,19 +196,25 @@ router.get('/sales', authMiddleware, async (req, res) => {
           e.total,
           e.status as estado
         FROM "${schema}".einvoices e
-        INNER JOIN "${schema}".pos_orders o ON e.order_id = o.id
         ${whereClause}
         ORDER BY e.created_at DESC
+        LIMIT $${limitIdx} OFFSET $${offsetIdx}
       `;
-    } else {
-      // Ventas desde POS (órdenes pagadas sin factura electrónica)
-      whereClause = `WHERE ${dateFilter} AND o.status = 'paid'`;
       
-      countQuery = `
-        SELECT COUNT(*) as total 
-        FROM "${schema}".pos_orders o
-        ${whereClause}
-      `;
+      params.push(parseInt(limit), offset);
+    } else {
+      const posDateFilter = periodo === 'month' 
+        ? `o.created_at >= DATE_TRUNC('month', CURRENT_DATE)` 
+        : `DATE(o.created_at) >= $1::DATE AND DATE(o.created_at) <= $2::DATE`;
+      
+      const whereClause = params.length > 0
+        ? `WHERE ${posDateFilter} AND o.status = 'paid'`
+        : `WHERE o.created_at >= DATE_TRUNC('month', CURRENT_DATE) AND o.status = 'paid'`;
+      
+      countQuery = `SELECT COUNT(*) as total FROM "${schema}".pos_orders o ${whereClause}`;
+      
+      const limitIdx = params.length + 1;
+      const offsetIdx = params.length + 2;
       
       selectQuery = `
         SELECT 
@@ -200,16 +231,15 @@ router.get('/sales', authMiddleware, async (req, res) => {
         LEFT JOIN "${schema}".customers c ON o.customer_id = c.id
         ${whereClause}
         ORDER BY o.created_at DESC
+        LIMIT $${limitIdx} OFFSET $${offsetIdx}
       `;
+      
+      params.push(parseInt(limit), offset);
     }
     
-    // Contar total
-    const countResult = await query(countQuery, params);
+    const countResult = await query(countQuery, queryParams.length > 0 ? queryParams : []);
     const total = parseInt(countResult.rows[0].total);
-    
-    // Paginar
-    params.push(parseInt(limit), offset);
-    const result = await query(selectQuery + ` LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
+    const result = await query(selectQuery, params);
     
     res.json({
       success: true,
@@ -230,7 +260,7 @@ router.get('/sales', authMiddleware, async (req, res) => {
 
 /**
  * GET /api/reports/sales/summary
- * Resumen de ventas - CONSISTENTE con products-stats
+ * Resumen de ventas - USA LA CONSULTA UNIFICADA
  */
 router.get('/sales/summary', authMiddleware, async (req, res) => {
   try {
@@ -239,52 +269,19 @@ router.get('/sales/summary', authMiddleware, async (req, res) => {
 
     const { startDate = null, endDate = null, periodo = 'month' } = req.query;
     
-    const dataSource = await getDataSource(schema);
-    
-    if (dataSource.source === 'none') {
-      return res.json({
-        success: true,
-        data: { total_ventas: 0, total_ingresos: 0, total_subtotal: 0, total_iva: 0, clientes_unicos: 0 },
-        metadata: { invoiceSource: 'none' }
-      });
-    }
-    
-    const { dateFilter, queryParams } = buildDateFilter(periodo, startDate, endDate, 'o');
-    
-    if (dataSource.source === 'einvoicing') {
-      const result = await getEinvoicesTotals(schema, dateFilter, queryParams);
-      
-      return res.json({
-        success: true,
-        data: {
-          total_ventas: parseInt(result.rows[0]?.total_facturas) || 0,
-          total_ingresos: parseFloat(result.rows[0]?.total_ingresos) || 0,
-          total_subtotal: parseFloat(result.rows[0]?.total_subtotal) || 0,
-          total_iva: parseFloat(result.rows[0]?.total_iva) || 0,
-          clientes_unicos: parseInt(result.rows[0]?.clientes_unicos) || 0
-        },
-        metadata: { invoiceSource: 'einvoicing' }
-      });
-    }
-    
-    // POS
-    let params = queryParams.length > 0 ? [...queryParams] : [];
-    const result = await query(
-      `SELECT
-         COUNT(*) as total_ventas,
-         COALESCE(SUM(o.total), 0) as total_ingresos,
-         COALESCE(SUM(o.subtotal), 0) as total_subtotal,
-         COALESCE(SUM(o.tax_amount), 0) as total_iva,
-         COUNT(DISTINCT o.customer_id) as clientes_unicos
-       FROM "${schema}".pos_orders o
-       WHERE ${dateFilter} AND o.status = 'paid'`,
-      params
-    );
+    const result = await getSalesTotals(schema, periodo, startDate, endDate);
     
     res.json({
       success: true,
-      data: result.rows[0],
-      metadata: { invoiceSource: 'pos' }
+      data: {
+        total_ventas: parseInt(result.totals.total_ordenes) || 0,
+        total_ingresos: parseFloat(result.totals.total_ingresos) || 0,
+        total_subtotal: parseFloat(result.totals.total_subtotal) || 0,
+        total_iva: parseFloat(result.totals.total_iva) || 0,
+        clientes_unicos: parseInt(result.totals.clientes_unicos) || 0,
+        ticket_promedio: parseFloat(result.totals.ticket_promedio) || 0
+      },
+      metadata: { invoiceSource: result.source }
     });
   } catch (err) {
     console.error('[SalesSummary] Error:', err);
@@ -298,9 +295,6 @@ router.get('/sales/summary', authMiddleware, async (req, res) => {
  * ============================================
  */
 
-/**
- * GET /api/reports/products/categories
- */
 router.get('/products/categories', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -322,7 +316,6 @@ router.get('/products/categories', authMiddleware, async (req, res) => {
 
 /**
  * GET /api/reports/products-sold
- * Productos vendidos - USA pos_order_items como fuente única de verdad
  */
 router.get('/products-sold', authMiddleware, async (req, res) => {
   try {
@@ -341,21 +334,16 @@ router.get('/products-sold', authMiddleware, async (req, res) => {
     console.log('[ProductsSold] Params:', { periodo, categoria, order_by, limit });
     
     const dataSource = await getDataSource(schema);
-    console.log('[ProductsSold] DataSource:', dataSource);
-    
     const { dateFilter, queryParams } = buildDateFilter(periodo, startDate, endDate, 'o');
     
-    // Ordenamiento
     let orderByClause = 'cantidad_vendida DESC';
     if (order_by === 'total') orderByClause = 'total_vendido DESC';
     else if (order_by === 'name') orderByClause = 'nombre_producto ASC';
     
     let params = queryParams.length > 0 ? [...queryParams] : [];
-    let whereConditions = [dateFilter];
+    let whereConditions = [dateFilter.replace(/e\./g, 'o.')];
     
-    // Solo órdenes pagadas (ya sea desde einvoices o directamente)
     if (dataSource.source === 'einvoicing') {
-      // Unir con einvoices para filtrar por facturas autorizadas
       whereConditions.push(`EXISTS (
         SELECT 1 FROM "${schema}".einvoices e 
         WHERE e.order_id = o.id 
@@ -365,17 +353,15 @@ router.get('/products-sold', authMiddleware, async (req, res) => {
       whereConditions.push(`o.status = 'paid'`);
     }
     
-    // Filtro por categoría
     if (categoria) {
-      const catParamIndex = params.length + 1;
-      whereConditions.push(`c.id = $${catParamIndex}`);
+      const catIdx = params.length + 1;
+      whereConditions.push(`cat.id = $${catIdx}`);
       params.push(categoria);
     }
     
     const whereClause = `WHERE ${whereConditions.join(' AND ')}`;
-    const limitParamIndex = params.length + 1;
+    const limitIdx = params.length + 1;
     
-    // CONSULTA PRINCIPAL: Desde pos_order_items (fuente única de verdad)
     const queryText = `
       SELECT 
         p.id::text as id,
@@ -393,15 +379,12 @@ router.get('/products-sold', authMiddleware, async (req, res) => {
       GROUP BY p.id, p.code, p.sku, p.name, cat.name
       HAVING COALESCE(SUM(oi.quantity), 0) > 0
       ORDER BY ${orderByClause}
-      LIMIT $${limitParamIndex}
+      LIMIT $${limitIdx}
     `;
     
     params.push(parseInt(limit) || 50);
     
-    console.log('[ProductsSold] Query:', queryText.substring(0, 300));
-    
     const result = await query(queryText, params);
-    console.log('[ProductsSold] Row count:', result.rows.length);
     
     const formattedRows = result.rows.map(row => ({
       ...row,
@@ -440,21 +423,15 @@ router.get('/products-stats', authMiddleware, async (req, res) => {
     const { periodo = 'month', startDate, endDate } = req.query;
     
     const dataSource = await getDataSource(schema);
-    console.log('[ProductsStats] DataSource:', dataSource);
-    
     const { dateFilter, queryParams } = buildDateFilter(periodo, startDate, endDate, 'o');
     
-    let stats = {
-      total_productos_vendidos: 0,
-      total_ventas: 0,
-      productos_distintos: 0,
-      ticket_promedio: 0
-    };
+    // Obtener totales de ventas (MISMA CONSULTA UNIFICADA)
+    const salesTotals = await getSalesTotals(schema, periodo, startDate, endDate);
     
+    // Obtener estadísticas de productos desde pos_order_items
     let params = queryParams.length > 0 ? [...queryParams] : [];
-    let whereConditions = [dateFilter];
+    let whereConditions = [dateFilter.replace(/e\./g, 'o.')];
     
-    // Filtrar por facturas electrónicas o POS pagadas
     if (dataSource.source === 'einvoicing') {
       whereConditions.push(`EXISTS (
         SELECT 1 FROM "${schema}".einvoices e 
@@ -467,7 +444,6 @@ router.get('/products-stats', authMiddleware, async (req, res) => {
     
     const whereClause = `WHERE ${whereConditions.join(' AND ')}`;
     
-    // Consulta de productos desde pos_order_items
     const productsQuery = `
       SELECT 
         COALESCE(SUM(oi.quantity), 0) as total_cantidad,
@@ -479,35 +455,13 @@ router.get('/products-stats', authMiddleware, async (req, res) => {
     
     const productsResult = await query(productsQuery, params);
     
-    if (productsResult.rows[0]) {
-      stats.total_productos_vendidos = parseInt(productsResult.rows[0].total_cantidad) || 0;
-      stats.productos_distintos = parseInt(productsResult.rows[0].productos_distintos) || 0;
-    }
+    const stats = {
+      total_productos_vendidos: parseInt(productsResult.rows[0]?.total_cantidad) || 0,
+      total_ventas: parseFloat(salesTotals.totals.total_ingresos) || 0,
+      productos_distintos: parseInt(productsResult.rows[0]?.productos_distintos) || 0,
+      ticket_promedio: parseFloat(salesTotals.totals.ticket_promedio) || 0
+    };
     
-    // Consulta de totales desde einvoices o pos_orders (CONSISTENTE con sales/summary)
-    if (dataSource.source === 'einvoicing') {
-      const totalsResult = await getEinvoicesTotals(schema, dateFilter, queryParams);
-      if (totalsResult.rows[0]) {
-        stats.total_ventas = parseFloat(totalsResult.rows[0].total_ingresos) || 0;
-      }
-    } else if (dataSource.source === 'pos') {
-      const totalsQuery = `
-        SELECT COALESCE(SUM(o.total), 0) as total_ingresos
-        FROM "${schema}".pos_orders o
-        WHERE ${dateFilter} AND o.status = 'paid'
-      `;
-      const totalsResult = await query(totalsQuery, params);
-      if (totalsResult.rows[0]) {
-        stats.total_ventas = parseFloat(totalsResult.rows[0].total_ingresos) || 0;
-      }
-    }
-    
-    // Ticket promedio
-    stats.ticket_promedio = stats.productos_distintos > 0 
-      ? stats.total_ventas / stats.productos_distintos 
-      : 0;
-    
-    // Redondear
     stats.total_ventas = Math.round(stats.total_ventas * 100) / 100;
     stats.ticket_promedio = Math.round(stats.ticket_promedio * 100) / 100;
     
@@ -534,10 +488,6 @@ router.get('/products-stats', authMiddleware, async (req, res) => {
  * ============================================
  */
 
-/**
- * GET /api/reports/advanced
- * Reporte avanzado con ventas y gastos - CORREGIDO
- */
 router.get('/advanced', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -552,7 +502,9 @@ router.get('/advanced', authMiddleware, async (req, res) => {
     console.log('[Advanced] Params:', { from, to, groupBy });
 
     const dataSource = await getDataSource(schema);
-    console.log('[Advanced] DataSource:', dataSource);
+    
+    // Usar la consulta unificada para totales
+    const totalsResult = await getSalesTotals(schema, 'custom', from, to);
     
     let dateFormatGroup, dateFormatLabel;
     switch(groupBy) {
@@ -564,19 +516,13 @@ router.get('/advanced', authMiddleware, async (req, res) => {
         dateFormatGroup = `DATE_TRUNC('month', created_at)::DATE`;
         dateFormatLabel = `DATE_TRUNC('month', created_at)::DATE`;
         break;
-      case 'category':
-        // Para categoría no se agrupa por fecha
-        dateFormatGroup = `'General'`;
-        dateFormatLabel = `'General'`;
-        break;
-      default: // day
+      default:
         dateFormatGroup = `DATE(created_at)`;
         dateFormatLabel = `DATE(created_at)`;
     }
 
     let salesResult = { rows: [] };
     
-    // Obtener ventas desde facturas electrónicas o POS
     if (dataSource.source === 'einvoicing') {
       salesResult = await query(
         `SELECT 
@@ -609,28 +555,16 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       );
     }
 
-    console.log('[Advanced] Sales rows:', salesResult.rows.length);
-
-    // Obtener gastos
+    // Gastos
     let expensesResult = { rows: [] };
     try {
-      let expensesGroupBy, expensesLabel;
-      if (groupBy === 'category') {
-        expensesGroupBy = `'Gastos Generales'`;
-        expensesLabel = `'Gastos Generales'`;
-      } else {
-        expensesGroupBy = `DATE(date)`;
-        expensesLabel = `DATE(date)`;
-      }
-      
       expensesResult = await query(
         `SELECT 
-           ${expensesLabel} as date,
+           DATE(date) as date,
            COALESCE(SUM(amount), 0) as total_expenses
          FROM "${schema}".expenses
-         WHERE date >= $1::DATE 
-           AND date <= $2::DATE
-         GROUP BY ${expensesGroupBy}
+         WHERE date >= $1::DATE AND date <= $2::DATE
+         GROUP BY DATE(date)
          ORDER BY date ASC`,
         [from, to]
       );
@@ -638,61 +572,147 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       console.warn('[Advanced] Expenses query failed:', err.message);
     }
 
-    console.log('[Advanced] Expenses rows:', expensesResult.rows.length);
-
-    // Crear un array completo de fechas en el rango para que no falten días
+    // Crear array completo de fechas
     const allDates = [];
     const startDate = new Date(from + 'T12:00:00');
     const endDate = new Date(to + 'T12:00:00');
     
     for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
-      const dateStr = d.toISOString().split('T')[0];
-      allDates.push(dateStr);
+      allDates.push(d.toISOString().split('T')[0]);
     }
-    
-    console.log('[Advanced] Date range has', allDates.length, 'days');
 
-    // Llenar el array de ventas con 0 para los días sin ventas
+    // Completar ventas
     const completeSales = allDates.map(dateStr => {
       const sale = salesResult.rows.find(s => {
-        const saleDate = s.date instanceof Date 
-          ? s.date.toISOString().split('T')[0] 
-          : String(s.date).split('T')[0];
+        const saleDate = s.date instanceof Date ? s.date.toISOString().split('T')[0] : String(s.date).split('T')[0];
         return saleDate === dateStr;
       });
-      
-      return sale || {
-        date: dateStr,
-        total_sales: 0,
-        numero_transacciones: 0,
-        clientes_unicos: 0
-      };
+      return sale || { date: dateStr, total_sales: 0, numero_transacciones: 0, clientes_unicos: 0 };
     });
 
-    // Llenar el array de gastos con 0 para los días sin gastos
+    // Completar gastos
     const completeExpenses = allDates.map(dateStr => {
       const expense = expensesResult.rows.find(e => {
-        const expDate = e.date instanceof Date 
-          ? e.date.toISOString().split('T')[0] 
-          : String(e.date).split('T')[0];
+        const expDate = e.date instanceof Date ? e.date.toISOString().split('T')[0] : String(e.date).split('T')[0];
         return expDate === dateStr;
       });
-      
-      return expense || {
-        date: dateStr,
-        total_expenses: 0
-      };
+      return expense || { date: dateStr, total_expenses: 0 };
     });
 
-    // Ordenar por fecha
-    completeSales.sort((a, b) => String(a.date).localeCompare(String(b.date)));
-    completeExpenses.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    res.json({
+      success: true,
+      sales: completeSales,
+      expenses: completeExpenses,
+      totals: {
+        total_ventas: parseFloat(totalsResult.totals.total_ingresos) || 0,
+        total_gastos: completeExpenses.reduce((sum, e) => sum + (Number(e.total_expenses) || 0), 0),
+        ganancia_neta: 0,
+        margen: 0
+      },
+      metadata: {
+        invoiceSource: dataSource.source,
+        dateRange: { from, to },
+        groupBy,
+        totalDays: allDates.length
+      }
+    });
+    
+    // Calcular neto y margen después
+    const totals = res.json.body?.totals || {};
+    // Nota: Express no permite modificar después de res.json, así que calculamos antes
+  } catch (err) {
+    console.error('[Advanced] Error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
-    // Totales generales
-    const totalVentas = completeSales.reduce((sum, s) => sum + (Number(s.total_sales) || 0), 0);
+// Corregir el endpoint advanced para calcular neto y margen antes de enviar
+router.get('/advanced', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { from = null, to = null, groupBy = 'day' } = req.query;
+    if (!from || !to) return res.status(400).json({ error: 'from and to dates are required' });
+
+    const dataSource = await getDataSource(schema);
+    const totalsResult = await getSalesTotals(schema, 'custom', from, to);
+    
+    let dateFormatGroup, dateFormatLabel;
+    switch(groupBy) {
+      case 'week':
+        dateFormatGroup = `DATE_TRUNC('week', created_at)::DATE`;
+        dateFormatLabel = `DATE_TRUNC('week', created_at)::DATE`;
+        break;
+      case 'month':
+        dateFormatGroup = `DATE_TRUNC('month', created_at)::DATE`;
+        dateFormatLabel = `DATE_TRUNC('month', created_at)::DATE`;
+        break;
+      default:
+        dateFormatGroup = `DATE(created_at)`;
+        dateFormatLabel = `DATE(created_at)`;
+    }
+
+    let salesResult = { rows: [] };
+    const tableName = dataSource.source === 'einvoicing' ? 'einvoices' : 'pos_orders';
+    const statusCond = dataSource.source === 'einvoicing' 
+      ? `status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO')` 
+      : `status = 'paid'`;
+    
+    salesResult = await query(
+      `SELECT 
+         ${dateFormatLabel} as date,
+         COALESCE(SUM(total), 0) as total_sales,
+         COUNT(DISTINCT id) as numero_transacciones
+       FROM "${schema}".${tableName}
+       WHERE ${statusCond}
+         AND DATE(created_at) >= $1::DATE 
+         AND DATE(created_at) <= $2::DATE
+       GROUP BY ${dateFormatGroup}
+       ORDER BY date ASC`,
+      [from, to]
+    );
+
+    let expensesResult = { rows: [] };
+    try {
+      expensesResult = await query(
+        `SELECT DATE(date) as date, COALESCE(SUM(amount), 0) as total_expenses
+         FROM "${schema}".expenses
+         WHERE date >= $1::DATE AND date <= $2::DATE
+         GROUP BY DATE(date) ORDER BY date ASC`,
+        [from, to]
+      );
+    } catch (err) {
+      console.warn('[Advanced] Expenses:', err.message);
+    }
+
+    const allDates = [];
+    const start = new Date(from + 'T12:00:00');
+    const end = new Date(to + 'T12:00:00');
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      allDates.push(d.toISOString().split('T')[0]);
+    }
+
+    const completeSales = allDates.map(dateStr => {
+      const sale = salesResult.rows.find(s => {
+        const sd = s.date instanceof Date ? s.date.toISOString().split('T')[0] : String(s.date).split('T')[0];
+        return sd === dateStr;
+      });
+      return sale || { date: dateStr, total_sales: 0, numero_transacciones: 0 };
+    });
+
+    const completeExpenses = allDates.map(dateStr => {
+      const exp = expensesResult.rows.find(e => {
+        const ed = e.date instanceof Date ? e.date.toISOString().split('T')[0] : String(e.date).split('T')[0];
+        return ed === dateStr;
+      });
+      return exp || { date: dateStr, total_expenses: 0 };
+    });
+
+    const totalVentas = parseFloat(totalsResult.totals.total_ingresos) || 0;
     const totalGastos = completeExpenses.reduce((sum, e) => sum + (Number(e.total_expenses) || 0), 0);
-
-    console.log('[Advanced] Totals:', { totalVentas, totalGastos });
+    const gananciaNeta = totalVentas - totalGastos;
+    const margen = totalVentas > 0 ? (gananciaNeta / totalVentas) * 100 : 0;
 
     res.json({
       success: true,
@@ -701,8 +721,8 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       totals: {
         total_ventas: totalVentas,
         total_gastos: totalGastos,
-        ganancia_neta: totalVentas - totalGastos,
-        margen: totalVentas > 0 ? ((totalVentas - totalGastos) / totalVentas) * 100 : 0
+        ganancia_neta: gananciaNeta,
+        margen: margen
       },
       metadata: {
         invoiceSource: dataSource.source,
