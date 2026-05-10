@@ -675,12 +675,12 @@ router.get('/sales-report/summary', authMiddleware, async (req, res) => {
       paramIndex++;
     }
 
-    const whereClause = whereConditions.length > 0 
-      ? `WHERE ${whereConditions.join(' AND ')}` 
-      : '';
-
     const tableName = useEinvoicing ? 'einvoicing_invoices' : 'pos_orders';
     const statusFilter = useEinvoicing ? "t.status = 'autorizada'" : "t.status = 'paid'";
+
+    // Build conditions array including status filter
+    whereConditions.push(statusFilter);
+    const whereClause = `WHERE ${whereConditions.join(' AND ')}`;
 
     const result = await query(
       `SELECT 
@@ -690,8 +690,7 @@ router.get('/sales-report/summary', authMiddleware, async (req, res) => {
          COALESCE(SUM(t.${useEinvoicing ? 'iva' : 'tax'}), 0) as total_iva,
          COUNT(DISTINCT t.customer_id) as clientes_unicos
        FROM "${schema}".${tableName} t
-       ${whereClause}
-       AND ${statusFilter}`,
+       ${whereClause}`,
       params
     );
 
