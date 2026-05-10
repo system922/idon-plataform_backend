@@ -821,47 +821,109 @@ router.get('/advanced', authMiddleware, async (req, res) => {
     let statusFilter = useEinvoicing ? `t.status = 'autorizada'` : `t.status = 'paid'`;
 
     // Obtener ventas por período
-    const salesResult = await query(
-      `SELECT 
-         ${dateFormatLabel} as date,
-         COALESCE(SUM(t.total), 0) as total_sales,
-         COUNT(*) as numero_transacciones,
-         COUNT(DISTINCT t.customer_id) as clientes_unicos
-       FROM "${schema}".${tableName} t
-       WHERE DATE(t.created_at) >= $1 
-         AND DATE(t.created_at) <= $2
-         AND ${statusFilter}
-       GROUP BY ${dateFormatGroup}
-       ORDER BY date ASC`,
-      [from, to]
-    );
+    let salesResult = { rows: [] };
+    try {
+      salesResult = await query(
+        `SELECT 
+           ${dateFormatLabel} as date,
+           COALESCE(SUM(t.total), 0) as total_sales,
+           COUNT(*) as numero_transacciones,
+           COUNT(DISTINCT t.customer_id) as clientes_unicos
+         FROM "${schema}".${tableName} t
+         WHERE DATE(t.created_at) >= $1 
+           AND DATE(t.created_at) <= $2
+           AND ${statusFilter}
+         GROUP BY ${dateFormatGroup}
+         ORDER BY date ASC`,
+        [from, to]
+      );
+    } catch (err) {
+      console.warn('Warning - Sales query failed:', err.message);
+    }
 
-    // Obtener gastos por período
-    const expensesResult = await query(
-      `SELECT 
-         ${dateFormatLabel} as date,
-         COALESCE(SUM(e.monto), 0) as total_expenses
-       FROM "${schema}".gastos e
-       WHERE DATE(e.fecha) >= $1 
-         AND DATE(e.fecha) <= $2
-       GROUP BY ${dateFormatGroup}
-       ORDER BY date ASC`,
-      [from, to]
-    );
+    // Obtener gastos por período (con validación de tabla)
+    let expensesResult = { rows: [] };
+    try {
+      const tableExists = await query(
+        `SELECT EXISTS (
+           SELECT 1 FROM information_schema.tables 
+           WHERE table_schema = $1 AND table_name IN ('gastos', 'expenses', 'expense_records')
+         ) as exists`,
+        [schema]
+      );
+      
+      if (tableExists.rows[0]?.exists) {
+        const expenseTable = await query(
+          `SELECT table_name FROM information_schema.tables 
+           WHERE table_schema = $1 AND table_name IN ('gastos', 'expenses', 'expense_records')
+           LIMIT 1`,
+          [schema]
+        );
+        
+        if (expenseTable.rows.length > 0) {
+          const tableName = expenseTable.rows[0].table_name;
+          const dateColumn = ['gastos'].includes(tableName) ? 'fecha' : 'created_at';
+          const amountColumn = ['gastos'].includes(tableName) ? 'monto' : 'amount';
+          
+          expensesResult = await query(
+            `SELECT 
+               ${dateFormatLabel} as date,
+               COALESCE(SUM(e.${amountColumn}), 0) as total_expenses
+             FROM "${schema}".${tableName} e
+             WHERE DATE(e.${dateColumn}) >= $1 
+               AND DATE(e.${dateColumn}) <= $2
+             GROUP BY ${dateFormatGroup}
+             ORDER BY date ASC`,
+            [from, to]
+          );
+        }
+      }
+    } catch (err) {
+      console.warn('Warning - Expenses query failed:', err.message);
+    }
 
     // Obtener cuentas por cobrar (deudas de clientes)
-    const receivablesResult = await query(
-      `SELECT 
-         ${dateFormatLabel} as date,
-         COALESCE(SUM(ar.monto), 0) as total_receivable
-       FROM "${schema}".cuentas_por_cobrar ar
-       WHERE DATE(ar.fecha_creacion) >= $1 
-         AND DATE(ar.fecha_creacion) <= $2
-         AND ar.estado = 'pendiente'
-       GROUP BY ${dateFormatGroup}
-       ORDER BY date ASC`,
-      [from, to]
-    );
+    let receivablesResult = { rows: [] };
+    try {
+      const tableExists = await query(
+        `SELECT EXISTS (
+           SELECT 1 FROM information_schema.tables 
+           WHERE table_schema = $1 AND table_name IN ('cuentas_por_cobrar', 'accounts_receivable', 'receivables')
+         ) as exists`,
+        [schema]
+      );
+      
+      if (tableExists.rows[0]?.exists) {
+        const receivableTable = await query(
+          `SELECT table_name FROM information_schema.tables 
+           WHERE table_schema = $1 AND table_name IN ('cuentas_por_cobrar', 'accounts_receivable', 'receivables')
+           LIMIT 1`,
+          [schema]
+        );
+        
+        if (receivableTable.rows.length > 0) {
+          const tableName = receivableTable.rows[0].table_name;
+          const dateColumn = ['cuentas_por_cobrar'].includes(tableName) ? 'fecha_creacion' : 'created_at';
+          const amountColumn = ['cuentas_por_cobrar'].includes(tableName) ? 'monto' : 'amount';
+          const statusColumn = ['cuentas_por_cobrar'].includes(tableName) ? 'estado' : 'status';
+          
+          receivablesResult = await query(
+            `SELECT 
+               ${dateFormatLabel} as date,
+               COALESCE(SUM(ar.${amountColumn}), 0) as total_receivable
+             FROM "${schema}".${tableName} ar
+             WHERE DATE(ar.${dateColumn}) >= $1 
+               AND DATE(ar.${dateColumn}) <= $2
+               AND ar.${statusColumn} = 'pendiente'
+             GROUP BY ${dateFormatGroup}
+             ORDER BY date ASC`,
+            [from, to]
+          );
+        }
+      }
+    } catch (err) {
+      console.warn('Warning - Receivables query failed:', err.message);
+    }
 
     res.json({
       success: true,
