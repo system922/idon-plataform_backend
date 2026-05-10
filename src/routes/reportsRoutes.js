@@ -65,7 +65,7 @@ async function getDataSource(schema, startDate = null, endDate = null) {
 
 /**
  * ============================================
- * REPORTE DE VENTAS
+ * 1. REPORTE DE VENTAS
  * ============================================
  */
 
@@ -253,7 +253,7 @@ router.get('/sales/summary', authMiddleware, async (req, res) => {
 
 /**
  * ============================================
- * REPORTE DE PRODUCTOS
+ * 2. REPORTE DE PRODUCTOS
  * ============================================
  */
 
@@ -424,7 +424,7 @@ router.get('/products-sold', authMiddleware, async (req, res) => {
 
 /**
  * ============================================
- * REPORTE AVANZADO
+ * 3. REPORTE AVANZADO
  * ============================================
  */
 
