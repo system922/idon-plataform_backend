@@ -534,6 +534,10 @@ router.get('/products-stats', authMiddleware, async (req, res) => {
  * ============================================
  */
 
+/**
+ * GET /api/reports/advanced
+ * Reporte avanzado con ventas y gastos - CORREGIDO
+ */
 router.get('/advanced', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -545,36 +549,45 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'from and to dates are required' });
     }
 
+    console.log('[Advanced] Params:', { from, to, groupBy });
+
     const dataSource = await getDataSource(schema);
+    console.log('[Advanced] DataSource:', dataSource);
     
     let dateFormatGroup, dateFormatLabel;
     switch(groupBy) {
       case 'week':
-        dateFormatGroup = `DATE_TRUNC('week', created_at)`;
-        dateFormatLabel = `DATE_TRUNC('week', created_at)`;
+        dateFormatGroup = `DATE_TRUNC('week', created_at)::DATE`;
+        dateFormatLabel = `DATE_TRUNC('week', created_at)::DATE`;
         break;
       case 'month':
-        dateFormatGroup = `DATE_TRUNC('month', created_at)`;
-        dateFormatLabel = `DATE_TRUNC('month', created_at)`;
+        dateFormatGroup = `DATE_TRUNC('month', created_at)::DATE`;
+        dateFormatLabel = `DATE_TRUNC('month', created_at)::DATE`;
         break;
-      default:
+      case 'category':
+        // Para categoría no se agrupa por fecha
+        dateFormatGroup = `'General'`;
+        dateFormatLabel = `'General'`;
+        break;
+      default: // day
         dateFormatGroup = `DATE(created_at)`;
         dateFormatLabel = `DATE(created_at)`;
     }
 
     let salesResult = { rows: [] };
     
+    // Obtener ventas desde facturas electrónicas o POS
     if (dataSource.source === 'einvoicing') {
       salesResult = await query(
         `SELECT 
            ${dateFormatLabel} as date,
            COALESCE(SUM(e.total), 0) as total_sales,
-           COUNT(*) as numero_transacciones,
+           COUNT(DISTINCT e.id) as numero_transacciones,
            COUNT(DISTINCT e.customer_ruc) as clientes_unicos
          FROM "${schema}".einvoices e
          WHERE e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO')
-           AND DATE(e.created_at) >= $1 
-           AND DATE(e.created_at) <= $2
+           AND DATE(e.created_at) >= $1::DATE 
+           AND DATE(e.created_at) <= $2::DATE
          GROUP BY ${dateFormatGroup}
          ORDER BY date ASC`,
         [from, to]
@@ -584,28 +597,40 @@ router.get('/advanced', authMiddleware, async (req, res) => {
         `SELECT 
            ${dateFormatLabel} as date,
            COALESCE(SUM(o.total), 0) as total_sales,
-           COUNT(*) as numero_transacciones,
+           COUNT(DISTINCT o.id) as numero_transacciones,
            COUNT(DISTINCT o.customer_id) as clientes_unicos
          FROM "${schema}".pos_orders o
          WHERE o.status = 'paid'
-           AND DATE(o.created_at) >= $1 
-           AND DATE(o.created_at) <= $2
+           AND DATE(o.created_at) >= $1::DATE 
+           AND DATE(o.created_at) <= $2::DATE
          GROUP BY ${dateFormatGroup}
          ORDER BY date ASC`,
         [from, to]
       );
     }
 
-    // Gastos
+    console.log('[Advanced] Sales rows:', salesResult.rows.length);
+
+    // Obtener gastos
     let expensesResult = { rows: [] };
     try {
+      let expensesGroupBy, expensesLabel;
+      if (groupBy === 'category') {
+        expensesGroupBy = `'Gastos Generales'`;
+        expensesLabel = `'Gastos Generales'`;
+      } else {
+        expensesGroupBy = `DATE(date)`;
+        expensesLabel = `DATE(date)`;
+      }
+      
       expensesResult = await query(
         `SELECT 
-           DATE(date) as date,
+           ${expensesLabel} as date,
            COALESCE(SUM(amount), 0) as total_expenses
          FROM "${schema}".expenses
-         WHERE date >= $1::DATE AND date <= $2::DATE
-         GROUP BY DATE(date)
+         WHERE date >= $1::DATE 
+           AND date <= $2::DATE
+         GROUP BY ${expensesGroupBy}
          ORDER BY date ASC`,
         [from, to]
       );
@@ -613,13 +638,66 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       console.warn('[Advanced] Expenses query failed:', err.message);
     }
 
-    const totalVentas = salesResult.rows.reduce((sum, s) => sum + (Number(s.total_sales) || 0), 0);
-    const totalGastos = expensesResult.rows.reduce((sum, e) => sum + (Number(e.total_expenses) || 0), 0);
+    console.log('[Advanced] Expenses rows:', expensesResult.rows.length);
+
+    // Crear un array completo de fechas en el rango para que no falten días
+    const allDates = [];
+    const startDate = new Date(from + 'T12:00:00');
+    const endDate = new Date(to + 'T12:00:00');
+    
+    for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toISOString().split('T')[0];
+      allDates.push(dateStr);
+    }
+    
+    console.log('[Advanced] Date range has', allDates.length, 'days');
+
+    // Llenar el array de ventas con 0 para los días sin ventas
+    const completeSales = allDates.map(dateStr => {
+      const sale = salesResult.rows.find(s => {
+        const saleDate = s.date instanceof Date 
+          ? s.date.toISOString().split('T')[0] 
+          : String(s.date).split('T')[0];
+        return saleDate === dateStr;
+      });
+      
+      return sale || {
+        date: dateStr,
+        total_sales: 0,
+        numero_transacciones: 0,
+        clientes_unicos: 0
+      };
+    });
+
+    // Llenar el array de gastos con 0 para los días sin gastos
+    const completeExpenses = allDates.map(dateStr => {
+      const expense = expensesResult.rows.find(e => {
+        const expDate = e.date instanceof Date 
+          ? e.date.toISOString().split('T')[0] 
+          : String(e.date).split('T')[0];
+        return expDate === dateStr;
+      });
+      
+      return expense || {
+        date: dateStr,
+        total_expenses: 0
+      };
+    });
+
+    // Ordenar por fecha
+    completeSales.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    completeExpenses.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+
+    // Totales generales
+    const totalVentas = completeSales.reduce((sum, s) => sum + (Number(s.total_sales) || 0), 0);
+    const totalGastos = completeExpenses.reduce((sum, e) => sum + (Number(e.total_expenses) || 0), 0);
+
+    console.log('[Advanced] Totals:', { totalVentas, totalGastos });
 
     res.json({
       success: true,
-      sales: salesResult.rows,
-      expenses: expensesResult.rows,
+      sales: completeSales,
+      expenses: completeExpenses,
       totals: {
         total_ventas: totalVentas,
         total_gastos: totalGastos,
@@ -629,7 +707,8 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       metadata: {
         invoiceSource: dataSource.source,
         dateRange: { from, to },
-        groupBy
+        groupBy,
+        totalDays: allDates.length
       }
     });
   } catch (err) {
