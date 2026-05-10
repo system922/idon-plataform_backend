@@ -5,9 +5,25 @@ import { authMiddleware } from '../middleware/auth.js';
 
 const router = express.Router();
 
-// Función auxiliar para verificar facturación electrónica
+// Función auxiliar para verificar si hay facturación electrónica
 async function hasEinvoicing(schema) {
   try {
+    // Primero verificar si hay facturas electrónicas autorizadas
+    const hasInvoices = await query(
+      `SELECT EXISTS (
+        SELECT 1 FROM "${schema}".einvoices 
+        WHERE status = 'autorizada' 
+        LIMIT 1
+      ) as has_invoices`,
+      []
+    );
+    
+    if (hasInvoices.rows[0]?.has_invoices) {
+      console.log('[hasEinvoicing] Hay facturas electrónicas, usando einvoices');
+      return true;
+    }
+    
+    // Si no hay facturas, verificar configuración
     const tableCheck = await query(
       `SELECT EXISTS (
         SELECT FROM information_schema.tables 
@@ -16,7 +32,10 @@ async function hasEinvoicing(schema) {
       [schema]
     );
     
-    if (!tableCheck.rows[0].exists) return false;
+    if (!tableCheck.rows[0].exists) {
+      console.log('[hasEinvoicing] Tabla einvoice_config no existe');
+      return false;
+    }
     
     const result = await query(
       `SELECT EXISTS (
@@ -25,16 +44,80 @@ async function hasEinvoicing(schema) {
         WHERE id = 1 
           AND ruc IS NOT NULL AND ruc != ''
           AND razon_social IS NOT NULL AND razon_social != ''
-          AND p12_path IS NOT NULL AND p12_path != ''
       ) as is_configured`,
       []
     );
     
-    return result.rows[0]?.is_configured || false;
+    const isConfigured = result.rows[0]?.is_configured || false;
+    console.log(`[hasEinvoicing] Configurada: ${isConfigured}`);
+    
+    return isConfigured;
   } catch (error) {
+    console.error('Error checking einvoicing config:', error);
     return false;
   }
 }
+
+/**
+ * GET /api/crm/analytics/debug
+ * Endpoint de diagnóstico
+ */
+router.get('/analytics/debug', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
+    const useEinvoicing = await hasEinvoicing(schema);
+    
+    // Verificar datos en einvoices
+    const einvoicesCount = await query(
+      `SELECT COUNT(*) as count, COALESCE(SUM(total), 0) as total 
+       FROM "${schema}".einvoices 
+       WHERE status = 'autorizada'`,
+      []
+    );
+    
+    // Verificar datos en pos_orders
+    const posOrdersCount = await query(
+      `SELECT COUNT(*) as count, COALESCE(SUM(total), 0) as total 
+       FROM "${schema}".pos_orders 
+       WHERE status = 'paid'`,
+      []
+    );
+    
+    // Verificar clientes con transacciones
+    const customersWithSales = await query(
+      `SELECT COUNT(DISTINCT c.id) as count
+       FROM "${schema}".customers c
+       WHERE EXISTS (
+         SELECT 1 FROM "${schema}".einvoices e 
+         WHERE e.customer_ruc = c.document_number AND e.status = 'autorizada'
+       )`,
+      []
+    );
+
+    res.json({
+      success: true,
+      data: {
+        useEinvoicing,
+        einvoices: {
+          count: parseInt(einvoicesCount.rows[0].count),
+          total: parseFloat(einvoicesCount.rows[0].total)
+        },
+        pos_orders: {
+          count: parseInt(posOrdersCount.rows[0].count),
+          total: parseFloat(posOrdersCount.rows[0].total)
+        },
+        customers_with_sales: parseInt(customersWithSales.rows[0].count)
+      }
+    });
+  } catch (err) {
+    console.error('Error en debug:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 /**
  * GET /api/crm/analytics/summary
@@ -102,16 +185,13 @@ router.get('/analytics/customer-segments', authMiddleware, async (req, res) => {
     
     let ordersTable = '';
     let joinCondition = '';
-    let groupByField = '';
     
     if (useEinvoicing) {
       ordersTable = 'einvoices';
       joinCondition = 'e.customer_ruc = c.document_number';
-      groupByField = 'c.id';
     } else {
       ordersTable = 'pos_orders';
       joinCondition = 'e.customer_id = c.id';
-      groupByField = 'c.id';
     }
 
     const result = await query(
