@@ -665,12 +665,12 @@ router.get('/products/categories', authMiddleware, async (req, res) => {
     const result = await query(
       `SELECT 
          id, 
-         nombre as name, 
-         descripcion as description,
-         (SELECT COUNT(*) FROM "${schema}".productos WHERE categoria_id = c.id) as product_count
-       FROM "${schema}".categorias c
-       WHERE activo = true
-       ORDER BY nombre ASC`,
+         name, 
+         description,
+         (SELECT COUNT(*) FROM "${schema}".products WHERE category_id = c.id) as product_count
+       FROM "${schema}".categories c
+       WHERE is_active = true
+       ORDER BY name ASC`,
       []
     );
 
@@ -700,35 +700,22 @@ router.get('/products-sold', authMiddleware, async (req, res) => {
     let dateFilter = '';
     switch(periodo) {
       case 'day':
-        dateFilter = `t.created_at >= DATE(NOW()) AND t.created_at < DATE(NOW()) + INTERVAL '1 day'`;
+        dateFilter = `o.created_at >= DATE(NOW()) AND o.created_at < DATE(NOW()) + INTERVAL '1 day'`;
         break;
       case 'week':
-        dateFilter = `t.created_at >= DATE(NOW() - INTERVAL '7 days')`;
+        dateFilter = `o.created_at >= DATE(NOW() - INTERVAL '7 days')`;
         break;
       case 'month':
-        dateFilter = `t.created_at >= DATE_TRUNC('month', NOW())`;
+        dateFilter = `o.created_at >= DATE_TRUNC('month', NOW())`;
         break;
       case 'quarter':
-        dateFilter = `t.created_at >= DATE_TRUNC('quarter', NOW())`;
+        dateFilter = `o.created_at >= DATE_TRUNC('quarter', NOW())`;
         break;
       case 'year':
-        dateFilter = `t.created_at >= DATE_TRUNC('year', NOW())`;
+        dateFilter = `o.created_at >= DATE_TRUNC('year', NOW())`;
         break;
       default:
-        dateFilter = `t.created_at >= DATE_TRUNC('month', NOW())`;
-    }
-
-    const useEinvoicing = await hasEinvoicing(schema);
-
-    let tableName = useEinvoicing ? 'einvoicing_invoices' : 'pos_orders';
-    let itemsTable = useEinvoicing ? 'einvoicing_items' : 'pos_order_items';
-    let statusFilter = useEinvoicing ? `t.status = 'autorizada'` : `t.status = 'paid'`;
-    
-    let categoryFilter = '';
-    let params = [];
-    if (categoria) {
-      categoryFilter = ` AND p.categoria_id = $1`;
-      params.push(categoria);
+        dateFilter = `o.created_at >= DATE_TRUNC('month', NOW())`;
     }
 
     let orderByClause = 'cantidad_vendida DESC';
@@ -744,33 +731,93 @@ router.get('/products-sold', authMiddleware, async (req, res) => {
         orderByClause = 'cantidad_vendida DESC';
     }
 
-    const result = await query(
-      `SELECT 
-         p.id,
-         p.codigo as sku,
-         p.nombre as nombre_producto,
-         COALESCE(SUM(oi.cantidad), 0) as cantidad_vendida,
-         COALESCE(SUM(oi.cantidad * oi.precio_unitario), 0) as total_vendido,
-         c.nombre as categoria,
-         COUNT(DISTINCT t.id) as numero_transacciones
-       FROM "${schema}".${itemsTable} oi
-       JOIN "${schema}".${tableName} t ON oi.${useEinvoicing ? 'invoice_id' : 'order_id'} = t.id
-       JOIN "${schema}".productos p ON oi.producto_id = p.id
-       LEFT JOIN "${schema}".categorias c ON p.categoria_id = c.id
-       WHERE ${dateFilter} 
-         AND ${statusFilter}
-         ${categoryFilter}
-       GROUP BY p.id, p.codigo, p.nombre, c.nombre
-       ORDER BY ${orderByClause}
-       LIMIT $${params.length + 1}`,
-      [...params, parseInt(limit) || 50]
-    );
+    // Detectar si hay más einvoices o pos_orders
+    let hasEinvoices = false;
+    let hasPos = false;
+    
+    try {
+      const einvoicesCheck = await query(
+        `SELECT COUNT(*) as count FROM "${schema}".einvoices 
+         WHERE ${dateFilter} AND status = 'autorizada'`,
+        []
+      );
+      hasEinvoices = (einvoicesCheck.rows[0]?.count || 0) > 0;
+    } catch (err) {
+      console.warn('Einvoices table check failed');
+    }
+
+    try {
+      const posCheck = await query(
+        `SELECT COUNT(*) as count FROM "${schema}".pos_orders 
+         WHERE ${dateFilter} AND status = 'paid'`,
+        []
+      );
+      hasPos = (posCheck.rows[0]?.count || 0) > 0;
+    } catch (err) {
+      console.warn('POS table check failed');
+    }
+
+    let result = { rows: [] };
+
+    // Consultar productos desde einvoices (si existen datos)
+    if (hasEinvoices) {
+      try {
+        result = await query(
+          `SELECT 
+             item->>'id' as id,
+             item->>'sku' as sku,
+             item->>'name' as nombre_producto,
+             COALESCE(SUM(CAST(item->>'quantity' AS INT)), 0) as cantidad_vendida,
+             COALESCE(SUM(CAST(item->>'quantity' AS INT) * CAST(item->>'price' AS NUMERIC)), 0) as total_vendido,
+             item->>'category' as categoria,
+             COUNT(DISTINCT e.id) as numero_transacciones
+           FROM "${schema}".einvoices e,
+                jsonb_array_elements(e.items) as item
+           WHERE ${dateFilter}
+             AND e.status = 'autorizada'
+           GROUP BY item->>'id', item->>'sku', item->>'name', item->>'category'
+           ORDER BY ${orderByClause}
+           LIMIT $1`,
+          [parseInt(limit) || 50]
+        );
+      } catch (err) {
+        console.warn('Einvoices products query failed:', err.message);
+      }
+    }
+
+    // Si no hay einvoices o está vacío, intentar con pos_orders + pos_order_items
+    if (!hasEinvoices || result.rows.length === 0) {
+      try {
+        result = await query(
+          `SELECT 
+             p.id::text,
+             p.code as sku,
+             p.name as nombre_producto,
+             COALESCE(SUM(oi.quantity), 0) as cantidad_vendida,
+             COALESCE(SUM(oi.quantity * p.selling_price), 0) as total_vendido,
+             c.name as categoria,
+             COUNT(DISTINCT o.id) as numero_transacciones
+           FROM "${schema}".pos_order_items oi
+           JOIN "${schema}".pos_orders o ON oi.order_id = o.id
+           JOIN "${schema}".products p ON oi.product_id = p.id
+           LEFT JOIN "${schema}".categories c ON p.category_id = c.id
+           WHERE ${dateFilter}
+             AND o.status = 'paid'
+           GROUP BY p.id, p.code, p.name, c.name
+           ORDER BY ${orderByClause}
+           LIMIT $1`,
+          [parseInt(limit) || 50]
+        );
+      } catch (err) {
+        console.warn('POS products query failed:', err.message);
+      }
+    }
 
     res.json({
       success: true,
       data: result.rows,
       metadata: {
-        invoiceSource: useEinvoicing ? 'einvoicing' : 'pos'
+        invoiceSource: hasEinvoices ? 'einvoices' : 'pos'
       }
     });
   } catch (err) {
@@ -802,49 +849,51 @@ router.get('/advanced', authMiddleware, async (req, res) => {
     
     switch(groupBy) {
       case 'week':
-        dateFormatGroup = `DATE_TRUNC('week', t.created_at)`;
-        dateFormatLabel = `DATE_TRUNC('week', t.created_at)`;
+        dateFormatGroup = `DATE_TRUNC('week', created_at)`;
+        dateFormatLabel = `DATE_TRUNC('week', created_at)`;
         break;
       case 'month':
-        dateFormatGroup = `DATE_TRUNC('month', t.created_at)`;
-        dateFormatLabel = `DATE_TRUNC('month', t.created_at)`;
+        dateFormatGroup = `DATE_TRUNC('month', created_at)`;
+        dateFormatLabel = `DATE_TRUNC('month', created_at)`;
         break;
       case 'day':
       default:
-        dateFormatGroup = `DATE(t.created_at)`;
-        dateFormatLabel = `DATE(t.created_at)`;
+        dateFormatGroup = `DATE(created_at)`;
+        dateFormatLabel = `DATE(created_at)`;
     }
 
-    // Detectar qué tabla de órdenes/facturas tiene datos
+    // ─────────────────────────────────────────────────────────────────────────
+    // 1. VENTAS: Obtener de einvoices o pos_orders
+    // ─────────────────────────────────────────────────────────────────────────
     let salesResult = { rows: [] };
     let dataSource = 'unknown';
     
     try {
-      // Intentar obtener datos de einvoicing primero (facturación electrónica)
-      const einvoicingCheck = await query(
-        `SELECT COUNT(*) as count FROM "${schema}".einvoicing_invoices 
+      // Intentar obtener datos de einvoices primero
+      const einvoicesCheck = await query(
+        `SELECT COUNT(*) as count FROM "${schema}".einvoices 
          WHERE DATE(created_at) >= $1 AND DATE(created_at) <= $2 AND status = 'autorizada'`,
         [from, to]
       );
       
-      if (einvoicingCheck.rows[0]?.count > 0) {
-        dataSource = 'einvoicing';
+      if (einvoicesCheck.rows[0]?.count > 0) {
+        dataSource = 'einvoices';
         salesResult = await query(
           `SELECT 
              ${dateFormatLabel} as date,
-             COALESCE(SUM(t.total), 0) as total_sales,
+             COALESCE(SUM(total), 0) as total_sales,
              COUNT(*) as numero_transacciones,
-             COUNT(DISTINCT t.customer_id) as clientes_unicos
-           FROM "${schema}".einvoicing_invoices t
-           WHERE DATE(t.created_at) >= $1 
-             AND DATE(t.created_at) <= $2
-             AND t.status = 'autorizada'
+             COUNT(DISTINCT customer_id) as clientes_unicos
+           FROM "${schema}".einvoices
+           WHERE DATE(created_at) >= $1 
+             AND DATE(created_at) <= $2
+             AND status = 'autorizada'
            GROUP BY ${dateFormatGroup}
            ORDER BY date ASC`,
           [from, to]
         );
       } else {
-        // Si no hay einvoicing, intentar con pos_orders
+        // Si no hay einvoices, intentar con pos_orders
         const posCheck = await query(
           `SELECT COUNT(*) as count FROM "${schema}".pos_orders 
            WHERE DATE(created_at) >= $1 AND DATE(created_at) <= $2 AND status = 'paid'`,
@@ -856,13 +905,13 @@ router.get('/advanced', authMiddleware, async (req, res) => {
           salesResult = await query(
             `SELECT 
                ${dateFormatLabel} as date,
-               COALESCE(SUM(t.total), 0) as total_sales,
+               COALESCE(SUM(total), 0) as total_sales,
                COUNT(*) as numero_transacciones,
-               COUNT(DISTINCT t.customer_id) as clientes_unicos
-             FROM "${schema}".pos_orders t
-             WHERE DATE(t.created_at) >= $1 
-               AND DATE(t.created_at) <= $2
-               AND t.status = 'paid'
+               COUNT(DISTINCT customer_id) as clientes_unicos
+             FROM "${schema}".pos_orders
+             WHERE DATE(created_at) >= $1 
+               AND DATE(created_at) <= $2
+               AND status = 'paid'
              GROUP BY ${dateFormatGroup}
              ORDER BY date ASC`,
             [from, to]
@@ -873,86 +922,43 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       console.warn('Warning - Sales query failed:', err.message);
     }
 
-    // Obtener gastos por período (con validación de tabla)
+    // ─────────────────────────────────────────────────────────────────────────
+    // 2. GASTOS: Obtener de expenses
+    // ─────────────────────────────────────────────────────────────────────────
     let expensesResult = { rows: [] };
     try {
-      const tableExists = await query(
-        `SELECT EXISTS (
-           SELECT 1 FROM information_schema.tables 
-           WHERE table_schema = $1 AND table_name IN ('gastos', 'expenses', 'expense_records')
-         ) as exists`,
-        [schema]
+      expensesResult = await query(
+        `SELECT 
+           ${dateFormatLabel} as date,
+           COALESCE(SUM(amount), 0) as total_expenses
+         FROM "${schema}".expenses
+         WHERE DATE(created_at) >= $1 
+           AND DATE(created_at) <= $2
+         GROUP BY ${dateFormatGroup}
+         ORDER BY date ASC`,
+        [from, to]
       );
-      
-      if (tableExists.rows[0]?.exists) {
-        const expenseTable = await query(
-          `SELECT table_name FROM information_schema.tables 
-           WHERE table_schema = $1 AND table_name IN ('gastos', 'expenses', 'expense_records')
-           LIMIT 1`,
-          [schema]
-        );
-        
-        if (expenseTable.rows.length > 0) {
-          const tableName = expenseTable.rows[0].table_name;
-          const dateColumn = ['gastos'].includes(tableName) ? 'fecha' : 'created_at';
-          const amountColumn = ['gastos'].includes(tableName) ? 'monto' : 'amount';
-          
-          expensesResult = await query(
-            `SELECT 
-               ${dateFormatLabel} as date,
-               COALESCE(SUM(e.${amountColumn}), 0) as total_expenses
-             FROM "${schema}".${tableName} e
-             WHERE DATE(e.${dateColumn}) >= $1 
-               AND DATE(e.${dateColumn}) <= $2
-             GROUP BY ${dateFormatGroup}
-             ORDER BY date ASC`,
-            [from, to]
-          );
-        }
-      }
     } catch (err) {
       console.warn('Warning - Expenses query failed:', err.message);
     }
 
-    // Obtener cuentas por cobrar (deudas de clientes)
+    // ─────────────────────────────────────────────────────────────────────────
+    // 3. CUENTAS POR COBRAR: Obtener de accounts_receivable
+    // ─────────────────────────────────────────────────────────────────────────
     let receivablesResult = { rows: [] };
     try {
-      const tableExists = await query(
-        `SELECT EXISTS (
-           SELECT 1 FROM information_schema.tables 
-           WHERE table_schema = $1 AND table_name IN ('cuentas_por_cobrar', 'accounts_receivable', 'receivables')
-         ) as exists`,
-        [schema]
+      receivablesResult = await query(
+        `SELECT 
+           ${dateFormatLabel} as date,
+           COALESCE(SUM(amount), 0) as total_receivable
+         FROM "${schema}".accounts_receivable
+         WHERE DATE(created_at) >= $1 
+           AND DATE(created_at) <= $2
+           AND status = 'pending'
+         GROUP BY ${dateFormatGroup}
+         ORDER BY date ASC`,
+        [from, to]
       );
-      
-      if (tableExists.rows[0]?.exists) {
-        const receivableTable = await query(
-          `SELECT table_name FROM information_schema.tables 
-           WHERE table_schema = $1 AND table_name IN ('cuentas_por_cobrar', 'accounts_receivable', 'receivables')
-           LIMIT 1`,
-          [schema]
-        );
-        
-        if (receivableTable.rows.length > 0) {
-          const tableName = receivableTable.rows[0].table_name;
-          const dateColumn = ['cuentas_por_cobrar'].includes(tableName) ? 'fecha_creacion' : 'created_at';
-          const amountColumn = ['cuentas_por_cobrar'].includes(tableName) ? 'monto' : 'amount';
-          const statusColumn = ['cuentas_por_cobrar'].includes(tableName) ? 'estado' : 'status';
-          
-          receivablesResult = await query(
-            `SELECT 
-               ${dateFormatLabel} as date,
-               COALESCE(SUM(ar.${amountColumn}), 0) as total_receivable
-             FROM "${schema}".${tableName} ar
-             WHERE DATE(ar.${dateColumn}) >= $1 
-               AND DATE(ar.${dateColumn}) <= $2
-               AND ar.${statusColumn} = 'pendiente'
-             GROUP BY ${dateFormatGroup}
-             ORDER BY date ASC`,
-            [from, to]
-          );
-        }
-      }
     } catch (err) {
       console.warn('Warning - Receivables query failed:', err.message);
     }
