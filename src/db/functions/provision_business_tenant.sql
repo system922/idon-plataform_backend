@@ -235,7 +235,7 @@ BEGIN
   -- 6. TABLAS POR MÓDULO — ordenadas: sin FK → luego sus dependientes
   -- ══════════════════════════════════════════════════════════════════════════
 
-  -- ─── POS ────────────────────────────────────────────────────────────────
+    -- ─── POS ────────────────────────────────────────────────────────────────
   IF ANY_MATCH(v_modules, 'pos') THEN
 
     -- ========================================================================
@@ -258,16 +258,16 @@ BEGIN
       p_schema_name, p_schema_name);
 
     -- ========================================================================
-    -- TRIGGER PARA ACTUALIZAR updated_at AUTOMÁTICAMENTE
+    -- FUNCIÓN PARA ACTUALIZAR updated_at AUTOMÁTICAMENTE
     -- ========================================================================
     EXECUTE format('
       CREATE OR REPLACE FUNCTION %I.update_updated_at_column()
-      RETURNS TRIGGER AS $$
+      RETURNS TRIGGER LANGUAGE plpgsql AS $func$
       BEGIN
         NEW.updated_at = CURRENT_TIMESTAMP AT TIME ZONE ''America/Guayaquil'';
         RETURN NEW;
       END;
-      $$ LANGUAGE plpgsql', p_schema_name);
+      $func$', p_schema_name);
 
     EXECUTE format('
       DROP TRIGGER IF EXISTS update_daily_order_counter_updated_at ON %I.daily_order_counter', p_schema_name);
@@ -284,9 +284,7 @@ BEGIN
     -- ========================================================================
     EXECUTE format('
       CREATE OR REPLACE FUNCTION %I.get_next_order_number()
-      RETURNS INTEGER
-      LANGUAGE plpgsql
-      AS $inner$
+      RETURNS INTEGER LANGUAGE plpgsql AS $func$
       DECLARE
         v_number INTEGER;
         v_today DATE;
@@ -303,9 +301,9 @@ BEGIN
         
         RETURN v_number;
       END;
-      $inner$',
+      $func$',
       p_schema_name, p_schema_name, p_schema_name);
-    v_table_count := v_table_count + 1; -- Contar la función como "objeto creado"
+    v_table_count := v_table_count + 1;
 
     -- pos_orders (FK → customers, users)
     EXECUTE format('
@@ -383,8 +381,6 @@ BEGIN
         issued_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
-
-
 
     -- ─── pos_discounts (descuentos avanzados: cupones, horarios, producto) ───────
     EXECUTE format('
@@ -472,83 +468,83 @@ BEGIN
 
     v_table_count := v_table_count + 1;
 
-  -- cash_register_openings
-  EXECUTE format('
-    CREATE TABLE %I.cash_register_openings (
-      id             SERIAL PRIMARY KEY,
-      user_id        VARCHAR(100)  NOT NULL,
-      user_name      VARCHAR(255),
-      date           DATE          NOT NULL,
-      moneda_001     INT           NOT NULL DEFAULT 0,
-      moneda_005     INT           NOT NULL DEFAULT 0,
-      moneda_010     INT           NOT NULL DEFAULT 0,
-      moneda_025     INT           NOT NULL DEFAULT 0,
-      moneda_050     INT           NOT NULL DEFAULT 0,
-      moneda_100     INT           NOT NULL DEFAULT 0,
-      billete_1      INT           NOT NULL DEFAULT 0,
-      billete_5      INT           NOT NULL DEFAULT 0,
-      billete_10     INT           NOT NULL DEFAULT 0,
-      billete_20     INT           NOT NULL DEFAULT 0,
-      billete_50     INT           NOT NULL DEFAULT 0,
-      billete_100    INT           NOT NULL DEFAULT 0,
-      total_efectivo NUMERIC(14,2) NOT NULL DEFAULT 0,
-      monto_banca    NUMERIC(14,2) NOT NULL DEFAULT 0,
-      total_inicial  NUMERIC(14,2) NOT NULL DEFAULT 0,
-      observaciones  TEXT,
-      created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      CONSTRAINT uq_opening_date_user UNIQUE (date, user_id)
-    )', p_schema_name);
-  EXECUTE format('CREATE INDEX %I_cash_register_openings_date_idx ON %I.cash_register_openings (date DESC)', p_schema_name, p_schema_name);
-  v_table_count := v_table_count + 1;
+    -- cash_register_openings
+    EXECUTE format('
+      CREATE TABLE %I.cash_register_openings (
+        id             SERIAL PRIMARY KEY,
+        user_id        VARCHAR(100)  NOT NULL,
+        user_name      VARCHAR(255),
+        date           DATE          NOT NULL,
+        moneda_001     INT           NOT NULL DEFAULT 0,
+        moneda_005     INT           NOT NULL DEFAULT 0,
+        moneda_010     INT           NOT NULL DEFAULT 0,
+        moneda_025     INT           NOT NULL DEFAULT 0,
+        moneda_050     INT           NOT NULL DEFAULT 0,
+        moneda_100     INT           NOT NULL DEFAULT 0,
+        billete_1      INT           NOT NULL DEFAULT 0,
+        billete_5      INT           NOT NULL DEFAULT 0,
+        billete_10     INT           NOT NULL DEFAULT 0,
+        billete_20     INT           NOT NULL DEFAULT 0,
+        billete_50     INT           NOT NULL DEFAULT 0,
+        billete_100    INT           NOT NULL DEFAULT 0,
+        total_efectivo NUMERIC(14,2) NOT NULL DEFAULT 0,
+        monto_banca    NUMERIC(14,2) NOT NULL DEFAULT 0,
+        total_inicial  NUMERIC(14,2) NOT NULL DEFAULT 0,
+        observaciones  TEXT,
+        created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT uq_opening_date_user UNIQUE (date, user_id)
+      )', p_schema_name);
+    EXECUTE format('CREATE INDEX %I_cash_register_openings_date_idx ON %I.cash_register_openings (date DESC)', p_schema_name, p_schema_name);
+    v_table_count := v_table_count + 1;
 
-  -- cash_register_closing
-  EXECUTE format('
-    CREATE TABLE %I.cash_register_closing (
-      id               SERIAL PRIMARY KEY,
-      closing_user_id  VARCHAR(50)   NOT NULL,
-      closing_date     DATE          NOT NULL,
-      closing_time     TIME          NOT NULL DEFAULT CURRENT_TIME,
-      cash_counted     NUMERIC(14,2) NOT NULL,
-      cash_system      NUMERIC(14,2) NOT NULL,
-      diff_cash        NUMERIC(14,2) NOT NULL,
-      transfer_counted NUMERIC(14,2) NOT NULL,
-      transfer_system  NUMERIC(14,2) NOT NULL,
-      diff_transfer    NUMERIC(14,2) NOT NULL,
-      card_counted     NUMERIC(14,2) NOT NULL,
-      card_system      NUMERIC(14,2) NOT NULL,
-      diff_card        NUMERIC(14,2) NOT NULL,
-      orders_counted   INT           NOT NULL,
-      orders_system    INT           NOT NULL,
-      diff_orders      INT           NOT NULL,
-      extras           JSONB,
-      expenses_total   NUMERIC(14,2) NOT NULL,
-      total_counted    NUMERIC(14,2) NOT NULL,
-      total_system     NUMERIC(14,2) NOT NULL,
-      diff_total       NUMERIC(14,2) NOT NULL,
-      net_system       NUMERIC(14,2) NOT NULL,
-      net_counted      NUMERIC(14,2) NOT NULL,
-      diff_net         NUMERIC(14,2) NOT NULL,
-      remarks          TEXT,
-      created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )', p_schema_name);
-  EXECUTE format('CREATE INDEX %I_cash_register_closing_closing_date_idx ON %I.cash_register_closing (closing_date)', p_schema_name, p_schema_name);
-  EXECUTE format('CREATE INDEX %I_cash_register_closing_created_at_desc_idx ON %I.cash_register_closing (created_at DESC)', p_schema_name, p_schema_name);
-  v_table_count := v_table_count + 1;
+    -- cash_register_closing
+    EXECUTE format('
+      CREATE TABLE %I.cash_register_closing (
+        id               SERIAL PRIMARY KEY,
+        closing_user_id  VARCHAR(50)   NOT NULL,
+        closing_date     DATE          NOT NULL,
+        closing_time     TIME          NOT NULL DEFAULT CURRENT_TIME,
+        cash_counted     NUMERIC(14,2) NOT NULL,
+        cash_system      NUMERIC(14,2) NOT NULL,
+        diff_cash        NUMERIC(14,2) NOT NULL,
+        transfer_counted NUMERIC(14,2) NOT NULL,
+        transfer_system  NUMERIC(14,2) NOT NULL,
+        diff_transfer    NUMERIC(14,2) NOT NULL,
+        card_counted     NUMERIC(14,2) NOT NULL,
+        card_system      NUMERIC(14,2) NOT NULL,
+        diff_card        NUMERIC(14,2) NOT NULL,
+        orders_counted   INT           NOT NULL,
+        orders_system    INT           NOT NULL,
+        diff_orders      INT           NOT NULL,
+        extras           JSONB,
+        expenses_total   NUMERIC(14,2) NOT NULL,
+        total_counted    NUMERIC(14,2) NOT NULL,
+        total_system     NUMERIC(14,2) NOT NULL,
+        diff_total       NUMERIC(14,2) NOT NULL,
+        net_system       NUMERIC(14,2) NOT NULL,
+        net_counted      NUMERIC(14,2) NOT NULL,
+        diff_net         NUMERIC(14,2) NOT NULL,
+        remarks          TEXT,
+        created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )', p_schema_name);
+    EXECUTE format('CREATE INDEX %I_cash_register_closing_closing_date_idx ON %I.cash_register_closing (closing_date)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX %I_cash_register_closing_created_at_desc_idx ON %I.cash_register_closing (created_at DESC)', p_schema_name, p_schema_name);
+    v_table_count := v_table_count + 1;
 
-  -- incomes_extras (ingresos extras de caja — no ventas, sí afectan cuadre)
-  EXECUTE format('
-    CREATE TABLE %I.incomes_extras (
-      id             SERIAL PRIMARY KEY,
-      date           DATE           NOT NULL,
-      amount         NUMERIC(10,2)  NOT NULL,
-      payment_method VARCHAR(20)    NOT NULL DEFAULT ''cash'',
-      description    TEXT,
-      user_id        VARCHAR(100),
-      user_name      VARCHAR(200),
-      created_at     TIMESTAMPTZ    DEFAULT NOW()
-    )', p_schema_name);
-  EXECUTE format('CREATE INDEX %I_incomes_extras_date_idx ON %I.incomes_extras (date DESC)', p_schema_name, p_schema_name);
-  v_table_count := v_table_count + 1;
+    -- incomes_extras (ingresos extras de caja — no ventas, sí afectan cuadre)
+    EXECUTE format('
+      CREATE TABLE %I.incomes_extras (
+        id             SERIAL PRIMARY KEY,
+        date           DATE           NOT NULL,
+        amount         NUMERIC(10,2)  NOT NULL,
+        payment_method VARCHAR(20)    NOT NULL DEFAULT ''cash'',
+        description    TEXT,
+        user_id        VARCHAR(100),
+        user_name      VARCHAR(200),
+        created_at     TIMESTAMPTZ    DEFAULT NOW()
+      )', p_schema_name);
+    EXECUTE format('CREATE INDEX %I_incomes_extras_date_idx ON %I.incomes_extras (date DESC)', p_schema_name, p_schema_name);
+    v_table_count := v_table_count + 1;
 
   END IF;
 
