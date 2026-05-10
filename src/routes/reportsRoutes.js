@@ -6,6 +6,7 @@ import { authMiddleware } from '../middleware/auth.js';
 const router = express.Router();
 
 // Función auxiliar para detectar fuente de datos
+// Función auxiliar para detectar fuente de datos
 async function getDataSource(schema, startDate = null, endDate = null) {
   try {
     let dateFilter = '';
@@ -13,17 +14,19 @@ async function getDataSource(schema, startDate = null, endDate = null) {
     let paramIndex = 1;
     
     if (startDate && endDate) {
-      dateFilter = `AND DATE(created_at) >= $${paramIndex} AND DATE(created_at) <= $${paramIndex + 1}`;
+      dateFilter = `AND DATE(created_at) >= $${paramIndex}::DATE AND DATE(created_at) <= $${paramIndex + 1}::DATE`;
       params.push(startDate, endDate);
       paramIndex += 2;
     }
     
-    // Verificar einvoices
+    // Verificar einvoices primero
     const einvoicesCheck = await query(
       `SELECT COUNT(*) as count FROM "${schema}".einvoices 
-       WHERE status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO') ${dateFilter}`,
+       WHERE 1=1 ${dateFilter}`,
       params
     );
+    
+    console.log('Einvoices count:', einvoicesCheck.rows[0]?.count);
     
     if (einvoicesCheck.rows[0]?.count > 0) {
       return { 
@@ -40,9 +43,11 @@ async function getDataSource(schema, startDate = null, endDate = null) {
     // Verificar pos_orders
     const posCheck = await query(
       `SELECT COUNT(*) as count FROM "${schema}".pos_orders 
-       WHERE status = 'paid' ${dateFilter}`,
+       WHERE 1=1 ${dateFilter}`,
       params
     );
+    
+    console.log('POS orders count:', posCheck.rows[0]?.count);
     
     if (posCheck.rows[0]?.count > 0) {
       return { 
@@ -59,6 +64,15 @@ async function getDataSource(schema, startDate = null, endDate = null) {
     return { source: 'none', table: null };
   } catch (err) {
     console.error('Error detecting data source:', err);
+    // Si hay error, intentar con POS como fallback
+    try {
+      const posCheck = await query(
+        `SELECT COUNT(*) as count FROM "${schema}".pos_orders`
+      );
+      if (posCheck.rows[0]?.count > 0) {
+        return { source: 'pos', table: 'pos_orders', statusCondition: "status = 'paid'", taxColumn: 'tax_amount', idField: 'order_number' };
+      }
+    } catch {}
     return { source: 'none', table: null };
   }
 }
@@ -478,36 +492,50 @@ router.get('/products-sold', authMiddleware, async (req, res) => {
  * GET /api/reports/products-stats
  * Estadísticas rápidas de productos (NUEVO ENDPOINT)
  */
+/**
+ * GET /api/reports/products-stats
+ * Estadísticas rápidas de productos (CORREGIDO)
+ */
 router.get('/products-stats', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
 
-    const { periodo = 'month' } = req.query;
+    const { periodo = 'month', startDate, endDate } = req.query;
     
     // Construir filtro de fecha
     let dateFilter = '';
-    switch(periodo) {
-      case 'day':
-        dateFilter = `created_at >= CURRENT_DATE AND created_at < CURRENT_DATE + INTERVAL '1 day'`;
-        break;
-      case 'week':
-        dateFilter = `created_at >= CURRENT_DATE - INTERVAL '7 days'`;
-        break;
-      case 'month':
-        dateFilter = `created_at >= DATE_TRUNC('month', CURRENT_DATE)`;
-        break;
-      case 'quarter':
-        dateFilter = `created_at >= DATE_TRUNC('quarter', CURRENT_DATE)`;
-        break;
-      case 'year':
-        dateFilter = `created_at >= DATE_TRUNC('year', CURRENT_DATE)`;
-        break;
-      default:
-        dateFilter = `created_at >= DATE_TRUNC('month', CURRENT_DATE)`;
+    let queryParams = [];
+    
+    if (startDate && endDate) {
+      // Fechas personalizadas
+      dateFilter = `created_at >= $1::DATE AND created_at <= $2::DATE`;
+      queryParams = [startDate, endDate];
+    } else {
+      // Período predefinido
+      queryParams = [];
+      switch(periodo) {
+        case 'day':
+          dateFilter = `created_at >= CURRENT_DATE AND created_at < CURRENT_DATE + INTERVAL '1 day'`;
+          break;
+        case 'week':
+          dateFilter = `created_at >= CURRENT_DATE - INTERVAL '7 days'`;
+          break;
+        case 'month':
+          dateFilter = `created_at >= DATE_TRUNC('month', CURRENT_DATE)`;
+          break;
+        case 'quarter':
+          dateFilter = `created_at >= DATE_TRUNC('quarter', CURRENT_DATE)`;
+          break;
+        case 'year':
+          dateFilter = `created_at >= DATE_TRUNC('year', CURRENT_DATE)`;
+          break;
+        default:
+          dateFilter = `created_at >= DATE_TRUNC('month', CURRENT_DATE)`;
+      }
     }
 
-    const dataSource = await getDataSource(schema);
+    const dataSource = await getDataSource(schema, startDate, endDate);
     let stats = {
       total_productos_vendidos: 0,
       total_ventas: 0,
@@ -515,20 +543,43 @@ router.get('/products-stats', authMiddleware, async (req, res) => {
       ticket_promedio: 0
     };
 
-    if (dataSource.source === 'einvoicing') {
+    // Intentar con einvoices si es la fuente detectada
+    if (dataSource.source === 'einvoicing' || dataSource.source === 'none') {
       try {
-        const result = await query(`
-          SELECT 
-            COALESCE(SUM(CAST(item->>'quantity' AS INTEGER)), 0) as total_cantidad,
-            COALESCE(SUM(CAST(item->>'quantity' AS INTEGER) * CAST(COALESCE(item->>'price', '0') AS NUMERIC)), 0) as total_monto,
-            COUNT(DISTINCT item->>'id') as productos_distintos
-          FROM "${schema}".einvoices e,
-               jsonb_array_elements(e.items) as item
-          WHERE ${dateFilter}
-            AND e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO')
-        `);
+        let queryText;
+        let params;
         
-        if (result.rows[0]) {
+        if (queryParams.length > 0) {
+          queryText = `
+            SELECT 
+              COALESCE(SUM(CAST(item->>'quantity' AS INTEGER)), 0) as total_cantidad,
+              COALESCE(SUM(CAST(item->>'quantity' AS INTEGER) * CAST(COALESCE(item->>'price', item->>'total', '0') AS NUMERIC)), 0) as total_monto,
+              COUNT(DISTINCT COALESCE(item->>'id', item->>'code', item->>'name')) as productos_distintos
+            FROM "${schema}".einvoices e,
+                 jsonb_array_elements(e.items) as item
+            WHERE ${dateFilter}
+              AND e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO', 'paid')
+          `;
+          params = queryParams;
+        } else {
+          queryText = `
+            SELECT 
+              COALESCE(SUM(CAST(item->>'quantity' AS INTEGER)), 0) as total_cantidad,
+              COALESCE(SUM(CAST(item->>'quantity' AS INTEGER) * CAST(COALESCE(item->>'price', item->>'total', '0') AS NUMERIC)), 0) as total_monto,
+              COUNT(DISTINCT COALESCE(item->>'id', item->>'code', item->>'name')) as productos_distintos
+            FROM "${schema}".einvoices e,
+                 jsonb_array_elements(e.items) as item
+            WHERE ${dateFilter}
+              AND e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO', 'paid')
+          `;
+          params = [];
+        }
+        
+        console.log('Stats Query:', queryText, 'Params:', params);
+        
+        const result = await query(queryText, params);
+        
+        if (result.rows[0] && result.rows[0].total_cantidad > 0) {
           stats.total_productos_vendidos = parseInt(result.rows[0].total_cantidad) || 0;
           stats.total_ventas = parseFloat(result.rows[0].total_monto) || 0;
           stats.productos_distintos = parseInt(result.rows[0].productos_distintos) || 0;
@@ -538,19 +589,43 @@ router.get('/products-stats', authMiddleware, async (req, res) => {
       }
     }
     
-    if (stats.total_productos_vendidos === 0 && dataSource.source !== 'none') {
+    // Si no hay datos o la fuente es POS, intentar con POS
+    if (stats.total_productos_vendidos === 0 && dataSource.source !== 'einvoicing') {
       try {
-        const result = await query(`
-          SELECT 
-            COALESCE(SUM(oi.quantity), 0) as total_cantidad,
-            COALESCE(SUM(oi.quantity * p.selling_price), 0) as total_monto,
-            COUNT(DISTINCT p.id) as productos_distintos
-          FROM "${schema}".pos_order_items oi
-          INNER JOIN "${schema}".pos_orders o ON oi.order_id = o.id
-          INNER JOIN "${schema}".products p ON oi.product_id = p.id
-          WHERE ${dateFilter}
-            AND o.status = 'paid'
-        `);
+        let queryText;
+        let params;
+        
+        if (queryParams.length > 0) {
+          queryText = `
+            SELECT 
+              COALESCE(SUM(oi.quantity), 0) as total_cantidad,
+              COALESCE(SUM(oi.quantity * COALESCE(oi.price, p.selling_price, 0)), 0) as total_monto,
+              COUNT(DISTINCT p.id) as productos_distintos
+            FROM "${schema}".pos_order_items oi
+            INNER JOIN "${schema}".pos_orders o ON oi.order_id = o.id
+            INNER JOIN "${schema}".products p ON oi.product_id = p.id
+            WHERE ${dateFilter.replace(/created_at/g, 'o.created_at')}
+              AND o.status = 'paid'
+          `;
+          params = queryParams;
+        } else {
+          queryText = `
+            SELECT 
+              COALESCE(SUM(oi.quantity), 0) as total_cantidad,
+              COALESCE(SUM(oi.quantity * COALESCE(oi.price, p.selling_price, 0)), 0) as total_monto,
+              COUNT(DISTINCT p.id) as productos_distintos
+            FROM "${schema}".pos_order_items oi
+            INNER JOIN "${schema}".pos_orders o ON oi.order_id = o.id
+            INNER JOIN "${schema}".products p ON oi.product_id = p.id
+            WHERE ${dateFilter.replace(/created_at/g, 'o.created_at')}
+              AND o.status = 'paid'
+          `;
+          params = [];
+        }
+        
+        console.log('POS Stats Query:', queryText, 'Params:', params);
+        
+        const result = await query(queryText, params);
         
         if (result.rows[0]) {
           stats.total_productos_vendidos = parseInt(result.rows[0].total_cantidad) || 0;
@@ -562,21 +637,38 @@ router.get('/products-stats', authMiddleware, async (req, res) => {
       }
     }
 
+    // Calcular ticket promedio
     stats.ticket_promedio = stats.productos_distintos > 0 
       ? stats.total_ventas / stats.productos_distintos 
       : 0;
+
+    // Redondear valores
+    stats.total_ventas = Math.round(stats.total_ventas * 100) / 100;
+    stats.ticket_promedio = Math.round(stats.ticket_promedio * 100) / 100;
+
+    console.log('Stats calculados:', stats);
 
     res.json({
       success: true,
       data: stats,
       metadata: {
         invoiceSource: dataSource.source,
-        periodo
+        periodo,
+        dateFilter
       }
     });
   } catch (err) {
     console.error('Error al obtener estadísticas:', err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ 
+      success: false, 
+      error: err.message,
+      data: {
+        total_productos_vendidos: 0,
+        total_ventas: 0,
+        productos_distintos: 0,
+        ticket_promedio: 0
+      }
+    });
   }
 });
 
