@@ -651,4 +651,132 @@ router.get('/sales-report/summary', authMiddleware, async (req, res) => {
   }
 });
 
+// ─── REPORTES DE PRODUCTOS ───────────────────────────────────────────────────
+
+/**
+ * GET /api/reports/products/categories
+ * Obtiene todas las categorías de productos
+ */
+router.get('/products/categories', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const result = await query(
+      `SELECT 
+         id, 
+         nombre as name, 
+         descripcion as description,
+         (SELECT COUNT(*) FROM "${schema}".productos WHERE categoria_id = c.id) as product_count
+       FROM "${schema}".categorias c
+       WHERE activo = true
+       ORDER BY nombre ASC`,
+      []
+    );
+
+    res.json({
+      success: true,
+      data: result.rows
+    });
+  } catch (err) {
+    console.error('Error al obtener categorías:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/reports/products-sold
+ * Obtiene el reporte de productos vendidos
+ * Query params: periodo (day, week, month, quarter, year), categoria (opcional), order_by (quantity, total, name), limit
+ */
+router.get('/products-sold', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { periodo = 'month', categoria = null, order_by = 'quantity', limit = 50 } = req.query;
+    
+    // Calcular fecha de inicio según el período
+    let dateFilter = '';
+    switch(periodo) {
+      case 'day':
+        dateFilter = `t.created_at >= DATE(NOW()) AND t.created_at < DATE(NOW()) + INTERVAL '1 day'`;
+        break;
+      case 'week':
+        dateFilter = `t.created_at >= DATE(NOW() - INTERVAL '7 days')`;
+        break;
+      case 'month':
+        dateFilter = `t.created_at >= DATE_TRUNC('month', NOW())`;
+        break;
+      case 'quarter':
+        dateFilter = `t.created_at >= DATE_TRUNC('quarter', NOW())`;
+        break;
+      case 'year':
+        dateFilter = `t.created_at >= DATE_TRUNC('year', NOW())`;
+        break;
+      default:
+        dateFilter = `t.created_at >= DATE_TRUNC('month', NOW())`;
+    }
+
+    const useEinvoicing = await hasEinvoicing(schema);
+
+    let tableName = useEinvoicing ? 'einvoicing_invoices' : 'pos_orders';
+    let itemsTable = useEinvoicing ? 'einvoicing_items' : 'pos_order_items';
+    let statusFilter = useEinvoicing ? `t.status = 'autorizada'` : `t.status = 'paid'`;
+    
+    let categoryFilter = '';
+    let params = [];
+    if (categoria) {
+      categoryFilter = ` AND p.categoria_id = $1`;
+      params.push(categoria);
+    }
+
+    let orderByClause = 'cantidad_vendida DESC';
+    switch(order_by) {
+      case 'total':
+        orderByClause = 'total_vendido DESC';
+        break;
+      case 'name':
+        orderByClause = 'nombre_producto ASC';
+        break;
+      case 'quantity':
+      default:
+        orderByClause = 'cantidad_vendida DESC';
+    }
+
+    const result = await query(
+      `SELECT 
+         p.id,
+         p.codigo as sku,
+         p.nombre as nombre_producto,
+         COALESCE(SUM(oi.cantidad), 0) as cantidad_vendida,
+         COALESCE(SUM(oi.cantidad * oi.precio_unitario), 0) as total_vendido,
+         c.nombre as categoria,
+         COUNT(DISTINCT t.id) as numero_transacciones
+       FROM "${schema}".${itemsTable} oi
+       JOIN "${schema}".${tableName} t ON oi.${useEinvoicing ? 'invoice_id' : 'order_id'} = t.id
+       JOIN "${schema}".productos p ON oi.producto_id = p.id
+       LEFT JOIN "${schema}".categorias c ON p.categoria_id = c.id
+       WHERE ${dateFilter} 
+         AND ${statusFilter}
+         ${categoryFilter}
+       GROUP BY p.id, p.codigo, p.nombre, c.nombre
+       ORDER BY ${orderByClause}
+       LIMIT $${params.length + 1}`,
+      [...params, parseInt(limit) || 50]
+    );
+
+    res.json({
+      success: true,
+      data: result.rows,
+      metadata: {
+        invoiceSource: useEinvoicing ? 'einvoicing' : 'pos'
+      }
+    });
+  } catch (err) {
+    console.error('Error al generar reporte de productos:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 export default router;
