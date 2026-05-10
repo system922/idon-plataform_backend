@@ -2,402 +2,709 @@ import express from 'express';
 import { query } from '../config/database.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 import { authMiddleware } from '../middleware/auth.js';
-import { ecuadorToday } from '../utils/dateHelper.js';
 
 const router = express.Router();
 
 // Función auxiliar para verificar si hay facturación electrónica COMPLETAMENTE configurada
 async function hasEinvoicing(schema) {
-  const result = await query(
-    `SELECT 
-       COUNT(*) as count,
-       ruc,
-       razon_social,
-       nombre_comercial,
-       direccion_matriz,
-       ambiente,
-       serie_estab,
-       serie_pto_emision,
-       secuencial_actual,
-       has_signature,
-       p12_path,
-       p12_password
-     FROM "${schema}".einvoice_config 
-     WHERE id = 1`,
-    []
-  );
-  
-  if (result.rows.length === 0 || parseInt(result.rows[0].count) === 0) {
-    return false;
-  }
-  
-  const config = result.rows[0];
-  
-  // Verificar que todos los campos críticos estén presentes y válidos
-  const hasRequiredFields = 
-    config.ruc && 
-    config.ruc.trim().length > 0 &&
-    config.razon_social && 
-    config.razon_social.trim().length > 0 &&
-    config.nombre_comercial && 
-    config.nombre_comercial.trim().length > 0 &&
-    config.direccion_matriz && 
-    config.direccion_matriz.trim().length > 0 &&
-    config.ambiente && 
-    (config.ambiente === '1' || config.ambiente === '2') && // 1=Pruebas, 2=Producción
-    config.serie_estab && 
-    config.serie_estab.trim().length > 0 &&
-    config.serie_pto_emision && 
-    config.serie_pto_emision.trim().length > 0 &&
-    config.secuencial_actual && 
-    config.secuencial_actual > 0 &&
-    config.has_signature === true &&
-    config.p12_path && 
-    config.p12_path.trim().length > 0 &&
-    config.p12_password && 
-    config.p12_password.trim().length > 0;
-  
-  return hasRequiredFields;
-}
-
-// GET /api/reports/pos-orders - Obtiene órdenes POS (para cuando NO hay facturación electrónica)
-router.get('/pos-orders', authMiddleware, async (req, res) => {
   try {
-    const schema = await getSchemaName(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
-    
-    const { status = 'paid' } = req.query;
-    
-    const result = await query(
-      `SELECT 
-         o.id, 
-         o.order_number, 
-         o.created_at, 
-         o.status,
-         o.subtotal, 
-         o.tax_amount, 
-         o.total,
-         c.name as customer_name,
-         c.document_number as customer_document,
-         o.customer_id
-       FROM "${schema}".pos_orders o
-       LEFT JOIN "${schema}".customers c ON c.id = o.customer_id
-       WHERE o.status = $1
-       ORDER BY o.created_at DESC`,
-      [status]
+    // Primero verificar si la tabla existe
+    const tableCheck = await query(
+      `SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_schema = $1 AND table_name = 'einvoice_config'
+      )`,
+      [schema]
     );
     
-    res.json(result.rows);
+    if (!tableCheck.rows[0].exists) {
+      return false;
+    }
+    
+    // Verificar si existe el registro (sin COUNT con otras columnas)
+    const existsResult = await query(
+      `SELECT COUNT(*) as count FROM "${schema}".einvoice_config WHERE id = 1`,
+      []
+    );
+    
+    if (parseInt(existsResult.rows[0].count) === 0) {
+      return false;
+    }
+    
+    // Obtener la configuración completa
+    const configResult = await query(
+      `SELECT 
+         ruc,
+         razon_social,
+         nombre_comercial,
+         direccion_matriz,
+         ambiente,
+         serie_estab,
+         serie_pto_emision,
+         secuencial_actual,
+         has_signature,
+         p12_path,
+         p12_password
+       FROM "${schema}".einvoice_config 
+       WHERE id = 1
+       LIMIT 1`,
+      []
+    );
+    
+    if (configResult.rows.length === 0) {
+      return false;
+    }
+    
+    const config = configResult.rows[0];
+    
+    // Verificar que todos los campos críticos estén presentes y válidos
+    const hasRequiredFields = 
+      config.ruc && 
+      config.ruc.trim().length > 0 &&
+      config.razon_social && 
+      config.razon_social.trim().length > 0 &&
+      config.nombre_comercial && 
+      config.nombre_comercial.trim().length > 0 &&
+      config.direccion_matriz && 
+      config.direccion_matriz.trim().length > 0 &&
+      config.ambiente && 
+      (config.ambiente === '1' || config.ambiente === '2') &&
+      config.serie_estab && 
+      config.serie_estab.trim().length > 0 &&
+      config.serie_pto_emision && 
+      config.serie_pto_emision.trim().length > 0 &&
+      config.secuencial_actual && 
+      config.secuencial_actual > 0 &&
+      config.has_signature === true &&
+      config.p12_path && 
+      config.p12_path.trim().length > 0 &&
+      config.p12_password && 
+      config.p12_password.trim().length > 0;
+    
+    return hasRequiredFields;
+    
+  } catch (error) {
+    console.error('Error checking einvoicing config:', error);
+    return false;
+  }
+}
+
+/**
+ * GET /api/customers
+ * Lista todos los clientes del tenant
+ */
+router.get('/', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
+    const { page = 1, limit = 20, search = '', status = 'all' } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    const useEinvoicing = await hasEinvoicing(schema);
+
+    let whereConditions = [];
+    let params = [];
+    let paramIndex = 1;
+
+    if (search) {
+      whereConditions.push(`(c.name ILIKE $${paramIndex} OR c.email ILIKE $${paramIndex} OR c.document_number ILIKE $${paramIndex})`);
+      params.push(`%${search}%`);
+      paramIndex++;
+    }
+
+    if (status === 'active') {
+      whereConditions.push(`c.is_active = true`);
+    } else if (status === 'inactive') {
+      whereConditions.push(`c.is_active = false`);
+    }
+
+    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
+
+    const countResult = await query(
+      `SELECT COUNT(*) as total FROM "${schema}".customers c ${whereClause}`,
+      params
+    );
+    const total = parseInt(countResult.rows[0].total);
+
+    let ordersSubquery = '';
+    let spentSubquery = '';
+    
+    if (useEinvoicing) {
+      ordersSubquery = `COALESCE(
+        (SELECT COUNT(*) FROM "${schema}".einvoicing_invoices e 
+         WHERE e.customer_id = c.id AND e.status = 'autorizada'),
+        0
+      ) as total_orders`;
+      
+      spentSubquery = `COALESCE(
+        (SELECT SUM(e.total) FROM "${schema}".einvoicing_invoices e 
+         WHERE e.customer_id = c.id AND e.status = 'autorizada'),
+        0
+      ) as total_spent`;
+    } else {
+      ordersSubquery = `COALESCE(
+        (SELECT COUNT(*) FROM "${schema}".pos_orders o 
+         WHERE o.customer_id = c.id AND o.status = 'paid'),
+        0
+      ) as total_orders`;
+      
+      spentSubquery = `COALESCE(
+        (SELECT SUM(o.total) FROM "${schema}".pos_orders o 
+         WHERE o.customer_id = c.id AND o.status = 'paid'),
+        0
+      ) as total_spent`;
+    }
+
+    const result = await query(
+      `SELECT 
+         c.id, c.name, c.email, c.phone, c.document_type, c.document_number,
+         c.address, c.notes, c.is_active, c.created_at, c.updated_at,
+         ${ordersSubquery},
+         ${spentSubquery}
+       FROM "${schema}".customers c
+       ${whereClause}
+       ORDER BY c.name ASC
+       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
+      [...params, parseInt(limit), offset]
+    );
+
+    res.json({
+      success: true,
+      data: result.rows,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        totalPages: Math.ceil(total / parseInt(limit))
+      },
+      metadata: {
+        invoiceSource: useEinvoicing ? 'einvoicing' : 'pos',
+        einvoicingConfigured: useEinvoicing
+      }
+    });
   } catch (err) {
-    console.error('Error al cargar órdenes POS:', err);
-    res.status(500).json({ error: err.message });
+    console.error('Error al listar clientes:', err);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// GET /api/reports/sales-today?date=YYYY-MM-DD
-router.get('/sales-today', authMiddleware, async (req, res) => {
+/**
+ * GET /api/customers/stats
+ * Obtiene estadísticas de clientes
+ */
+router.get('/stats', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    if (!schema)
-      return res.status(400).json({ error: 'Business context required' });
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
 
-    const date = req.query.date || ecuadorToday();
     const useEinvoicing = await hasEinvoicing(schema);
-
-    let result;
+    
+    let customersWithOrdersSubquery = '';
     
     if (useEinvoicing) {
-      // Usar facturación electrónica
-      result = await query(
-        `SELECT
-           COUNT(*)::INT AS tickets_count,
-           COALESCE(SUM(total), 0) AS total_cobrado
-         FROM "${schema}".einvoicing_invoices
-         WHERE DATE(emission_date) = $1
-           AND status = 'autorizada'`,
-        [date]
-      );
+      customersWithOrdersSubquery = `(SELECT COUNT(DISTINCT customer_id) FROM "${schema}".einvoicing_invoices WHERE customer_id IS NOT NULL AND status = 'autorizada')`;
     } else {
-      // Usar POS
-      result = await query(
-        `SELECT
-           COUNT(DISTINCT o.id)::INT AS tickets_count,
-           COALESCE(SUM(p.amount), 0) AS total_cobrado
-         FROM "${schema}".pos_orders o
-         JOIN "${schema}".pos_payments p ON p.order_id = o.id
-         WHERE DATE(o.created_at) = $1
-           AND o.status = 'paid'
-           AND p.status = 'completed'`,
-        [date]
-      );
+      customersWithOrdersSubquery = `(SELECT COUNT(DISTINCT customer_id) FROM "${schema}".pos_orders WHERE customer_id IS NOT NULL AND status = 'paid')`;
     }
 
-    res.json(result.rows[0] || { tickets_count: 0, total_cobrado: 0 });
+    const result = await query(
+      `SELECT
+         COUNT(*) as total_customers,
+         COUNT(CASE WHEN is_active = true THEN 1 END) as active_customers,
+         COUNT(CASE WHEN is_active = false THEN 1 END) as inactive_customers,
+         COUNT(CASE WHEN created_at > NOW() - INTERVAL '30 days' THEN 1 END) as new_last_30_days,
+         ${customersWithOrdersSubquery} as customers_with_orders
+       FROM "${schema}".customers`
+    );
+
+    res.json(result.rows[0]);
   } catch (err) {
+    console.error('Error al obtener estadísticas:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
 /**
- * GET /api/reports/pending
+ * GET /api/customers/by-document
+ * Busca cliente por número de documento
  */
-router.get('/pending', authMiddleware, async (req, res) => {
+router.get('/by-document', authMiddleware, async (req, res) => {
   try {
+    const { document_number, document_type } = req.query;
+    if (!document_number) return res.status(400).json({ error: 'document_number requerido' });
+
     const schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
 
     const result = await query(
-      `SELECT COUNT(*)::INT AS count
-       FROM "${schema}".pos_orders
-       WHERE status IN ('pending','sent')`
+      `SELECT id, name, email, phone, document_number, document_type, address, notes
+       FROM "${schema}".customers
+       WHERE document_number = $1
+       LIMIT 1`,
+      [document_number]
     );
 
-    res.json({ count: result.rows[0]?.count || 0 });
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Cliente no encontrado' });
+    res.json(result.rows[0]);
   } catch (err) {
+    console.error('Error al buscar por documento:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ── GET /api/reports/inventory?type=summary|currentStock|lowStock|movements ────
-router.get('/inventory', authMiddleware, async (req, res) => {
+/**
+ * GET /api/customers/cedula
+ * Busca cliente por cédula (endpoint específico para facturación)
+ */
+router.get('/cedula', authMiddleware, async (req, res) => {
   try {
+    const { cedula } = req.query;
+    if (!cedula) return res.status(400).json({ error: 'cedula es requerida' });
+
     const schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
-    const { type = 'summary', from, to, productId } = req.query;
 
-    if (type === 'summary') {
-      const result = await query(`
-        SELECT
-          COUNT(*)::int                                             AS total_products,
-          COALESCE(SUM(p.stock), 0)::numeric                       AS total_units,
-          COALESCE(SUM(p.stock * p.selling_price), 0)::numeric     AS total_value,
-          COUNT(CASE WHEN p.stock <= p.min_stock THEN 1 END)::int  AS low_stock_count,
-          COUNT(CASE WHEN p.stock = 0 THEN 1 END)::int             AS out_of_stock_count
-        FROM "${schema}".products p WHERE p.is_active = true
-      `);
-      return res.json(result.rows[0]);
-    }
+    const cleanCedula = cedula.trim();
+    const result = await query(
+      `SELECT id, name, email, phone, document_number
+       FROM "${schema}".customers
+       WHERE TRIM(document_number) = $1`,
+      [cleanCedula]
+    );
 
-    if (type === 'currentStock') {
-      const result = await query(`
-        SELECT p.id, p.name, p.sku, p.stock, p.min_stock,
-               p.selling_price AS price,
-               COALESCE(c.name, 'Sin categoría') AS category,
-               CASE WHEN p.stock <= p.min_stock THEN true ELSE false END AS is_low
-        FROM "${schema}".products p
-        LEFT JOIN "${schema}".categories c ON c.id = p.category_id
-        WHERE p.is_active = true
-        ORDER BY p.name ASC
-      `);
-      return res.json(result.rows);
-    }
-
-    if (type === 'lowStock') {
-      const result = await query(`
-        SELECT p.id, p.name, p.sku, p.stock, p.min_stock,
-               COALESCE(c.name, 'Sin categoría') AS category
-        FROM "${schema}".products p
-        LEFT JOIN "${schema}".categories c ON c.id = p.category_id
-        WHERE p.is_active = true AND p.stock <= p.min_stock
-        ORDER BY p.stock ASC
-      `);
-      return res.json(result.rows);
-    }
-
-    if (type === 'movements') {
-      const dateFrom = from || new Date(new Date().setDate(1)).toISOString().split('T')[0];
-      const dateTo   = to   || new Date().toISOString().split('T')[0];
-      let whereExtra = '';
-      const params = [dateFrom, dateTo];
-      if (productId) {
-        whereExtra = ` AND oi.product_id = $3`;
-        params.push(productId);
-      }
-      const result = await query(`
-        SELECT oi.id, o.created_at AS date, p.name AS product_name, p.sku,
-               oi.quantity, 'salida' AS movement_type,
-               o.order_number
-        FROM "${schema}".pos_order_items oi
-        JOIN "${schema}".pos_orders o ON o.id = oi.order_id
-        JOIN "${schema}".products p ON p.id = oi.product_id
-        WHERE DATE(o.created_at) BETWEEN $1 AND $2 AND o.status = 'paid'
-        ${whereExtra}
-        ORDER BY o.created_at DESC
-      `, params);
-      return res.json(result.rows);
-    }
-
-    res.status(400).json({ error: 'Tipo de reporte inválido' });
+    if (result.rows.length === 0) return res.json([]);
+    res.json(result.rows);
   } catch (err) {
-    console.error(err);
+    console.error('Error al buscar por cédula:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ── GET /api/reports/products/categories ──────────────────────────────────────
-router.get('/products/categories', authMiddleware, async (req, res) => {
+/**
+ * GET /api/customers/:id
+ * Obtiene un cliente específico con su consumo
+ */
+router.get('/:id', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
-    const result = await query(`
-      SELECT id, name FROM "${schema}".categories
-      WHERE is_active = true ORDER BY name ASC
-    `);
-    res.json({ data: result.rows });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
-// ── GET /api/reports/products-sold ────────────────────────────────────────────
-router.get('/products-sold', authMiddleware, async (req, res) => {
-  try {
-    const schema = await getSchemaName(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
-    const { periodo = '30d', categoria, order_by = 'quantity', limit = 50 } = req.query;
-
-    const days = periodo === '7d' ? 7 : periodo === '30d' ? 30 : periodo === '90d' ? 90 : periodo === '1y' ? 365 : 30;
-
-    let catJoin = '';
-    let catWhere = '';
-    const params = [days, parseInt(limit)];
-    if (categoria) {
-      catWhere = ` AND p.category_id = $3`;
-      params.push(categoria);
-    }
-
-    const orderMap = { total: 'total_sold DESC', name: 'product_name ASC', quantity: 'total_qty DESC' };
-    const orderClause = orderMap[order_by] || 'total_qty DESC';
-
-    const result = await query(`
-      SELECT p.id, p.name AS nombre, p.sku AS codigo,
-             COALESCE(c.name, 'Sin categoría') AS categoria,
-             SUM(oi.quantity)::int                      AS cantidad_vendida,
-             SUM(oi.quantity * p.selling_price)::numeric  AS total_vendido,
-             SUM(oi.quantity)::int                      AS total_qty,
-             SUM(oi.quantity * p.selling_price)::numeric  AS total_venta
-      FROM "${schema}".pos_order_items oi
-      JOIN "${schema}".pos_orders o    ON o.id = oi.order_id
-      JOIN "${schema}".products p      ON p.id = oi.product_id
-      LEFT JOIN "${schema}".categories c ON c.id = p.category_id
-      WHERE o.status = 'paid'
-        AND o.created_at >= NOW() - ($1 || ' days')::interval
-        ${catWhere}
-      GROUP BY p.id, p.name, p.sku, c.name
-      ORDER BY ${orderClause}
-      LIMIT $2
-    `, params);
-
-    res.json({ data: result.rows });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ── GET /api/reports/products-sold/export ─────────────────────────────────────
-router.get('/products-sold/export', authMiddleware, async (req, res) => {
-  try {
-    const schema = await getSchemaName(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
-    const { periodo = '30d', categoria } = req.query;
-
-    const days = periodo === '7d' ? 7 : periodo === '30d' ? 30 : periodo === '90d' ? 90 : periodo === '1y' ? 365 : 30;
-    const params = [days];
-    let catWhere = '';
-    if (categoria) { catWhere = ` AND p.category_id = $2`; params.push(categoria); }
-
-    const result = await query(`
-      SELECT p.name AS Producto, p.sku AS SKU,
-             COALESCE(c.name, 'Sin categoría') AS Categoría,
-             SUM(oi.quantity)::int                      AS "Cantidad vendida",
-             SUM(oi.quantity * p.selling_price)::numeric  AS "Total vendido"
-      FROM "${schema}".pos_order_items oi
-      JOIN "${schema}".pos_orders o    ON o.id = oi.order_id
-      JOIN "${schema}".products p      ON p.id = oi.product_id
-      LEFT JOIN "${schema}".categories c ON c.id = p.category_id
-      WHERE o.status = 'paid' AND o.created_at >= NOW() - ($1 || ' days')::interval
-      ${catWhere}
-      GROUP BY p.id, p.name, p.sku, c.name
-      ORDER BY "Cantidad vendida" DESC
-    `, params);
-
-    const headers = ['Producto', 'SKU', 'Categoría', 'Cantidad vendida', 'Total vendido'];
-    const rows = result.rows.map(r => headers.map(h => `"${String(r[h] ?? '').replace(/"/g, '""')}"`).join(','));
-    const csv = [headers.map(h => `"${h}"`).join(','), ...rows].join('\n');
-
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename="productos-vendidos.csv"`);
-    res.send(csv);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ── GET /api/reports/advanced ─────────────────────────────────────────────────
-router.get('/advanced', authMiddleware, async (req, res) => {
-  try {
-    const schema = await getSchemaName(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
-    const { from, to, groupBy = 'day' } = req.query;
-
-    if (!from || !to) return res.status(400).json({ error: 'Parámetros from y to requeridos' });
-
-    const truncFn = groupBy === 'month' ? 'month' : groupBy === 'week' ? 'week' : 'day';
+    const { id } = req.params;
     const useEinvoicing = await hasEinvoicing(schema);
-
-    let salesRes;
+    
+    let ordersSubquery = '';
+    let spentSubquery = '';
     
     if (useEinvoicing) {
-      // Usar facturación electrónica
-      salesRes = await query(`
-        SELECT DATE_TRUNC('${truncFn}', emission_date)::date AS date,
-               COALESCE(SUM(total), 0)::numeric AS total_sales
-        FROM "${schema}".einvoicing_invoices
-        WHERE DATE(emission_date) BETWEEN $1 AND $2
-          AND status = 'autorizada'
-        GROUP BY 1 ORDER BY 1 ASC
-      `, [from, to]);
+      ordersSubquery = `COALESCE(
+        (SELECT COUNT(*) FROM "${schema}".einvoicing_invoices e 
+         WHERE e.customer_id = c.id AND e.status = 'autorizada'),
+        0
+      ) as total_orders`;
+      
+      spentSubquery = `COALESCE(
+        (SELECT SUM(e.total) FROM "${schema}".einvoicing_invoices e 
+         WHERE e.customer_id = c.id AND e.status = 'autorizada'),
+        0
+      ) as total_spent`;
     } else {
-      // Usar POS
-      salesRes = await query(`
-        SELECT DATE_TRUNC('${truncFn}', o.created_at)::date AS date,
-               COALESCE(SUM(p.amount), 0)::numeric AS total_sales
-        FROM "${schema}".pos_orders o
-        JOIN "${schema}".pos_payments p ON p.order_id = o.id
-        WHERE DATE(o.created_at) BETWEEN $1 AND $2
-          AND o.status = 'paid' AND p.status = 'completed'
-        GROUP BY 1 ORDER BY 1 ASC
-      `, [from, to]);
+      ordersSubquery = `COALESCE(
+        (SELECT COUNT(*) FROM "${schema}".pos_orders o 
+         WHERE o.customer_id = c.id AND o.status = 'paid'),
+        0
+      ) as total_orders`;
+      
+      spentSubquery = `COALESCE(
+        (SELECT SUM(o.total) FROM "${schema}".pos_orders o 
+         WHERE o.customer_id = c.id AND o.status = 'paid'),
+        0
+      ) as total_spent`;
     }
 
-    const expensesRes = await query(`
-      SELECT DATE_TRUNC('${truncFn}', e.date)::date AS date,
-             COALESCE(SUM(e.amount), 0)::numeric AS total_expenses
-      FROM "${schema}".expenses e
-      WHERE DATE(e.date) BETWEEN $1 AND $2
-      GROUP BY 1 ORDER BY 1 ASC
-    `, [from, to]).catch(() => ({ rows: [] }));
+    const result = await query(
+      `SELECT 
+         c.id, c.name, c.email, c.phone, c.document_type, c.document_number,
+         c.address, c.notes, c.is_active, c.created_at, c.updated_at,
+         ${ordersSubquery},
+         ${spentSubquery}
+       FROM "${schema}".customers c
+       WHERE c.id = $1`,
+      [id]
+    );
 
-    const totalSales = salesRes.rows.reduce((s, r) => s + parseFloat(r.total_sales), 0);
-    const totalExpenses = expensesRes.rows.reduce((s, r) => s + parseFloat(r.total_expenses), 0);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Cliente no encontrado' });
+    }
 
-    res.json({
-      sales: salesRes.rows,
-      expenses: expensesRes.rows,
-      summary: {
-        total_sales: totalSales,
-        total_expenses: totalExpenses,
-        net_profit: totalSales - totalExpenses,
-        profit_margin: totalSales > 0 ? ((totalSales - totalExpenses) / totalSales * 100).toFixed(2) : 0
-      },
+    res.json({ 
+      success: true, 
+      data: result.rows[0],
       metadata: {
         invoiceSource: useEinvoicing ? 'einvoicing' : 'pos'
       }
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
+    console.error('Error al obtener cliente:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/customers
+ * Crea un nuevo cliente
+ */
+router.post('/', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { nombre, cedula, email, phone, tipo_documento, address, notes } = req.body;
+
+    if (!nombre || !cedula) {
+      return res.status(400).json({ success: false, error: 'Nombre y cédula son requeridos' });
+    }
+
+    const existing = await query(
+      `SELECT id FROM "${schema}".customers WHERE document_number = $1`,
+      [cedula]
+    );
+
+    if (existing.rows.length > 0) {
+      return res.status(400).json({ success: false, error: 'Ya existe un cliente con este número de documento' });
+    }
+
+    const document_type = tipo_documento || (cedula.length === 13 ? 'ruc' : 'cedula');
+
+    const result = await query(
+      `INSERT INTO "${schema}".customers
+         (name, email, phone, document_number, document_type, address, notes, is_active, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, true, NOW())
+       RETURNING id, name, email, phone, document_number, document_type, address, notes, is_active`,
+      [nombre, email || null, phone || null, cedula, document_type, address || null, notes || null]
+    );
+
+    res.status(201).json({
+      success: true,
+      data: result.rows[0],
+      message: 'Cliente creado exitosamente'
+    });
+  } catch (err) {
+    console.error('Error al crear cliente:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * PUT /api/customers/:id
+ * Actualiza un cliente existente
+ */
+router.put('/:id', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { id } = req.params;
+    const { nombre, cedula, email, phone, tipo_documento, address, notes, is_active } = req.body;
+
+    const existing = await query(
+      `SELECT id FROM "${schema}".customers WHERE id = $1`,
+      [id]
+    );
+
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Cliente no encontrado' });
+    }
+
+    if (cedula) {
+      const duplicate = await query(
+        `SELECT id FROM "${schema}".customers WHERE document_number = $1 AND id != $2`,
+        [cedula, id]
+      );
+      if (duplicate.rows.length > 0) {
+        return res.status(400).json({ success: false, error: 'Ya existe otro cliente con este número de documento' });
+      }
+    }
+
+    const document_type = tipo_documento || (cedula?.length === 13 ? 'ruc' : 'cedula');
+
+    const result = await query(
+      `UPDATE "${schema}".customers
+       SET name = COALESCE($1, name),
+           email = $2,
+           phone = $3,
+           document_number = COALESCE($4, document_number),
+           document_type = COALESCE($5, document_type),
+           address = $6,
+           notes = $7,
+           is_active = COALESCE($8, is_active),
+           updated_at = NOW()
+       WHERE id = $9
+       RETURNING id, name, email, phone, document_number, document_type, address, notes, is_active`,
+      [nombre, email || null, phone || null, cedula, document_type, address || null, notes || null, is_active, id]
+    );
+
+    res.json({
+      success: true,
+      data: result.rows[0],
+      message: 'Cliente actualizado exitosamente'
+    });
+  } catch (err) {
+    console.error('Error al actualizar cliente:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * DELETE /api/customers/:id
+ * Elimina o desactiva un cliente
+ */
+router.delete('/:id', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { id } = req.params;
+    const { permanent = false } = req.query;
+
+    const existing = await query(
+      `SELECT id FROM "${schema}".customers WHERE id = $1`,
+      [id]
+    );
+
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Cliente no encontrado' });
+    }
+
+    const useEinvoicing = await hasEinvoicing(schema);
+    let hasTransactions = false;
+    
+    if (useEinvoicing) {
+      const invoicesCheck = await query(
+        `SELECT COUNT(*) as count FROM "${schema}".einvoicing_invoices WHERE customer_id = $1`,
+        [id]
+      );
+      hasTransactions = parseInt(invoicesCheck.rows[0].count) > 0;
+    } else {
+      const ordersCheck = await query(
+        `SELECT COUNT(*) as count FROM "${schema}".pos_orders WHERE customer_id = $1`,
+        [id]
+      );
+      hasTransactions = parseInt(ordersCheck.rows[0].count) > 0;
+    }
+
+    if (permanent === 'true' && !hasTransactions) {
+      await query(`DELETE FROM "${schema}".customers WHERE id = $1`, [id]);
+      res.json({ success: true, message: 'Cliente eliminado permanentemente' });
+    } else {
+      await query(
+        `UPDATE "${schema}".customers SET is_active = false, updated_at = NOW() WHERE id = $1`,
+        [id]
+      );
+      res.json({ success: true, message: 'Cliente desactivado exitosamente' });
+    }
+  } catch (err) {
+    console.error('Error al eliminar cliente:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * ========================================
+ * REPORTE DE VENTAS
+ * ========================================
+ */
+
+/**
+ * GET /api/customers/sales-report
+ * Reporte de ventas (usa facturación electrónica o POS según configuración)
+ */
+router.get('/sales-report', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
+    const { 
+      startDate, 
+      endDate, 
+      clientId,
+      page = 1,
+      limit = 20
+    } = req.query;
+
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const useEinvoicing = await hasEinvoicing(schema);
+
+    let whereConditions = [];
+    let params = [];
+    let paramIndex = 1;
+
+    if (startDate) {
+      whereConditions.push(`DATE(t.created_at) >= $${paramIndex}`);
+      params.push(startDate);
+      paramIndex++;
+    }
+
+    if (endDate) {
+      whereConditions.push(`DATE(t.created_at) <= $${paramIndex}`);
+      params.push(endDate);
+      paramIndex++;
+    }
+
+    if (clientId) {
+      whereConditions.push(`t.customer_id = $${paramIndex}`);
+      params.push(clientId);
+      paramIndex++;
+    }
+
+    const whereClause = whereConditions.length > 0 
+      ? `WHERE ${whereConditions.join(' AND ')}` 
+      : '';
+
+    let tableName = '';
+    let selectFields = '';
+    
+    if (useEinvoicing) {
+      tableName = 'einvoicing_invoices';
+      selectFields = `
+        t.id,
+        t.invoice_number as numero_factura,
+        t.customer_id,
+        c.name as cliente_nombre,
+        c.document_number as cliente_cedula,
+        t.created_at as fecha,
+        t.subtotal,
+        t.iva,
+        t.total,
+        t.status as estado
+      `;
+    } else {
+      tableName = 'pos_orders';
+      selectFields = `
+        t.id,
+        t.order_number as numero_factura,
+        t.customer_id,
+        c.name as cliente_nombre,
+        c.document_number as cliente_cedula,
+        t.created_at as fecha,
+        t.subtotal,
+        t.tax as iva,
+        t.total,
+        t.status as estado
+      `;
+    }
+
+    // Contar total de registros
+    const countResult = await query(
+      `SELECT COUNT(*) as total 
+       FROM "${schema}".${tableName} t
+       ${whereClause}`,
+      params
+    );
+    const total = parseInt(countResult.rows[0].total);
+
+    // Obtener datos paginados
+    const result = await query(
+      `SELECT 
+         ${selectFields}
+       FROM "${schema}".${tableName} t
+       LEFT JOIN "${schema}".customers c ON t.customer_id = c.id
+       ${whereClause}
+       ORDER BY t.created_at DESC
+       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
+      [...params, parseInt(limit), offset]
+    );
+
+    res.json({
+      success: true,
+      data: result.rows,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        totalPages: Math.ceil(total / parseInt(limit))
+      },
+      metadata: {
+        invoiceSource: useEinvoicing ? 'einvoicing' : 'pos',
+        einvoicingConfigured: useEinvoicing
+      }
+    });
+  } catch (err) {
+    console.error('Error al generar reporte de ventas:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/customers/sales-report/summary
+ * Resumen de ventas por período
+ */
+router.get('/sales-report/summary', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
+    const { startDate, endDate, clientId } = req.query;
+    const useEinvoicing = await hasEinvoicing(schema);
+
+    let whereConditions = [];
+    let params = [];
+    let paramIndex = 1;
+
+    if (startDate) {
+      whereConditions.push(`DATE(t.created_at) >= $${paramIndex}`);
+      params.push(startDate);
+      paramIndex++;
+    }
+
+    if (endDate) {
+      whereConditions.push(`DATE(t.created_at) <= $${paramIndex}`);
+      params.push(endDate);
+      paramIndex++;
+    }
+
+    if (clientId) {
+      whereConditions.push(`t.customer_id = $${paramIndex}`);
+      params.push(clientId);
+      paramIndex++;
+    }
+
+    const whereClause = whereConditions.length > 0 
+      ? `WHERE ${whereConditions.join(' AND ')}` 
+      : '';
+
+    const tableName = useEinvoicing ? 'einvoicing_invoices' : 'pos_orders';
+    const statusFilter = useEinvoicing ? "t.status = 'autorizada'" : "t.status = 'paid'";
+
+    const result = await query(
+      `SELECT 
+         COUNT(*) as total_ventas,
+         COALESCE(SUM(t.total), 0) as total_ingresos,
+         COALESCE(SUM(t.subtotal), 0) as total_subtotal,
+         COALESCE(SUM(t.${useEinvoicing ? 'iva' : 'tax'}), 0) as total_iva,
+         COUNT(DISTINCT t.customer_id) as clientes_unicos
+       FROM "${schema}".${tableName} t
+       ${whereClause}
+       AND ${statusFilter}`,
+      params
+    );
+
+    res.json({
+      success: true,
+      data: result.rows[0],
+      metadata: {
+        invoiceSource: useEinvoicing ? 'einvoicing' : 'pos'
+      }
+    });
+  } catch (err) {
+    console.error('Error al generar resumen de ventas:', err);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
