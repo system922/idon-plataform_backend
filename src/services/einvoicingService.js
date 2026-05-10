@@ -116,7 +116,7 @@ export async function saveSignatureFile(schema, buffer) {
   }
 }
 
-// ------------------- CORE: Emisión (CON DESCUENTO CORREGIDO SRI) -------------------
+// ------------------- CORE: Emisión (USANDO VALORES DEL FRONTEND) -------------------
 export async function emitInvoice(schema, opts) {
   const cfg = await getConfig(schema);
   if (!cfg) throw new Error('Configuración de facturación electrónica no encontrada');
@@ -146,58 +146,36 @@ export async function emitInvoice(schema, opts) {
     const tipoId = customer.tipo_identificacion || '07';
     const idComprador = customer.ruc || '9999999999';
     const razonComprador = customer.name || 'CONSUMIDOR FINAL';
-    const ivaRate = parseFloat(opts.iva_rate ?? 15);
     
-    // ============================================================
-    // 🔥 DESCUENTO - CÁLCULO CORRECTO PARA SRI ECUADOR
-    // ============================================================
-    // Según normativa SRI: 
-    // 1. Restar descuento al subtotal ANTES del IVA
-    // 2. Calcular IVA sobre la nueva base imponible
-    // ============================================================
+    // 🔥 USAR LOS VALORES QUE YA VIENEN DEL FRONTEND
     const totalDescuento = parseFloat(opts.descuento || 0);
-    const subtotalOriginal = parseFloat(opts.subtotal || 0);
+    const subtotalConDescuento = parseFloat(opts.subtotal || 0);
+    const ivaAmountTotal = parseFloat(opts.iva_amount || 0);
+    const totalFactura = parseFloat(opts.total || 0);
+    const ivaRatePorcentual = parseFloat(opts.iva_rate || 15);
 
-    console.log('💰💰💰 DESCUENTO RECIBIDO EN BACKEND:', {
-      'opts.descuento': opts.descuento,
+    console.log('💰💰💰 VALORES RECIBIDOS DEL FRONTEND:', {
+      subtotalConDescuento,
+      ivaAmountTotal,
+      totalFactura,
       totalDescuento,
-      subtotalOriginal,
-      ivaRate
+      ivaRatePorcentual
     });
 
-    // 1. Nueva base imponible = subtotal original - descuento
-    const nuevaBaseImponible = Math.max(0, subtotalOriginal - totalDescuento);
-    
-    // 2. IVA se calcula sobre la nueva base imponible
-    const ivaRecalculado = Math.round((nuevaBaseImponible * ivaRate / 100) * 100) / 100;
-    
-    // 3. Total factura = nueva base imponible + IVA
-    const totalFactura = nuevaBaseImponible + ivaRecalculado;
-
-    console.log('💰 Cálculo descuento SRI (CORRECTO):', {
-      subtotalOriginal,
-      totalDescuento,
-      nuevaBaseImponible: nuevaBaseImponible.toFixed(2),
-      ivaRate: ivaRate + '%',
-      ivaRecalculado: ivaRecalculado.toFixed(2),
-      totalFactura: totalFactura.toFixed(2)
-    });
-
-    // Detalle de items con descuento prorrateado
+    // Detalle de items (usando los valores que ya vienen del frontend con descuento aplicado)
     const detalleItems = (opts.items || []).map((item) => {
       const qty = parseFloat(item.qty || item.quantity || 1);
       const unitPrice = parseFloat(item.unit_price || 0);
-      const lineTotalOriginal = parseFloat((item.subtotal || unitPrice * qty || 0).toFixed(2));
+      const subtotalItem = parseFloat(item.subtotal || 0);
+      const ivaItem = parseFloat(item.iva_amount || 0);
+      const totalItem = subtotalItem + ivaItem;
       
-      // Proporción del descuento para este item
+      // Calcular descuento por item (si existe)
       let descuentoItem = 0;
-      if (totalDescuento > 0 && subtotalOriginal > 0) {
-        descuentoItem = totalDescuento * (lineTotalOriginal / subtotalOriginal);
-        descuentoItem = Math.round(descuentoItem * 100) / 100;
+      if (totalDescuento > 0 && subtotalConDescuento + ivaAmountTotal > 0) {
+        const proporcion = totalItem / (subtotalConDescuento + ivaAmountTotal + totalDescuento);
+        descuentoItem = totalDescuento * proporcion;
       }
-      
-      const lineTotalConDescuento = Math.max(0, lineTotalOriginal - descuentoItem);
-      const ivaItem = Math.round((lineTotalConDescuento * ivaRate / 100) * 100) / 100;
       
       return {
         codigoPrincipal: item.code || 'PROD',
@@ -205,14 +183,14 @@ export async function emitInvoice(schema, opts) {
         descripcion: item.description || item.name || 'Producto',
         cantidad: qty,
         precioUnitario: unitPrice,
-        descuento: descuentoItem,
-        precioTotalSinImpuesto: lineTotalConDescuento,
+        descuento: Math.round(descuentoItem * 100) / 100,
+        precioTotalSinImpuesto: subtotalItem,
         impuestos: {
           impuesto: [{
             codigo: 2,
-            codigoPorcentaje: ivaCode(ivaRate),
-            tarifa: ivaRate,
-            baseImponible: lineTotalConDescuento,
+            codigoPorcentaje: ivaCode(ivaRatePorcentual),
+            tarifa: ivaRatePorcentual,
+            baseImponible: subtotalItem,
             valor: ivaItem,
           }],
         },
@@ -238,17 +216,17 @@ export async function emitInvoice(schema, opts) {
         tipoIdentificacionComprador: tipoId,
         razonSocialComprador: razonComprador,
         identificacionComprador: idComprador,
-        totalSinImpuestos: nuevaBaseImponible,      // ✅ Nueva base imponible (con descuento)
-        totalDescuento: totalDescuento,              // ✅ Monto total del descuento
+        totalSinImpuestos: subtotalConDescuento,
+        totalDescuento: totalDescuento,
         propina: 0,
         importeTotal: totalFactura,
         moneda: 'USD',
         totalConImpuestos: {
           totalImpuesto: [{
             codigo: 2,
-            codigoPorcentaje: ivaCode(ivaRate),
-            baseImponible: nuevaBaseImponible,      // ✅ Sobre la nueva base imponible
-            valor: ivaRecalculado,
+            codigoPorcentaje: ivaCode(ivaRatePorcentual),
+            baseImponible: subtotalConDescuento,
+            valor: ivaAmountTotal,
           }],
         },
         pagos: {
@@ -263,6 +241,7 @@ export async function emitInvoice(schema, opts) {
       },
     };
 
+    // El resto del código sigue igual...
     const { generatedXml } = await generateXmlInvoice(comprobante);
     const claveMatch = generatedXml.match(/<claveAcceso>([^<]+)<\/claveAcceso>/);
     const claveAcceso = claveMatch?.[1] || '';
@@ -284,16 +263,15 @@ export async function emitInvoice(schema, opts) {
 
     const phone = customer.phone || opts.customer_phone || null;
 
-    // Asegurar que existe la columna discount_amount
     try {
       await client.query(`ALTER TABLE "${schema}".einvoices ADD COLUMN IF NOT EXISTS discount_amount NUMERIC(10,2) DEFAULT 0`);
     } catch { }
     
     console.log('💾 GUARDANDO EN DB:', {
-      nuevaBaseImponible: nuevaBaseImponible.toFixed(2),
-      totalDescuento: totalDescuento.toFixed(2),
-      ivaRecalculado: ivaRecalculado.toFixed(2),
-      totalFactura: totalFactura.toFixed(2)
+      subtotalConDescuento: subtotalConDescuento.toFixed(2),
+      ivaAmountTotal: ivaAmountTotal.toFixed(2),
+      totalFactura: totalFactura.toFixed(2),
+      totalDescuento: totalDescuento.toFixed(2)
     });
 
     const { rows } = await client.query(
@@ -307,7 +285,7 @@ export async function emitInvoice(schema, opts) {
       [
         opts.order_id || null, invoiceNumber, claveAcceso, null,
         customer.id || null, razonComprador, idComprador, customer.email || null, phone,
-        nuevaBaseImponible.toFixed(2), ivaRecalculado.toFixed(2), totalFactura.toFixed(2),
+        subtotalConDescuento.toFixed(2), ivaAmountTotal.toFixed(2), totalFactura.toFixed(2),
         JSON.stringify(opts.items || []),
         totalDescuento.toFixed(2),
         signedXml,
