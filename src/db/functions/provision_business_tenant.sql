@@ -238,6 +238,75 @@ BEGIN
   -- ─── POS ────────────────────────────────────────────────────────────────
   IF ANY_MATCH(v_modules, 'pos') THEN
 
+    -- ========================================================================
+    -- TABLA DE CONTADOR DIARIO DE ÓRDENES (para numeración automática)
+    -- ========================================================================
+    EXECUTE format('
+      CREATE TABLE IF NOT EXISTS %I.daily_order_counter (
+        id SERIAL PRIMARY KEY,
+        order_date DATE NOT NULL UNIQUE,
+        last_number INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE ''America/Guayaquil''),
+        updated_at TIMESTAMP DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE ''America/Guayaquil'')
+      )', p_schema_name);
+    v_table_count := v_table_count + 1;
+
+    -- Índice para búsqueda rápida por fecha
+    EXECUTE format('
+      CREATE INDEX IF NOT EXISTS %I_daily_order_counter_date_idx 
+      ON %I.daily_order_counter (order_date DESC)',
+      p_schema_name, p_schema_name);
+
+    -- ========================================================================
+    -- TRIGGER PARA ACTUALIZAR updated_at AUTOMÁTICAMENTE
+    -- ========================================================================
+    EXECUTE format('
+      CREATE OR REPLACE FUNCTION %I.update_updated_at_column()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        NEW.updated_at = CURRENT_TIMESTAMP AT TIME ZONE ''America/Guayaquil'';
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql', p_schema_name);
+
+    EXECUTE format('
+      DROP TRIGGER IF EXISTS update_daily_order_counter_updated_at ON %I.daily_order_counter', p_schema_name);
+    
+    EXECUTE format('
+      CREATE TRIGGER update_daily_order_counter_updated_at
+      BEFORE UPDATE ON %I.daily_order_counter
+      FOR EACH ROW
+      EXECUTE FUNCTION %I.update_updated_at_column()',
+      p_schema_name, p_schema_name);
+
+    -- ========================================================================
+    -- FUNCIÓN PARA OBTENER EL SIGUIENTE NÚMERO DE ORDEN (CON HORA ECUADOR)
+    -- ========================================================================
+    EXECUTE format('
+      CREATE OR REPLACE FUNCTION %I.get_next_order_number()
+      RETURNS INTEGER
+      LANGUAGE plpgsql
+      AS $inner$
+      DECLARE
+        v_number INTEGER;
+        v_today DATE;
+      BEGIN
+        -- Obtener la fecha actual de Ecuador
+        v_today := CURRENT_DATE AT TIME ZONE ''America/Guayaquil'';
+        
+        -- Insertar o actualizar el contador diario de forma atómica
+        INSERT INTO %I.daily_order_counter (order_date, last_number)
+        VALUES (v_today, 1)
+        ON CONFLICT (order_date) 
+        DO UPDATE SET last_number = %I.daily_order_counter.last_number + 1
+        RETURNING last_number INTO v_number;
+        
+        RETURN v_number;
+      END;
+      $inner$',
+      p_schema_name, p_schema_name, p_schema_name);
+    v_table_count := v_table_count + 1; -- Contar la función como "objeto creado"
+
     -- pos_orders (FK → customers, users)
     EXECUTE format('
       CREATE TABLE %I.pos_orders (
