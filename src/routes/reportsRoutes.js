@@ -290,37 +290,56 @@ router.get('/products/categories', authMiddleware, async (req, res) => {
 
 /**
  * GET /api/reports/products-sold
- * Reporte de productos vendidos
+ * Reporte de productos vendidos (MEJORADO)
  */
 router.get('/products-sold', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
 
-    const { periodo = 'month', categoria = null, order_by = 'quantity', limit = 50 } = req.query;
+    const { 
+      periodo = 'month', 
+      categoria = null, 
+      order_by = 'quantity', 
+      limit = 50,
+      startDate = null,
+      endDate = null
+    } = req.query;
     
-    // Calcular fecha de inicio según el período
+    // Construir filtro de fecha según período o fechas personalizadas
     let dateFilter = '';
-    switch(periodo) {
-      case 'day':
-        dateFilter = `created_at >= DATE(NOW()) AND created_at < DATE(NOW()) + INTERVAL '1 day'`;
-        break;
-      case 'week':
-        dateFilter = `created_at >= DATE(NOW() - INTERVAL '7 days')`;
-        break;
-      case 'month':
-        dateFilter = `created_at >= DATE_TRUNC('month', NOW())`;
-        break;
-      case 'quarter':
-        dateFilter = `created_at >= DATE_TRUNC('quarter', NOW())`;
-        break;
-      case 'year':
-        dateFilter = `created_at >= DATE_TRUNC('year', NOW())`;
-        break;
-      default:
-        dateFilter = `created_at >= DATE_TRUNC('month', NOW())`;
+    let queryParams = [];
+    let paramCounter = 1;
+    
+    if (startDate && endDate) {
+      // Usar fechas personalizadas
+      dateFilter = `DATE(created_at) >= $${paramCounter} AND DATE(created_at) <= $${paramCounter + 1}`;
+      queryParams.push(startDate, endDate);
+      paramCounter += 2;
+    } else {
+      // Usar período predefinido
+      switch(periodo) {
+        case 'day':
+          dateFilter = `created_at >= CURRENT_DATE AND created_at < CURRENT_DATE + INTERVAL '1 day'`;
+          break;
+        case 'week':
+          dateFilter = `created_at >= CURRENT_DATE - INTERVAL '7 days'`;
+          break;
+        case 'month':
+          dateFilter = `created_at >= DATE_TRUNC('month', CURRENT_DATE)`;
+          break;
+        case 'quarter':
+          dateFilter = `created_at >= DATE_TRUNC('quarter', CURRENT_DATE)`;
+          break;
+        case 'year':
+          dateFilter = `created_at >= DATE_TRUNC('year', CURRENT_DATE)`;
+          break;
+        default:
+          dateFilter = `created_at >= DATE_TRUNC('month', CURRENT_DATE)`;
+      }
     }
 
+    // Definir ordenamiento
     let orderByClause = 'cantidad_vendida DESC';
     switch(order_by) {
       case 'total':
@@ -329,95 +348,234 @@ router.get('/products-sold', authMiddleware, async (req, res) => {
       case 'name':
         orderByClause = 'nombre_producto ASC';
         break;
+      case 'quantity':
       default:
         orderByClause = 'cantidad_vendida DESC';
     }
 
     const dataSource = await getDataSource(schema);
-    
     let result = { rows: [] };
+    let usedSource = dataSource.source;
 
+    // Intentar obtener datos de einvoices primero
     if (dataSource.source === 'einvoicing') {
       try {
         let categoryFilter = '';
-        let params = [parseInt(limit) || 50];
+        let params = [...queryParams];
+        
+        // Agregar límite
+        params.push(parseInt(limit) || 50);
         
         if (categoria) {
-          categoryFilter = `AND item->>'category' = $2`;
+          categoryFilter = `AND item->>'category' = $${paramCounter}`;
           params.push(categoria);
+          paramCounter++;
         }
         
-        result = await query(
-          `SELECT 
-             item->>'id' as id,
-             item->>'sku' as sku,
-             item->>'name' as nombre_producto,
-             COALESCE(SUM(CAST(item->>'quantity' AS INT)), 0) as cantidad_vendida,
-             COALESCE(SUM(CAST(item->>'quantity' AS INT) * CAST(item->>'price' AS NUMERIC)), 0) as total_vendido,
-             item->>'category' as categoria,
-             COUNT(DISTINCT e.id) as numero_transacciones
-           FROM "${schema}".einvoices e,
-                jsonb_array_elements(e.items) as item
-           WHERE ${dateFilter}
-             AND e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO')
-             ${categoryFilter}
-           GROUP BY item->>'id', item->>'sku', item->>'name', item->>'category'
-           ORDER BY ${orderByClause}
-           LIMIT $1`,
-          params
-        );
+        const whereClause = dateFilter ? `WHERE ${dateFilter} AND e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO') ${categoryFilter}` : `WHERE e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO') ${categoryFilter}`;
+        
+        const queryText = `
+          SELECT 
+            COALESCE(item->>'id', item->>'product_id', 'unknown') as id,
+            COALESCE(item->>'sku', item->>'code', '') as sku,
+            COALESCE(item->>'name', item->>'product_name', 'Producto sin nombre') as nombre_producto,
+            COALESCE(SUM(CAST(item->>'quantity' AS INTEGER)), 0) as cantidad_vendida,
+            COALESCE(SUM(CAST(item->>'quantity' AS INTEGER) * CAST(COALESCE(item->>'price', '0') AS NUMERIC)), 0) as total_vendido,
+            COALESCE(item->>'category', 'Sin categoría') as categoria,
+            COUNT(DISTINCT e.id) as numero_transacciones
+          FROM "${schema}".einvoices e,
+               jsonb_array_elements(e.items) as item
+          ${whereClause}
+          GROUP BY item->>'id', item->>'sku', item->>'name', item->>'category'
+          HAVING COALESCE(SUM(CAST(item->>'quantity' AS INTEGER)), 0) > 0
+          ORDER BY ${orderByClause}
+          LIMIT $${params.length}
+        `;
+        
+        result = await query(queryText, params);
+        
+        if (result.rows.length > 0) {
+          usedSource = 'einvoicing';
+        }
       } catch (err) {
         console.warn('Einvoices products query failed:', err.message);
       }
     }
     
-    if ((dataSource.source !== 'einvoicing' || result.rows.length === 0) && dataSource.source !== 'none') {
+    // Si no hay datos de einvoices o no es la fuente principal, intentar con POS
+    if (result.rows.length === 0 && dataSource.source !== 'none') {
       try {
         let categoryFilter = '';
-        let params = [parseInt(limit) || 50];
-        let paramIndex = 2;
+        let params = [...queryParams];
+        let currentParam = params.length + 1;
+        
+        params.push(parseInt(limit) || 50);
         
         if (categoria) {
-          categoryFilter = `AND c.id = $${paramIndex}`;
+          categoryFilter = `AND c.id = $${currentParam}`;
           params.push(categoria);
-          paramIndex++;
+          currentParam++;
         }
         
-        result = await query(
-          `SELECT 
-             p.id::text,
-             p.code as sku,
-             p.name as nombre_producto,
-             COALESCE(SUM(oi.quantity), 0) as cantidad_vendida,
-             COALESCE(SUM(oi.quantity * p.selling_price), 0) as total_vendido,
-             c.name as categoria,
-             COUNT(DISTINCT o.id) as numero_transacciones
-           FROM "${schema}".pos_order_items oi
-           JOIN "${schema}".pos_orders o ON oi.order_id = o.id
-           JOIN "${schema}".products p ON oi.product_id = p.id
-           LEFT JOIN "${schema}".categories c ON p.category_id = c.id
-           WHERE ${dateFilter}
-             AND o.status = 'paid'
-             ${categoryFilter}
-           GROUP BY p.id, p.code, p.name, c.name
-           ORDER BY ${orderByClause}
-           LIMIT $1`,
-          params
-        );
+        const whereClause = dateFilter ? `WHERE ${dateFilter} AND o.status = 'paid' ${categoryFilter}` : `WHERE o.status = 'paid' ${categoryFilter}`;
+        
+        const queryText = `
+          SELECT 
+            p.id::text,
+            COALESCE(p.code, '') as sku,
+            COALESCE(p.name, 'Producto sin nombre') as nombre_producto,
+            COALESCE(SUM(oi.quantity), 0) as cantidad_vendida,
+            COALESCE(SUM(oi.quantity * COALESCE(p.selling_price, 0)), 0) as total_vendido,
+            COALESCE(c.name, 'Sin categoría') as categoria,
+            COUNT(DISTINCT o.id) as numero_transacciones
+          FROM "${schema}".pos_order_items oi
+          INNER JOIN "${schema}".pos_orders o ON oi.order_id = o.id
+          INNER JOIN "${schema}".products p ON oi.product_id = p.id
+          LEFT JOIN "${schema}".categories c ON p.category_id = c.id
+          ${whereClause}
+          GROUP BY p.id, p.code, p.name, c.name
+          HAVING COALESCE(SUM(oi.quantity), 0) > 0
+          ORDER BY ${orderByClause}
+          LIMIT $${params.length}
+        `;
+        
+        result = await query(queryText, params);
+        
+        if (result.rows.length > 0) {
+          usedSource = 'pos';
+        }
       } catch (err) {
         console.warn('POS products query failed:', err.message);
       }
     }
 
+    // Formatear números para asegurar que sean válidos
+    const formattedRows = result.rows.map(row => ({
+      ...row,
+      cantidad_vendida: parseInt(row.cantidad_vendida) || 0,
+      total_vendido: parseFloat(row.total_vendido) || 0
+    }));
+
     res.json({
       success: true,
-      data: result.rows,
+      data: formattedRows,
       metadata: {
-        invoiceSource: dataSource.source
+        invoiceSource: usedSource,
+        periodo,
+        categoria: categoria || 'todas',
+        order_by,
+        limit: parseInt(limit),
+        total_registros: formattedRows.length
       }
     });
   } catch (err) {
     console.error('Error al generar reporte de productos:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/reports/products-stats
+ * Estadísticas rápidas de productos (NUEVO ENDPOINT)
+ */
+router.get('/products-stats', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { periodo = 'month' } = req.query;
+    
+    // Construir filtro de fecha
+    let dateFilter = '';
+    switch(periodo) {
+      case 'day':
+        dateFilter = `created_at >= CURRENT_DATE AND created_at < CURRENT_DATE + INTERVAL '1 day'`;
+        break;
+      case 'week':
+        dateFilter = `created_at >= CURRENT_DATE - INTERVAL '7 days'`;
+        break;
+      case 'month':
+        dateFilter = `created_at >= DATE_TRUNC('month', CURRENT_DATE)`;
+        break;
+      case 'quarter':
+        dateFilter = `created_at >= DATE_TRUNC('quarter', CURRENT_DATE)`;
+        break;
+      case 'year':
+        dateFilter = `created_at >= DATE_TRUNC('year', CURRENT_DATE)`;
+        break;
+      default:
+        dateFilter = `created_at >= DATE_TRUNC('month', CURRENT_DATE)`;
+    }
+
+    const dataSource = await getDataSource(schema);
+    let stats = {
+      total_productos_vendidos: 0,
+      total_ventas: 0,
+      productos_distintos: 0,
+      ticket_promedio: 0
+    };
+
+    if (dataSource.source === 'einvoicing') {
+      try {
+        const result = await query(`
+          SELECT 
+            COALESCE(SUM(CAST(item->>'quantity' AS INTEGER)), 0) as total_cantidad,
+            COALESCE(SUM(CAST(item->>'quantity' AS INTEGER) * CAST(COALESCE(item->>'price', '0') AS NUMERIC)), 0) as total_monto,
+            COUNT(DISTINCT item->>'id') as productos_distintos
+          FROM "${schema}".einvoices e,
+               jsonb_array_elements(e.items) as item
+          WHERE ${dateFilter}
+            AND e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO')
+        `);
+        
+        if (result.rows[0]) {
+          stats.total_productos_vendidos = parseInt(result.rows[0].total_cantidad) || 0;
+          stats.total_ventas = parseFloat(result.rows[0].total_monto) || 0;
+          stats.productos_distintos = parseInt(result.rows[0].productos_distintos) || 0;
+        }
+      } catch (err) {
+        console.warn('Einvoices stats query failed:', err.message);
+      }
+    }
+    
+    if (stats.total_productos_vendidos === 0 && dataSource.source !== 'none') {
+      try {
+        const result = await query(`
+          SELECT 
+            COALESCE(SUM(oi.quantity), 0) as total_cantidad,
+            COALESCE(SUM(oi.quantity * p.selling_price), 0) as total_monto,
+            COUNT(DISTINCT p.id) as productos_distintos
+          FROM "${schema}".pos_order_items oi
+          INNER JOIN "${schema}".pos_orders o ON oi.order_id = o.id
+          INNER JOIN "${schema}".products p ON oi.product_id = p.id
+          WHERE ${dateFilter}
+            AND o.status = 'paid'
+        `);
+        
+        if (result.rows[0]) {
+          stats.total_productos_vendidos = parseInt(result.rows[0].total_cantidad) || 0;
+          stats.total_ventas = parseFloat(result.rows[0].total_monto) || 0;
+          stats.productos_distintos = parseInt(result.rows[0].productos_distintos) || 0;
+        }
+      } catch (err) {
+        console.warn('POS stats query failed:', err.message);
+      }
+    }
+
+    stats.ticket_promedio = stats.productos_distintos > 0 
+      ? stats.total_ventas / stats.productos_distintos 
+      : 0;
+
+    res.json({
+      success: true,
+      data: stats,
+      metadata: {
+        invoiceSource: dataSource.source,
+        periodo
+      }
+    });
+  } catch (err) {
+    console.error('Error al obtener estadísticas:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
