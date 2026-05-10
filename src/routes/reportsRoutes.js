@@ -797,8 +797,6 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'from and to dates are required' });
     }
 
-    const useEinvoicing = await hasEinvoicing(schema);
-    
     let dateFormatGroup = '';
     let dateFormatLabel = '';
     
@@ -817,26 +815,60 @@ router.get('/advanced', authMiddleware, async (req, res) => {
         dateFormatLabel = `DATE(t.created_at)`;
     }
 
-    let tableName = useEinvoicing ? 'einvoicing_invoices' : 'pos_orders';
-    let statusFilter = useEinvoicing ? `t.status = 'autorizada'` : `t.status = 'paid'`;
-
-    // Obtener ventas por período
+    // Detectar qué tabla de órdenes/facturas tiene datos
     let salesResult = { rows: [] };
+    let dataSource = 'unknown';
+    
     try {
-      salesResult = await query(
-        `SELECT 
-           ${dateFormatLabel} as date,
-           COALESCE(SUM(t.total), 0) as total_sales,
-           COUNT(*) as numero_transacciones,
-           COUNT(DISTINCT t.customer_id) as clientes_unicos
-         FROM "${schema}".${tableName} t
-         WHERE DATE(t.created_at) >= $1 
-           AND DATE(t.created_at) <= $2
-           AND ${statusFilter}
-         GROUP BY ${dateFormatGroup}
-         ORDER BY date ASC`,
+      // Intentar obtener datos de einvoicing primero (facturación electrónica)
+      const einvoicingCheck = await query(
+        `SELECT COUNT(*) as count FROM "${schema}".einvoicing_invoices 
+         WHERE DATE(created_at) >= $1 AND DATE(created_at) <= $2 AND status = 'autorizada'`,
         [from, to]
       );
+      
+      if (einvoicingCheck.rows[0]?.count > 0) {
+        dataSource = 'einvoicing';
+        salesResult = await query(
+          `SELECT 
+             ${dateFormatLabel} as date,
+             COALESCE(SUM(t.total), 0) as total_sales,
+             COUNT(*) as numero_transacciones,
+             COUNT(DISTINCT t.customer_id) as clientes_unicos
+           FROM "${schema}".einvoicing_invoices t
+           WHERE DATE(t.created_at) >= $1 
+             AND DATE(t.created_at) <= $2
+             AND t.status = 'autorizada'
+           GROUP BY ${dateFormatGroup}
+           ORDER BY date ASC`,
+          [from, to]
+        );
+      } else {
+        // Si no hay einvoicing, intentar con pos_orders
+        const posCheck = await query(
+          `SELECT COUNT(*) as count FROM "${schema}".pos_orders 
+           WHERE DATE(created_at) >= $1 AND DATE(created_at) <= $2 AND status = 'paid'`,
+          [from, to]
+        );
+        
+        if (posCheck.rows[0]?.count > 0) {
+          dataSource = 'pos';
+          salesResult = await query(
+            `SELECT 
+               ${dateFormatLabel} as date,
+               COALESCE(SUM(t.total), 0) as total_sales,
+               COUNT(*) as numero_transacciones,
+               COUNT(DISTINCT t.customer_id) as clientes_unicos
+             FROM "${schema}".pos_orders t
+             WHERE DATE(t.created_at) >= $1 
+               AND DATE(t.created_at) <= $2
+               AND t.status = 'paid'
+             GROUP BY ${dateFormatGroup}
+             ORDER BY date ASC`,
+            [from, to]
+          );
+        }
+      }
     } catch (err) {
       console.warn('Warning - Sales query failed:', err.message);
     }
@@ -931,7 +963,7 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       expenses: expensesResult.rows,
       receivables: receivablesResult.rows,
       metadata: {
-        invoiceSource: useEinvoicing ? 'einvoicing' : 'pos',
+        invoiceSource: dataSource,
         dateRange: { from, to },
         groupBy
       }
