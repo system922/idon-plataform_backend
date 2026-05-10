@@ -5,6 +5,60 @@ import { authMiddleware } from '../middleware/auth.js';
 
 const router = express.Router();
 
+// Función auxiliar para verificar si hay facturación electrónica COMPLETAMENTE configurada
+async function hasEinvoicing(schema) {
+  const result = await query(
+    `SELECT 
+       COUNT(*) as count,
+       ruc,
+       razon_social,
+       nombre_comercial,
+       direccion_matriz,
+       ambiente,
+       serie_estab,
+       serie_pto_emision,
+       secuencial_actual,
+       has_signature,
+       p12_path,
+       p12_password
+     FROM "${schema}".einvoice_config 
+     WHERE id = 1`,
+    []
+  );
+  
+  if (result.rows.length === 0 || parseInt(result.rows[0].count) === 0) {
+    return false;
+  }
+  
+  const config = result.rows[0];
+  
+  // Verificar que todos los campos críticos estén presentes y válidos
+  const hasRequiredFields = 
+    config.ruc && 
+    config.ruc.trim().length > 0 &&
+    config.razon_social && 
+    config.razon_social.trim().length > 0 &&
+    config.nombre_comercial && 
+    config.nombre_comercial.trim().length > 0 &&
+    config.direccion_matriz && 
+    config.direccion_matriz.trim().length > 0 &&
+    config.ambiente && 
+    (config.ambiente === '1' || config.ambiente === '2') && // 1=Pruebas, 2=Producción
+    config.serie_estab && 
+    config.serie_estab.trim().length > 0 &&
+    config.serie_pto_emision && 
+    config.serie_pto_emision.trim().length > 0 &&
+    config.secuencial_actual && 
+    config.secuencial_actual > 0 &&
+    config.has_signature === true &&
+    config.p12_path && 
+    config.p12_path.trim().length > 0 &&
+    config.p12_password && 
+    config.p12_password.trim().length > 0;
+  
+  return hasRequiredFields;
+}
+
 /**
  * GET /api/customers
  * Lista todos los clientes del tenant
@@ -18,6 +72,9 @@ router.get('/', authMiddleware, async (req, res) => {
 
     const { page = 1, limit = 20, search = '', status = 'all' } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    // Verificar si usa facturación electrónica (con todos los campos completos)
+    const useEinvoicing = await hasEinvoicing(schema);
 
     let whereConditions = [];
     let params = [];
@@ -44,19 +101,45 @@ router.get('/', authMiddleware, async (req, res) => {
     );
     const total = parseInt(countResult.rows[0].total);
 
+    // Construir subconsultas según el tipo de facturación
+    let ordersSubquery = '';
+    let spentSubquery = '';
+    
+    if (useEinvoicing) {
+      // Usar facturación electrónica
+      ordersSubquery = `COALESCE(
+        (SELECT COUNT(*) FROM "${schema}".einvoicing_invoices e 
+         WHERE e.customer_id = c.id AND e.status = 'autorizada'),
+        0
+      ) as total_orders`;
+      
+      spentSubquery = `COALESCE(
+        (SELECT SUM(e.total) FROM "${schema}".einvoicing_invoices e 
+         WHERE e.customer_id = c.id AND e.status = 'autorizada'),
+        0
+      ) as total_spent`;
+    } else {
+      // Usar POS (ventas de mostrador)
+      ordersSubquery = `COALESCE(
+        (SELECT COUNT(*) FROM "${schema}".pos_orders o 
+         WHERE o.customer_id = c.id AND o.status = 'paid'),
+        0
+      ) as total_orders`;
+      
+      spentSubquery = `COALESCE(
+        (SELECT SUM(o.total) FROM "${schema}".pos_orders o 
+         WHERE o.customer_id = c.id AND o.status = 'paid'),
+        0
+      ) as total_spent`;
+    }
+
     // Obtener clientes con paginación
     const result = await query(
       `SELECT 
          c.id, c.name, c.email, c.phone, c.document_type, c.document_number,
          c.address, c.notes, c.is_active, c.created_at, c.updated_at,
-         COALESCE(
-           (SELECT COUNT(*) FROM "${schema}".pos_orders o WHERE o.customer_id = c.id),
-           0
-         ) as total_orders,
-         COALESCE(
-           (SELECT SUM(o.total) FROM "${schema}".pos_orders o WHERE o.customer_id = c.id AND o.status = 'paid'),
-           0
-         ) as total_spent
+         ${ordersSubquery},
+         ${spentSubquery}
        FROM "${schema}".customers c
        ${whereClause}
        ORDER BY c.name ASC
@@ -72,6 +155,10 @@ router.get('/', authMiddleware, async (req, res) => {
         limit: parseInt(limit),
         total,
         totalPages: Math.ceil(total / parseInt(limit))
+      },
+      metadata: {
+        invoiceSource: useEinvoicing ? 'einvoicing' : 'pos',
+        einvoicingConfigured: useEinvoicing
       }
     });
   } catch (err) {
@@ -81,13 +168,23 @@ router.get('/', authMiddleware, async (req, res) => {
 });
 
 /**
- * GET /api/customers/:id
- * Obtiene un cliente específico
+ * GET /api/customers/stats
+ * Obtiene estadísticas de clientes
  */
 router.get('/stats', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const useEinvoicing = await hasEinvoicing(schema);
+    
+    let customersWithOrdersSubquery = '';
+    
+    if (useEinvoicing) {
+      customersWithOrdersSubquery = `(SELECT COUNT(DISTINCT customer_id) FROM "${schema}".einvoicing_invoices WHERE customer_id IS NOT NULL AND status = 'autorizada')`;
+    } else {
+      customersWithOrdersSubquery = `(SELECT COUNT(DISTINCT customer_id) FROM "${schema}".pos_orders WHERE customer_id IS NOT NULL AND status = 'paid')`;
+    }
 
     const result = await query(
       `SELECT
@@ -95,7 +192,7 @@ router.get('/stats', authMiddleware, async (req, res) => {
          COUNT(CASE WHEN is_active = true THEN 1 END) as active_customers,
          COUNT(CASE WHEN is_active = false THEN 1 END) as inactive_customers,
          COUNT(CASE WHEN created_at > NOW() - INTERVAL '30 days' THEN 1 END) as new_last_30_days,
-         (SELECT COUNT(DISTINCT customer_id) FROM "${schema}".pos_orders WHERE customer_id IS NOT NULL) as customers_with_orders
+         ${customersWithOrdersSubquery} as customers_with_orders
        FROM "${schema}".customers`
     );
 
@@ -106,6 +203,10 @@ router.get('/stats', authMiddleware, async (req, res) => {
   }
 });
 
+/**
+ * GET /api/customers/by-document
+ * Busca cliente por número de documento
+ */
 router.get('/by-document', authMiddleware, async (req, res) => {
   try {
     const { document_number, document_type } = req.query;
@@ -129,6 +230,10 @@ router.get('/by-document', authMiddleware, async (req, res) => {
   }
 });
 
+/**
+ * GET /api/customers/cedula
+ * Busca cliente por cédula (endpoint específico para facturación)
+ */
 router.get('/cedula', authMiddleware, async (req, res) => {
   try {
     const { cedula } = req.query;
@@ -137,7 +242,7 @@ router.get('/cedula', authMiddleware, async (req, res) => {
     const schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
 
-    // Limpia el parámetro y busca con ILIKE y TRIM
+    // Limpia el parámetro y busca
     const cleanCedula = cedula.trim();
     const result = await query(
       `SELECT id, name, email, phone, document_number
@@ -153,17 +258,53 @@ router.get('/cedula', authMiddleware, async (req, res) => {
   }
 });
 
+/**
+ * GET /api/customers/:id
+ * Obtiene un cliente específico con su consumo
+ */
 router.get('/:id', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
 
     const { id } = req.params;
+    const useEinvoicing = await hasEinvoicing(schema);
+    
+    let ordersSubquery = '';
+    let spentSubquery = '';
+    
+    if (useEinvoicing) {
+      ordersSubquery = `COALESCE(
+        (SELECT COUNT(*) FROM "${schema}".einvoicing_invoices e 
+         WHERE e.customer_id = c.id AND e.status = 'autorizada'),
+        0
+      ) as total_orders`;
+      
+      spentSubquery = `COALESCE(
+        (SELECT SUM(e.total) FROM "${schema}".einvoicing_invoices e 
+         WHERE e.customer_id = c.id AND e.status = 'autorizada'),
+        0
+      ) as total_spent`;
+    } else {
+      ordersSubquery = `COALESCE(
+        (SELECT COUNT(*) FROM "${schema}".pos_orders o 
+         WHERE o.customer_id = c.id AND o.status = 'paid'),
+        0
+      ) as total_orders`;
+      
+      spentSubquery = `COALESCE(
+        (SELECT SUM(o.total) FROM "${schema}".pos_orders o 
+         WHERE o.customer_id = c.id AND o.status = 'paid'),
+        0
+      ) as total_spent`;
+    }
 
     const result = await query(
       `SELECT 
          c.id, c.name, c.email, c.phone, c.document_type, c.document_number,
-         c.address, c.notes, c.is_active, c.created_at, c.updated_at
+         c.address, c.notes, c.is_active, c.created_at, c.updated_at,
+         ${ordersSubquery},
+         ${spentSubquery}
        FROM "${schema}".customers c
        WHERE c.id = $1`,
       [id]
@@ -173,7 +314,13 @@ router.get('/:id', authMiddleware, async (req, res) => {
       return res.status(404).json({ success: false, error: 'Cliente no encontrado' });
     }
 
-    res.json({ success: true, data: result.rows[0] });
+    res.json({ 
+      success: true, 
+      data: result.rows[0],
+      metadata: {
+        invoiceSource: useEinvoicing ? 'einvoicing' : 'pos'
+      }
+    });
   } catch (err) {
     console.error('Error al obtener cliente:', err);
     res.status(500).json({ success: false, error: err.message });
@@ -310,16 +457,26 @@ router.delete('/:id', authMiddleware, async (req, res) => {
       return res.status(404).json({ success: false, error: 'Cliente no encontrado' });
     }
 
-    // Verificar si tiene órdenes
-    const ordersCheck = await query(
-      `SELECT COUNT(*) as count FROM "${schema}".pos_orders WHERE customer_id = $1`,
-      [id]
-    );
+    // Verificar si tiene órdenes/facturas según corresponda
+    const useEinvoicing = await hasEinvoicing(schema);
+    let hasTransactions = false;
+    
+    if (useEinvoicing) {
+      const invoicesCheck = await query(
+        `SELECT COUNT(*) as count FROM "${schema}".einvoicing_invoices WHERE customer_id = $1`,
+        [id]
+      );
+      hasTransactions = parseInt(invoicesCheck.rows[0].count) > 0;
+    } else {
+      const ordersCheck = await query(
+        `SELECT COUNT(*) as count FROM "${schema}".pos_orders WHERE customer_id = $1`,
+        [id]
+      );
+      hasTransactions = parseInt(ordersCheck.rows[0].count) > 0;
+    }
 
-    const hasOrders = parseInt(ordersCheck.rows[0].count) > 0;
-
-    if (permanent === 'true' && !hasOrders) {
-      // Eliminación física (solo si no tiene órdenes)
+    if (permanent === 'true' && !hasTransactions) {
+      // Eliminación física (solo si no tiene transacciones)
       await query(`DELETE FROM "${schema}".customers WHERE id = $1`, [id]);
       res.json({ success: true, message: 'Cliente eliminado permanentemente' });
     } else {

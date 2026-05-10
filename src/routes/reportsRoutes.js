@@ -6,6 +6,94 @@ import { ecuadorToday } from '../utils/dateHelper.js';
 
 const router = express.Router();
 
+// Función auxiliar para verificar si hay facturación electrónica COMPLETAMENTE configurada
+async function hasEinvoicing(schema) {
+  const result = await query(
+    `SELECT 
+       COUNT(*) as count,
+       ruc,
+       razon_social,
+       nombre_comercial,
+       direccion_matriz,
+       ambiente,
+       serie_estab,
+       serie_pto_emision,
+       secuencial_actual,
+       has_signature,
+       p12_path,
+       p12_password
+     FROM "${schema}".einvoice_config 
+     WHERE id = 1`,
+    []
+  );
+  
+  if (result.rows.length === 0 || parseInt(result.rows[0].count) === 0) {
+    return false;
+  }
+  
+  const config = result.rows[0];
+  
+  // Verificar que todos los campos críticos estén presentes y válidos
+  const hasRequiredFields = 
+    config.ruc && 
+    config.ruc.trim().length > 0 &&
+    config.razon_social && 
+    config.razon_social.trim().length > 0 &&
+    config.nombre_comercial && 
+    config.nombre_comercial.trim().length > 0 &&
+    config.direccion_matriz && 
+    config.direccion_matriz.trim().length > 0 &&
+    config.ambiente && 
+    (config.ambiente === '1' || config.ambiente === '2') && // 1=Pruebas, 2=Producción
+    config.serie_estab && 
+    config.serie_estab.trim().length > 0 &&
+    config.serie_pto_emision && 
+    config.serie_pto_emision.trim().length > 0 &&
+    config.secuencial_actual && 
+    config.secuencial_actual > 0 &&
+    config.has_signature === true &&
+    config.p12_path && 
+    config.p12_path.trim().length > 0 &&
+    config.p12_password && 
+    config.p12_password.trim().length > 0;
+  
+  return hasRequiredFields;
+}
+
+// GET /api/reports/pos-orders - Obtiene órdenes POS (para cuando NO hay facturación electrónica)
+router.get('/pos-orders', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+    
+    const { status = 'paid' } = req.query;
+    
+    const result = await query(
+      `SELECT 
+         o.id, 
+         o.order_number, 
+         o.created_at, 
+         o.status,
+         o.subtotal, 
+         o.tax_amount, 
+         o.total,
+         c.name as customer_name,
+         c.document_number as customer_document,
+         o.customer_id
+       FROM "${schema}".pos_orders o
+       LEFT JOIN "${schema}".customers c ON c.id = o.customer_id
+       WHERE o.status = $1
+       ORDER BY o.created_at DESC`,
+      [status]
+    );
+    
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error al cargar órdenes POS:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/reports/sales-today?date=YYYY-MM-DD
 router.get('/sales-today', authMiddleware, async (req, res) => {
   try {
@@ -14,20 +102,35 @@ router.get('/sales-today', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Business context required' });
 
     const date = req.query.date || ecuadorToday();
+    const useEinvoicing = await hasEinvoicing(schema);
 
-    const result = await query(
-      `SELECT
-         COUNT(DISTINCT o.id)::INT            AS tickets_count,
-         COALESCE(SUM(p.amount),0)            AS total_cobrado
-       FROM "${schema}".pos_orders o
-       JOIN "${schema}".pos_payments p
-         ON p.order_id = o.id
-       WHERE DATE(o.created_at) = $1
-         AND o.status = 'paid'
-         AND p.status = 'completed'
-      `,
-      [date]
-    );
+    let result;
+    
+    if (useEinvoicing) {
+      // Usar facturación electrónica
+      result = await query(
+        `SELECT
+           COUNT(*)::INT AS tickets_count,
+           COALESCE(SUM(total), 0) AS total_cobrado
+         FROM "${schema}".einvoicing_invoices
+         WHERE DATE(emission_date) = $1
+           AND status = 'autorizada'`,
+        [date]
+      );
+    } else {
+      // Usar POS
+      result = await query(
+        `SELECT
+           COUNT(DISTINCT o.id)::INT AS tickets_count,
+           COALESCE(SUM(p.amount), 0) AS total_cobrado
+         FROM "${schema}".pos_orders o
+         JOIN "${schema}".pos_payments p ON p.order_id = o.id
+         WHERE DATE(o.created_at) = $1
+           AND o.status = 'paid'
+           AND p.status = 'completed'`,
+        [date]
+      );
+    }
 
     res.json(result.rows[0] || { tickets_count: 0, total_cobrado: 0 });
   } catch (err) {
@@ -241,37 +344,55 @@ router.get('/advanced', authMiddleware, async (req, res) => {
     if (!from || !to) return res.status(400).json({ error: 'Parámetros from y to requeridos' });
 
     const truncFn = groupBy === 'month' ? 'month' : groupBy === 'week' ? 'week' : 'day';
+    const useEinvoicing = await hasEinvoicing(schema);
 
-    const [salesRes, expensesRes] = await Promise.all([
-      query(`
+    let salesRes;
+    
+    if (useEinvoicing) {
+      // Usar facturación electrónica
+      salesRes = await query(`
+        SELECT DATE_TRUNC('${truncFn}', emission_date)::date AS date,
+               COALESCE(SUM(total), 0)::numeric AS total_sales
+        FROM "${schema}".einvoicing_invoices
+        WHERE DATE(emission_date) BETWEEN $1 AND $2
+          AND status = 'autorizada'
+        GROUP BY 1 ORDER BY 1 ASC
+      `, [from, to]);
+    } else {
+      // Usar POS
+      salesRes = await query(`
         SELECT DATE_TRUNC('${truncFn}', o.created_at)::date AS date,
-               COALESCE(SUM(p.amount), 0)::numeric           AS total_sales
+               COALESCE(SUM(p.amount), 0)::numeric AS total_sales
         FROM "${schema}".pos_orders o
         JOIN "${schema}".pos_payments p ON p.order_id = o.id
         WHERE DATE(o.created_at) BETWEEN $1 AND $2
           AND o.status = 'paid' AND p.status = 'completed'
         GROUP BY 1 ORDER BY 1 ASC
-      `, [from, to]),
-      query(`
-        SELECT DATE_TRUNC('${truncFn}', e.date)::date AS date,
-               COALESCE(SUM(e.amount), 0)::numeric     AS total_expenses
-        FROM "${schema}".expenses e
-        WHERE DATE(e.date) BETWEEN $1 AND $2
-        GROUP BY 1 ORDER BY 1 ASC
-      `, [from, to]).catch(() => ({ rows: [] }))
-    ]);
+      `, [from, to]);
+    }
 
-    const totalSales    = salesRes.rows.reduce((s, r) => s + parseFloat(r.total_sales), 0);
+    const expensesRes = await query(`
+      SELECT DATE_TRUNC('${truncFn}', e.date)::date AS date,
+             COALESCE(SUM(e.amount), 0)::numeric AS total_expenses
+      FROM "${schema}".expenses e
+      WHERE DATE(e.date) BETWEEN $1 AND $2
+      GROUP BY 1 ORDER BY 1 ASC
+    `, [from, to]).catch(() => ({ rows: [] }));
+
+    const totalSales = salesRes.rows.reduce((s, r) => s + parseFloat(r.total_sales), 0);
     const totalExpenses = expensesRes.rows.reduce((s, r) => s + parseFloat(r.total_expenses), 0);
 
     res.json({
-      sales:          salesRes.rows,
-      expenses:       expensesRes.rows,
+      sales: salesRes.rows,
+      expenses: expensesRes.rows,
       summary: {
-        total_sales:    totalSales,
+        total_sales: totalSales,
         total_expenses: totalExpenses,
-        net_profit:     totalSales - totalExpenses,
-        profit_margin:  totalSales > 0 ? ((totalSales - totalExpenses) / totalSales * 100).toFixed(2) : 0
+        net_profit: totalSales - totalExpenses,
+        profit_margin: totalSales > 0 ? ((totalSales - totalExpenses) / totalSales * 100).toFixed(2) : 0
+      },
+      metadata: {
+        invoiceSource: useEinvoicing ? 'einvoicing' : 'pos'
       }
     });
   } catch (err) {
