@@ -74,7 +74,7 @@ function buildDateFilter(periodo, startDate, endDate, tableAlias = 'e') {
 
 /**
  * CONSULTA BASE UNIFICADA PARA TOTALES DE VENTAS
- * Esta es la ÚNICA fuente de verdad para totales
+ * ÚNICA fuente de verdad para todos los reportes
  */
 async function getSalesTotals(schema, periodo, startDate, endDate) {
   const dataSource = await getDataSource(schema);
@@ -83,7 +83,6 @@ async function getSalesTotals(schema, periodo, startDate, endDate) {
   let params = queryParams.length > 0 ? [...queryParams] : [];
   
   if (dataSource.source === 'einvoicing') {
-    // Total desde facturas electrónicas
     const sql = `
       SELECT 
         COUNT(DISTINCT e.id) as total_ordenes,
@@ -109,7 +108,6 @@ async function getSalesTotals(schema, periodo, startDate, endDate) {
   }
   
   if (dataSource.source === 'pos') {
-    // Total desde órdenes POS pagadas
     const posDateFilter = dateFilter.replace(/e\./g, 'o.');
     const sql = `
       SELECT 
@@ -146,6 +144,37 @@ async function getSalesTotals(schema, periodo, startDate, endDate) {
  * 1. REPORTE DE VENTAS
  * ============================================
  */
+
+/**
+ * GET /api/reports/sales/summary
+ * Resumen de ventas - USA getSalesTotals()
+ */
+router.get('/sales/summary', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { startDate = null, endDate = null, periodo = 'month' } = req.query;
+    
+    const result = await getSalesTotals(schema, periodo, startDate, endDate);
+    
+    res.json({
+      success: true,
+      data: {
+        total_ventas: parseInt(result.totals.total_ordenes) || 0,
+        total_ingresos: parseFloat(result.totals.total_ingresos) || 0,
+        total_subtotal: parseFloat(result.totals.total_subtotal) || 0,
+        total_iva: parseFloat(result.totals.total_iva) || 0,
+        clientes_unicos: parseInt(result.totals.clientes_unicos) || 0,
+        ticket_promedio: parseFloat(result.totals.ticket_promedio) || 0
+      },
+      metadata: { invoiceSource: result.source }
+    });
+  } catch (err) {
+    console.error('[SalesSummary] Error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 /**
  * GET /api/reports/sales
@@ -203,13 +232,11 @@ router.get('/sales', authMiddleware, async (req, res) => {
       
       params.push(parseInt(limit), offset);
     } else {
-      const posDateFilter = periodo === 'month' 
-        ? `o.created_at >= DATE_TRUNC('month', CURRENT_DATE)` 
-        : `DATE(o.created_at) >= $1::DATE AND DATE(o.created_at) <= $2::DATE`;
+      const posDateFilter = params.length > 0
+        ? `DATE(o.created_at) >= $1::DATE AND DATE(o.created_at) <= $2::DATE`
+        : `o.created_at >= DATE_TRUNC('month', CURRENT_DATE)`;
       
-      const whereClause = params.length > 0
-        ? `WHERE ${posDateFilter} AND o.status = 'paid'`
-        : `WHERE o.created_at >= DATE_TRUNC('month', CURRENT_DATE) AND o.status = 'paid'`;
+      const whereClause = `WHERE ${posDateFilter} AND o.status = 'paid'`;
       
       countQuery = `SELECT COUNT(*) as total FROM "${schema}".pos_orders o ${whereClause}`;
       
@@ -259,42 +286,14 @@ router.get('/sales', authMiddleware, async (req, res) => {
 });
 
 /**
- * GET /api/reports/sales/summary
- * Resumen de ventas - USA LA CONSULTA UNIFICADA
- */
-router.get('/sales/summary', authMiddleware, async (req, res) => {
-  try {
-    const schema = await getSchemaName(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
-
-    const { startDate = null, endDate = null, periodo = 'month' } = req.query;
-    
-    const result = await getSalesTotals(schema, periodo, startDate, endDate);
-    
-    res.json({
-      success: true,
-      data: {
-        total_ventas: parseInt(result.totals.total_ordenes) || 0,
-        total_ingresos: parseFloat(result.totals.total_ingresos) || 0,
-        total_subtotal: parseFloat(result.totals.total_subtotal) || 0,
-        total_iva: parseFloat(result.totals.total_iva) || 0,
-        clientes_unicos: parseInt(result.totals.clientes_unicos) || 0,
-        ticket_promedio: parseFloat(result.totals.ticket_promedio) || 0
-      },
-      metadata: { invoiceSource: result.source }
-    });
-  } catch (err) {
-    console.error('[SalesSummary] Error:', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-/**
  * ============================================
  * 2. REPORTE DE PRODUCTOS
  * ============================================
  */
 
+/**
+ * GET /api/reports/products/categories
+ */
 router.get('/products/categories', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -315,7 +314,79 @@ router.get('/products/categories', authMiddleware, async (req, res) => {
 });
 
 /**
+ * GET /api/reports/products-stats
+ * Estadísticas de productos - CONSISTENTE con sales/summary
+ */
+router.get('/products-stats', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { periodo = 'month', startDate, endDate } = req.query;
+    
+    const dataSource = await getDataSource(schema);
+    const { dateFilter, queryParams } = buildDateFilter(periodo, startDate, endDate, 'o');
+    
+    // Obtener totales de ventas (MISMA CONSULTA UNIFICADA)
+    const salesTotals = await getSalesTotals(schema, periodo, startDate, endDate);
+    
+    // Obtener estadísticas de productos desde pos_order_items
+    let params = queryParams.length > 0 ? [...queryParams] : [];
+    let whereConditions = [dateFilter.replace(/e\./g, 'o.')];
+    
+    if (dataSource.source === 'einvoicing') {
+      whereConditions.push(`EXISTS (
+        SELECT 1 FROM "${schema}".einvoices e 
+        WHERE e.order_id = o.id 
+          AND e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO')
+      )`);
+    } else {
+      whereConditions.push(`o.status = 'paid'`);
+    }
+    
+    const whereClause = `WHERE ${whereConditions.join(' AND ')}`;
+    
+    const productsQuery = `
+      SELECT 
+        COALESCE(SUM(oi.quantity), 0) as total_cantidad,
+        COUNT(DISTINCT oi.product_id) as productos_distintos
+      FROM "${schema}".pos_order_items oi
+      INNER JOIN "${schema}".pos_orders o ON oi.order_id = o.id
+      ${whereClause}
+    `;
+    
+    const productsResult = await query(productsQuery, params);
+    
+    const stats = {
+      total_productos_vendidos: parseInt(productsResult.rows[0]?.total_cantidad) || 0,
+      total_ventas: parseFloat(salesTotals.totals.total_ingresos) || 0,
+      productos_distintos: parseInt(productsResult.rows[0]?.productos_distintos) || 0,
+      ticket_promedio: parseFloat(salesTotals.totals.ticket_promedio) || 0
+    };
+    
+    stats.total_ventas = Math.round(stats.total_ventas * 100) / 100;
+    stats.ticket_promedio = Math.round(stats.ticket_promedio * 100) / 100;
+    
+    console.log('[ProductsStats] Final:', stats);
+    
+    res.json({
+      success: true,
+      data: stats,
+      metadata: { invoiceSource: dataSource.source, periodo }
+    });
+  } catch (err) {
+    console.error('[ProductsStats] Error:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message,
+      data: { total_productos_vendidos: 0, total_ventas: 0, productos_distintos: 0, ticket_promedio: 0 }
+    });
+  }
+});
+
+/**
  * GET /api/reports/products-sold
+ * Listado de productos vendidos desde pos_order_items
  */
 router.get('/products-sold', authMiddleware, async (req, res) => {
   try {
@@ -412,82 +483,15 @@ router.get('/products-sold', authMiddleware, async (req, res) => {
 });
 
 /**
- * GET /api/reports/products-stats
- * Estadísticas de productos - CONSISTENTE con sales/summary
- */
-router.get('/products-stats', authMiddleware, async (req, res) => {
-  try {
-    const schema = await getSchemaName(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
-
-    const { periodo = 'month', startDate, endDate } = req.query;
-    
-    const dataSource = await getDataSource(schema);
-    const { dateFilter, queryParams } = buildDateFilter(periodo, startDate, endDate, 'o');
-    
-    // Obtener totales de ventas (MISMA CONSULTA UNIFICADA)
-    const salesTotals = await getSalesTotals(schema, periodo, startDate, endDate);
-    
-    // Obtener estadísticas de productos desde pos_order_items
-    let params = queryParams.length > 0 ? [...queryParams] : [];
-    let whereConditions = [dateFilter.replace(/e\./g, 'o.')];
-    
-    if (dataSource.source === 'einvoicing') {
-      whereConditions.push(`EXISTS (
-        SELECT 1 FROM "${schema}".einvoices e 
-        WHERE e.order_id = o.id 
-          AND e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO')
-      )`);
-    } else {
-      whereConditions.push(`o.status = 'paid'`);
-    }
-    
-    const whereClause = `WHERE ${whereConditions.join(' AND ')}`;
-    
-    const productsQuery = `
-      SELECT 
-        COALESCE(SUM(oi.quantity), 0) as total_cantidad,
-        COUNT(DISTINCT oi.product_id) as productos_distintos
-      FROM "${schema}".pos_order_items oi
-      INNER JOIN "${schema}".pos_orders o ON oi.order_id = o.id
-      ${whereClause}
-    `;
-    
-    const productsResult = await query(productsQuery, params);
-    
-    const stats = {
-      total_productos_vendidos: parseInt(productsResult.rows[0]?.total_cantidad) || 0,
-      total_ventas: parseFloat(salesTotals.totals.total_ingresos) || 0,
-      productos_distintos: parseInt(productsResult.rows[0]?.productos_distintos) || 0,
-      ticket_promedio: parseFloat(salesTotals.totals.ticket_promedio) || 0
-    };
-    
-    stats.total_ventas = Math.round(stats.total_ventas * 100) / 100;
-    stats.ticket_promedio = Math.round(stats.ticket_promedio * 100) / 100;
-    
-    console.log('[ProductsStats] Final:', stats);
-    
-    res.json({
-      success: true,
-      data: stats,
-      metadata: { invoiceSource: dataSource.source, periodo }
-    });
-  } catch (err) {
-    console.error('[ProductsStats] Error:', err);
-    res.status(500).json({
-      success: false,
-      error: err.message,
-      data: { total_productos_vendidos: 0, total_ventas: 0, productos_distintos: 0, ticket_promedio: 0 }
-    });
-  }
-});
-
-/**
  * ============================================
  * 3. REPORTE AVANZADO
  * ============================================
  */
 
+/**
+ * GET /api/reports/advanced
+ * Reporte avanzado con ventas y gastos - CONSISTENTE con los demás reportes
+ */
 router.get('/advanced', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -503,9 +507,10 @@ router.get('/advanced', authMiddleware, async (req, res) => {
 
     const dataSource = await getDataSource(schema);
     
-    // Usar la consulta unificada para totales
+    // TOTALES UNIFICADOS (misma fuente que sales/summary y products-stats)
     const totalsResult = await getSalesTotals(schema, 'custom', from, to);
     
+    // Agrupación para el detalle diario
     let dateFormatGroup, dateFormatLabel;
     switch(groupBy) {
       case 'week':
@@ -521,138 +526,7 @@ router.get('/advanced', authMiddleware, async (req, res) => {
         dateFormatLabel = `DATE(created_at)`;
     }
 
-    let salesResult = { rows: [] };
-    
-    if (dataSource.source === 'einvoicing') {
-      salesResult = await query(
-        `SELECT 
-           ${dateFormatLabel} as date,
-           COALESCE(SUM(e.total), 0) as total_sales,
-           COUNT(DISTINCT e.id) as numero_transacciones,
-           COUNT(DISTINCT e.customer_ruc) as clientes_unicos
-         FROM "${schema}".einvoices e
-         WHERE e.status IN ('autorizada', 'emitida', 'valid', 'AUTORIZADO')
-           AND DATE(e.created_at) >= $1::DATE 
-           AND DATE(e.created_at) <= $2::DATE
-         GROUP BY ${dateFormatGroup}
-         ORDER BY date ASC`,
-        [from, to]
-      );
-    } else if (dataSource.source === 'pos') {
-      salesResult = await query(
-        `SELECT 
-           ${dateFormatLabel} as date,
-           COALESCE(SUM(o.total), 0) as total_sales,
-           COUNT(DISTINCT o.id) as numero_transacciones,
-           COUNT(DISTINCT o.customer_id) as clientes_unicos
-         FROM "${schema}".pos_orders o
-         WHERE o.status = 'paid'
-           AND DATE(o.created_at) >= $1::DATE 
-           AND DATE(o.created_at) <= $2::DATE
-         GROUP BY ${dateFormatGroup}
-         ORDER BY date ASC`,
-        [from, to]
-      );
-    }
-
-    // Gastos
-    let expensesResult = { rows: [] };
-    try {
-      expensesResult = await query(
-        `SELECT 
-           DATE(date) as date,
-           COALESCE(SUM(amount), 0) as total_expenses
-         FROM "${schema}".expenses
-         WHERE date >= $1::DATE AND date <= $2::DATE
-         GROUP BY DATE(date)
-         ORDER BY date ASC`,
-        [from, to]
-      );
-    } catch (err) {
-      console.warn('[Advanced] Expenses query failed:', err.message);
-    }
-
-    // Crear array completo de fechas
-    const allDates = [];
-    const startDate = new Date(from + 'T12:00:00');
-    const endDate = new Date(to + 'T12:00:00');
-    
-    for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
-      allDates.push(d.toISOString().split('T')[0]);
-    }
-
-    // Completar ventas
-    const completeSales = allDates.map(dateStr => {
-      const sale = salesResult.rows.find(s => {
-        const saleDate = s.date instanceof Date ? s.date.toISOString().split('T')[0] : String(s.date).split('T')[0];
-        return saleDate === dateStr;
-      });
-      return sale || { date: dateStr, total_sales: 0, numero_transacciones: 0, clientes_unicos: 0 };
-    });
-
-    // Completar gastos
-    const completeExpenses = allDates.map(dateStr => {
-      const expense = expensesResult.rows.find(e => {
-        const expDate = e.date instanceof Date ? e.date.toISOString().split('T')[0] : String(e.date).split('T')[0];
-        return expDate === dateStr;
-      });
-      return expense || { date: dateStr, total_expenses: 0 };
-    });
-
-    res.json({
-      success: true,
-      sales: completeSales,
-      expenses: completeExpenses,
-      totals: {
-        total_ventas: parseFloat(totalsResult.totals.total_ingresos) || 0,
-        total_gastos: completeExpenses.reduce((sum, e) => sum + (Number(e.total_expenses) || 0), 0),
-        ganancia_neta: 0,
-        margen: 0
-      },
-      metadata: {
-        invoiceSource: dataSource.source,
-        dateRange: { from, to },
-        groupBy,
-        totalDays: allDates.length
-      }
-    });
-    
-    // Calcular neto y margen después
-    const totals = res.json.body?.totals || {};
-    // Nota: Express no permite modificar después de res.json, así que calculamos antes
-  } catch (err) {
-    console.error('[Advanced] Error:', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// Corregir el endpoint advanced para calcular neto y margen antes de enviar
-router.get('/advanced', authMiddleware, async (req, res) => {
-  try {
-    const schema = await getSchemaName(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
-
-    const { from = null, to = null, groupBy = 'day' } = req.query;
-    if (!from || !to) return res.status(400).json({ error: 'from and to dates are required' });
-
-    const dataSource = await getDataSource(schema);
-    const totalsResult = await getSalesTotals(schema, 'custom', from, to);
-    
-    let dateFormatGroup, dateFormatLabel;
-    switch(groupBy) {
-      case 'week':
-        dateFormatGroup = `DATE_TRUNC('week', created_at)::DATE`;
-        dateFormatLabel = `DATE_TRUNC('week', created_at)::DATE`;
-        break;
-      case 'month':
-        dateFormatGroup = `DATE_TRUNC('month', created_at)::DATE`;
-        dateFormatLabel = `DATE_TRUNC('month', created_at)::DATE`;
-        break;
-      default:
-        dateFormatGroup = `DATE(created_at)`;
-        dateFormatLabel = `DATE(created_at)`;
-    }
-
+    // Obtener ventas detalladas
     let salesResult = { rows: [] };
     const tableName = dataSource.source === 'einvoicing' ? 'einvoices' : 'pos_orders';
     const statusCond = dataSource.source === 'einvoicing' 
@@ -673,19 +547,24 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       [from, to]
     );
 
+    // Obtener gastos
     let expensesResult = { rows: [] };
     try {
       expensesResult = await query(
-        `SELECT DATE(date) as date, COALESCE(SUM(amount), 0) as total_expenses
+        `SELECT 
+           DATE(date) as date, 
+           COALESCE(SUM(amount), 0) as total_expenses
          FROM "${schema}".expenses
          WHERE date >= $1::DATE AND date <= $2::DATE
-         GROUP BY DATE(date) ORDER BY date ASC`,
+         GROUP BY DATE(date) 
+         ORDER BY date ASC`,
         [from, to]
       );
     } catch (err) {
-      console.warn('[Advanced] Expenses:', err.message);
+      console.warn('[Advanced] Expenses query failed:', err.message);
     }
 
+    // Crear array completo de fechas en el rango
     const allDates = [];
     const start = new Date(from + 'T12:00:00');
     const end = new Date(to + 'T12:00:00');
@@ -693,6 +572,7 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       allDates.push(d.toISOString().split('T')[0]);
     }
 
+    // Completar ventas con 0 para días sin datos
     const completeSales = allDates.map(dateStr => {
       const sale = salesResult.rows.find(s => {
         const sd = s.date instanceof Date ? s.date.toISOString().split('T')[0] : String(s.date).split('T')[0];
@@ -701,6 +581,7 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       return sale || { date: dateStr, total_sales: 0, numero_transacciones: 0 };
     });
 
+    // Completar gastos con 0 para días sin datos
     const completeExpenses = allDates.map(dateStr => {
       const exp = expensesResult.rows.find(e => {
         const ed = e.date instanceof Date ? e.date.toISOString().split('T')[0] : String(e.date).split('T')[0];
@@ -709,10 +590,13 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       return exp || { date: dateStr, total_expenses: 0 };
     });
 
+    // Calcular totales finales
     const totalVentas = parseFloat(totalsResult.totals.total_ingresos) || 0;
     const totalGastos = completeExpenses.reduce((sum, e) => sum + (Number(e.total_expenses) || 0), 0);
     const gananciaNeta = totalVentas - totalGastos;
     const margen = totalVentas > 0 ? (gananciaNeta / totalVentas) * 100 : 0;
+
+    console.log('[Advanced] Totals:', { totalVentas, totalGastos, gananciaNeta, margen });
 
     res.json({
       success: true,
