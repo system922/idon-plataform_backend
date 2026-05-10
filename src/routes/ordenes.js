@@ -8,7 +8,7 @@ const router = express.Router();
 
 /**
  * POST /api/ordenes
- * Crea una nueva orden POS con numeración diaria
+ * Crea una nueva orden POS con numeración diaria (CONCURRENTE SEGURO)
  */
 router.post('/', authMiddleware, async (req, res) => {
   const client = await getClient();
@@ -32,8 +32,7 @@ router.post('/', authMiddleware, async (req, res) => {
 
     await client.query('BEGIN');
 
-    // 🔥 OBTENER FECHA ACTUAL DE ECUADOR (CORREGIDO)
-    // Usamos CURRENT_DATE con timezone para obtener la fecha correcta
+    // Obtener fecha actual de Ecuador
     const tzResult = await client.query(`
       SELECT CURRENT_DATE AT TIME ZONE 'America/Guayaquil' as ecuador_date
     `);
@@ -41,7 +40,7 @@ router.post('/', authMiddleware, async (req, res) => {
     
     console.log('📅 Fecha Ecuador para contador:', today);
 
-    // 🔥 TABLA PARA CONTROL DE CONTADOR DIARIO (crear si no existe)
+    // Crear tabla para control de contador diario (si no existe)
     await client.query(`
       CREATE TABLE IF NOT EXISTS "${schema}".daily_order_counter (
         id SERIAL PRIMARY KEY,
@@ -52,16 +51,35 @@ router.post('/', authMiddleware, async (req, res) => {
       )
     `);
 
-    // 🔥 OBTENER O INSERTAR CONTADOR DEL DÍA
-    const counterResult = await client.query(`
+    // 🔥 SOLUCIÓN CONCURRENTE: Insertar el registro si no existe (sin incrementar)
+    await client.query(`
       INSERT INTO "${schema}".daily_order_counter (order_date, last_number)
-      VALUES ($1, 1)
-      ON CONFLICT (order_date) 
-      DO UPDATE SET last_number = daily_order_counter.last_number + 1
-      RETURNING last_number
+      VALUES ($1, 0)
+      ON CONFLICT (order_date) DO NOTHING
     `, [today]);
 
-    const dailyNumber = counterResult.rows[0].last_number;
+    // 🔥 BLOQUEAR LA FILA para evitar concurrencia
+    const lockResult = await client.query(`
+      SELECT last_number FROM "${schema}".daily_order_counter
+      WHERE order_date = $1
+      FOR UPDATE
+    `, [today]);
+
+    if (lockResult.rows.length === 0) {
+      throw new Error('No se pudo obtener el contador para la fecha');
+    }
+
+    // Incrementar el contador de forma segura
+    const currentNumber = lockResult.rows[0].last_number;
+    const newNumber = currentNumber + 1;
+    
+    await client.query(`
+      UPDATE "${schema}".daily_order_counter
+      SET last_number = $1, updated_at = NOW()
+      WHERE order_date = $2
+    `, [newNumber, today]);
+
+    const dailyNumber = newNumber;
     const orderNumber = String(dailyNumber).padStart(4, '0');
     
     console.log(`📊 Contador para ${today}: ${dailyNumber} → Orden #${orderNumber}`);
@@ -103,7 +121,7 @@ router.post('/', authMiddleware, async (req, res) => {
       productosData.push({ ...product, quantity, notes: item.notes || null });
     }
 
-    // 🔥 INSERTAR ORDEN CON EL NÚMERO DIARIO
+    // Insertar orden con el número diario
     const insertRes = await client.query(
       `INSERT INTO "${schema}".pos_orders
          (order_number, order_type, status,
@@ -167,7 +185,7 @@ router.post('/', authMiddleware, async (req, res) => {
     await client.query('ROLLBACK');
     console.error('Error al crear orden:', err);
     
-    // 🔥 MANEJAR ERROR DE DUPLICADO
+    // Manejar error de duplicado
     if (err.code === '23505') {
       return res.status(409).json({ 
         error: 'Conflicto al generar número de orden. Por favor intente nuevamente.',
