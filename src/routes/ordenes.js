@@ -626,10 +626,10 @@ router.patch('/:id', authMiddleware, async (req, res) => {
       );
     }
 
-    // Si el recalculado queda en 0 (precio null en BD) usar valores del frontend
-    const finalSubtotal = calculatedSubtotal || Number(frontSubtotal) || 0;
-    const finalTax      = calculatedTax      || Number(frontTax)      || 0;
-    const finalTotal    = calculatedTotal    || Number(frontTotal)    || 0;
+    // Usar recalculado si es > 0, sino confiar en el frontend
+    const finalSubtotal = calculatedSubtotal > 0 ? calculatedSubtotal : (Number(frontSubtotal) || 0);
+    const finalTax      = calculatedTax      > 0 ? calculatedTax      : (Number(frontTax)      || 0);
+    const finalTotal    = calculatedTotal    > 0 ? calculatedTotal    : (Number(frontTotal)    || 0);
 
     await client.query(
       `UPDATE "${schema}".pos_orders
