@@ -576,7 +576,7 @@ router.patch('/:id', authMiddleware, async (req, res) => {
     if (!schema) return res.status(400).json({ error: 'Business context required' });
 
     const { id } = req.params;
-    const { items, subtotal, tax_amount, total } = req.body;
+    const { items, subtotal: frontSubtotal, tax_amount: frontTax, total: frontTotal } = req.body;
 
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Se requieren items válidos' });
@@ -584,7 +584,6 @@ router.patch('/:id', authMiddleware, async (req, res) => {
 
     await client.query('BEGIN');
 
-    // Verify order exists
     const orderRes = await client.query(
       `SELECT id FROM "${schema}".pos_orders WHERE id = $1`, [id]
     );
@@ -593,26 +592,54 @@ router.patch('/:id', authMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'Orden no encontrada' });
     }
 
-    // Replace all items
-    await client.query(`DELETE FROM "${schema}".pos_order_items WHERE order_id = $1`, [id]);
+    // Recalcular totales desde BD (igual que POST)
+    let calculatedSubtotal = 0;
+    let calculatedTax = 0;
+    let calculatedTotal = 0;
+    const productosData = [];
+
     for (const item of items) {
+      const productRes = await client.query(
+        `SELECT id, name, selling_price, tax_rate FROM "${schema}".products WHERE id = $1`,
+        [item.product_id]
+      );
+      if (productRes.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: `Producto no encontrado: ${item.product_id}` });
+      }
+      const product = productRes.rows[0];
+      const quantity        = Number(item.quantity) || 1;
+      const sellingPrice    = Number(product.selling_price) || 0;
+      const taxRate         = Number(product.tax_rate)      || 0;
+      calculatedSubtotal   += sellingPrice * quantity;
+      calculatedTax        += taxRate      * quantity;
+      calculatedTotal      += (sellingPrice + taxRate) * quantity;
+      productosData.push({ ...product, quantity, notes: item.notes || null });
+    }
+
+    await client.query(`DELETE FROM "${schema}".pos_order_items WHERE order_id = $1`, [id]);
+    for (const prod of productosData) {
       await client.query(
         `INSERT INTO "${schema}".pos_order_items (order_id, product_id, quantity, notes)
          VALUES ($1, $2, $3, $4)`,
-        [id, item.product_id, item.quantity, item.notes || null]
+        [id, prod.id, prod.quantity, prod.notes]
       );
     }
 
-    // Update order totals
+    // Si el recalculado queda en 0 (precio null en BD) usar valores del frontend
+    const finalSubtotal = calculatedSubtotal || Number(frontSubtotal) || 0;
+    const finalTax      = calculatedTax      || Number(frontTax)      || 0;
+    const finalTotal    = calculatedTotal    || Number(frontTotal)    || 0;
+
     await client.query(
       `UPDATE "${schema}".pos_orders
        SET subtotal=$1, tax_amount=$2, total=$3, updated_at=NOW()
        WHERE id=$4`,
-      [subtotal || 0, tax_amount || 0, total || 0, id]
+      [finalSubtotal, finalTax, finalTotal, id]
     );
 
     await client.query('COMMIT');
-    res.json({ success: true });
+    res.json({ success: true, subtotal: finalSubtotal, tax_amount: finalTax, total: finalTotal });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Error en PATCH /ordenes/:id:', err);
