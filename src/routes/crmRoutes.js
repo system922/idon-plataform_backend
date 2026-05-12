@@ -806,15 +806,25 @@ router.post('/email-campaigns/:id/send', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'No hay clientes con correo electrónico registrado' });
     }
 
-    // 5.3 Enviar campaña usando el servicio con Resend (BCC, lotes)
+    // 5.3 Obtener nombre del negocio para el remitente
+    let businessName = 'Idon Plataforma';
+    try {
+      const settingsRes = await query(
+        `SELECT trade_name, company_name FROM "${schema}".pos_settings LIMIT 1`
+      );
+      businessName = settingsRes.rows[0]?.trade_name || settingsRes.rows[0]?.company_name || businessName;
+    } catch (_) {}
+
+    // 5.4 Enviar campaña usando el servicio con Resend (BCC, lotes)
     const result = await sendCampaign({
       recipients: emails,
       subject: campaign.subject,
       html: campaign.content,
-      batchSize: 50,   // Resend permite hasta 50 en BCC
+      batchSize: 50,
+      businessName,
     });
 
-    // 5.4 Actualizar fecha de envío de la campaña (aunque haya fallos parciales)
+    // 5.5 Actualizar fecha de envío de la campaña (aunque haya fallos parciales)
     await query(`
       UPDATE "${schema}".email_campaigns SET sent_at = NOW() WHERE id = $1
     `, [id]);

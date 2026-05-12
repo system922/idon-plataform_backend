@@ -121,69 +121,86 @@ router.post('/email/send-template', async (req, res, next) => {
     const fmtDate = (d) => d ? new Date(d).toLocaleDateString('es-EC', { day: '2-digit', month: 'long', year: 'numeric' }) : '—';
     const fmtAmt  = (a) => a ? `$${parseFloat(a).toFixed(2)}` : '—';
 
-    const base = `
-      <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;background:#fff;border-radius:10px;overflow:hidden;border:1px solid #e5e7eb;">
-        <div style="background:linear-gradient(135deg,#1e293b,#334155);padding:32px 28px;text-align:center;">
-          <h1 style="color:#fff;margin:0;font-size:22px;font-weight:700;">Idon Plataforma</h1>
+    const wrap = (title, subtitle, body) => `
+      <div style="font-family:Arial,sans-serif;max-width:520px;margin:auto;color:#1e293b">
+        <div style="background:#ff8c42;padding:24px 28px;border-radius:10px 10px 0 0">
+          <h2 style="color:#fff;margin:0;font-size:20px">Idon Plataforma</h2>
+          <p style="color:#fff3e0;margin:4px 0 0;font-size:13px">${subtitle}</p>
         </div>
-        <div style="padding:32px 28px;">
-    `;
-    const close = `
+        <div style="background:#f8fafc;padding:24px 28px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 10px 10px">
+          ${body}
+          <p style="margin:20px 0 0;font-size:11px;color:#cbd5e1;text-align:center">
+            Idon Plataforma — mensaje automático, no responder a este correo.
+          </p>
         </div>
-        <div style="background:#f8fafc;padding:16px 28px;text-align:center;font-size:11px;color:#94a3b8;">
-          Este mensaje fue enviado automáticamente por el equipo de Idon Plataforma.
-        </div>
-      </div>
-    `;
+      </div>`;
+
+    const row = (label, value, alt) => `
+      <tr>
+        <td style="padding:7px 10px;background:${alt ? '#f8fafc' : '#fff'};border:1px solid #e2e8f0;color:#64748b">${label}</td>
+        <td style="padding:7px 10px;background:${alt ? '#f8fafc' : '#fff'};border:1px solid #e2e8f0;font-weight:700">${value}</td>
+      </tr>`;
 
     const tpls = {
       bienvenida: {
-        subject: `Bienvenido a Idon Plataforma`,
-        html: base + `
-          <h2 style="color:#1e293b;margin:0 0 12px;">¡Bienvenido, ${ownerName || 'estimado usuario'}!</h2>
-          <p style="color:#475569;line-height:1.6;">Tu negocio <strong>${businessName}</strong> ya está activo en <strong>Idon Plataforma</strong>.</p>
-          <p style="color:#475569;line-height:1.6;">Desde ahora puedes gestionar tus ventas, inventario, empleados y más desde un solo lugar.</p>
-          <div style="background:#f0fdf4;border-left:4px solid #22c55e;padding:14px 18px;border-radius:6px;margin:20px 0;">
-            <p style="color:#166534;margin:0;font-weight:600;">Tu cuenta está lista para usar.</p>
-          </div>
-          <p style="color:#475569;line-height:1.6;">Si tienes alguna duda, no dudes en contactarnos.</p>
-        ` + close,
+        subject: `Bienvenido a Idon Plataforma — ${businessName}`,
+        html: wrap('Bienvenida', 'Tu cuenta está lista', `
+          <p style="margin:0 0 8px">Estimado/a <strong>${ownerName || 'usuario'}</strong>,</p>
+          <p style="margin:0 0 20px;color:#475569;font-size:14px">
+            Tu negocio <strong>${businessName}</strong> ya está activo en <strong>Idon Plataforma</strong>. Desde ahora puedes gestionar tus ventas, inventario, empleados y más desde un solo lugar.
+          </p>
+          <table style="width:100%;font-size:13px;border-collapse:collapse">
+            ${row('Negocio', businessName, false)}
+            ${row('Estado', '<span style="color:#059669">✓ Activo</span>', true)}
+          </table>
+          <p style="margin:16px 0 0;color:#475569;font-size:13px">Si tienes alguna duda, contáctanos.</p>
+        `),
       },
       recordatorio_pago: {
         subject: `Recordatorio de pago — ${businessName}`,
-        html: base + `
-          <h2 style="color:#1e293b;margin:0 0 12px;">Recordatorio de pago</h2>
-          <p style="color:#475569;line-height:1.6;">Hola <strong>${ownerName || 'estimado usuario'}</strong>, te recordamos que tienes un pago pendiente para tu suscripción de <strong>${businessName}</strong>.</p>
-          <div style="background:#fffbeb;border-left:4px solid #f59e0b;padding:14px 18px;border-radius:6px;margin:20px 0;">
-            <p style="color:#92400e;margin:0 0 6px;font-weight:600;">Detalles del pago</p>
-            <p style="color:#92400e;margin:0;">Monto: <strong>${fmtAmt(amount)}</strong></p>
-            <p style="color:#92400e;margin:4px 0 0;">Fecha de vencimiento: <strong>${fmtDate(dueDate)}</strong></p>
-          </div>
-          <p style="color:#475569;line-height:1.6;">Por favor realiza tu pago a tiempo para mantener tu negocio activo sin interrupciones.</p>
-        ` + close,
+        html: wrap('Recordatorio de pago', 'Tienes un pago pendiente', `
+          <p style="margin:0 0 8px">Estimado/a <strong>${ownerName || 'usuario'}</strong>,</p>
+          <p style="margin:0 0 20px;color:#475569;font-size:14px">
+            Te recordamos que tienes un pago pendiente para mantener activa tu suscripción de <strong>${businessName}</strong>.
+          </p>
+          <table style="width:100%;font-size:13px;border-collapse:collapse">
+            ${row('Negocio', businessName, false)}
+            ${row('Monto a pagar', `<span style="color:#d97706;font-weight:800">${fmtAmt(amount)}</span>`, true)}
+            ${row('Fecha de vencimiento', `<span style="color:#ef4444">${fmtDate(dueDate)}</span>`, false)}
+          </table>
+          <p style="margin:16px 0 0;color:#475569;font-size:13px">Por favor realiza tu pago a tiempo para evitar la suspensión del servicio.</p>
+        `),
       },
       suspension: {
         subject: `Suscripción suspendida — ${businessName}`,
-        html: base + `
-          <h2 style="color:#1e293b;margin:0 0 12px;">Suscripción suspendida</h2>
-          <p style="color:#475569;line-height:1.6;">Hola <strong>${ownerName || 'estimado usuario'}</strong>, lamentamos informarte que la suscripción de <strong>${businessName}</strong> ha sido <strong>suspendida</strong> por falta de pago.</p>
-          <div style="background:#fef2f2;border-left:4px solid #ef4444;padding:14px 18px;border-radius:6px;margin:20px 0;">
-            <p style="color:#991b1b;margin:0;font-weight:600;">El acceso a tu cuenta ha sido bloqueado temporalmente.</p>
-          </div>
-          <p style="color:#475569;line-height:1.6;">Para reactivar tu suscripción, comunícate con nosotros y realiza el pago correspondiente de <strong>${fmtAmt(amount)}</strong>.</p>
-        ` + close,
+        html: wrap('Suscripción suspendida', 'Acceso bloqueado temporalmente', `
+          <p style="margin:0 0 8px">Estimado/a <strong>${ownerName || 'usuario'}</strong>,</p>
+          <p style="margin:0 0 20px;color:#475569;font-size:14px">
+            Lamentamos informarte que la suscripción de <strong>${businessName}</strong> ha sido <strong>suspendida</strong> por falta de pago y el acceso ha sido bloqueado.
+          </p>
+          <table style="width:100%;font-size:13px;border-collapse:collapse">
+            ${row('Negocio', businessName, false)}
+            ${row('Estado', '<span style="color:#ef4444">✗ Suspendida</span>', true)}
+            ${row('Monto pendiente', `<span style="color:#ef4444;font-weight:800">${fmtAmt(amount)}</span>`, false)}
+          </table>
+          <p style="margin:16px 0 0;color:#475569;font-size:13px">Para reactivar tu cuenta, comunícate con nosotros y realiza el pago correspondiente.</p>
+        `),
       },
       activacion: {
         subject: `Suscripción activada — ${businessName}`,
-        html: base + `
-          <h2 style="color:#1e293b;margin:0 0 12px;">Suscripción activada</h2>
-          <p style="color:#475569;line-height:1.6;">Hola <strong>${ownerName || 'estimado usuario'}</strong>, confirmamos que la suscripción de <strong>${businessName}</strong> ha sido <strong>activada exitosamente</strong>.</p>
-          <div style="background:#f0fdf4;border-left:4px solid #22c55e;padding:14px 18px;border-radius:6px;margin:20px 0;">
-            <p style="color:#166534;margin:0 0 6px;font-weight:600;">Tu cuenta está activa</p>
-            <p style="color:#166534;margin:0;">Próximo cobro: <strong>${fmtDate(dueDate)}</strong> — <strong>${fmtAmt(amount)}</strong></p>
-          </div>
-          <p style="color:#475569;line-height:1.6;">Gracias por continuar con nosotros. ¡Sigue adelante con tu negocio!</p>
-        ` + close,
+        html: wrap('Suscripción activada', 'Tu cuenta está activa nuevamente', `
+          <p style="margin:0 0 8px">Estimado/a <strong>${ownerName || 'usuario'}</strong>,</p>
+          <p style="margin:0 0 20px;color:#475569;font-size:14px">
+            Confirmamos que la suscripción de <strong>${businessName}</strong> ha sido <strong>activada exitosamente</strong>. ¡Ya puedes acceder a todas las funciones de la plataforma!
+          </p>
+          <table style="width:100%;font-size:13px;border-collapse:collapse">
+            ${row('Negocio', businessName, false)}
+            ${row('Estado', '<span style="color:#059669">✓ Activa</span>', true)}
+            ${row('Próximo cobro', fmtDate(dueDate), false)}
+            ${row('Monto', `<span style="color:#059669;font-weight:800">${fmtAmt(amount)}</span>`, true)}
+          </table>
+          <p style="margin:16px 0 0;color:#475569;font-size:13px">Gracias por continuar con nosotros.</p>
+        `),
       },
     };
 

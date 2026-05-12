@@ -3,6 +3,7 @@ import { query } from '../config/database.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 import { authMiddleware, businessContextMiddleware } from '../middleware/auth.js';
 import { ecuadorToday } from '../utils/dateHelper.js';
+import { sendGenericEmail } from '../services/crmEmailService.js';
 
 // ===============================
 // 🔥 HELPERS PRO
@@ -480,6 +481,91 @@ router.post('/income-extra', authMiddleware, businessContextMiddleware, async (r
     res.status(201).json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/pos/cash-register/send-close-email
+ * Envía el PDF del cierre de caja por email al propietario del negocio
+ */
+router.post('/send-close-email', authMiddleware, businessContextMiddleware, async (req, res) => {
+  try {
+    const { pdfBase64, closingDate, totalVentas, totalContado, diferencia } = req.body;
+    const businessId = req.user?.businessId;
+
+    // Obtener email del propietario
+    const bizRes = await query(`
+      SELECT bo.email, b.name AS business_name
+      FROM public.businesses b
+      JOIN public.business_users bu ON bu.business_id = b.id AND bu.is_owner = TRUE
+      JOIN public.business_owners bo ON bo.user_id = bu.user_id
+      WHERE b.id = $1
+      LIMIT 1
+    `, [businessId]);
+
+    if (!bizRes.rows.length || !bizRes.rows[0].email) {
+      return res.json({ ok: false, message: 'Sin email de propietario configurado' });
+    }
+
+    const { email, business_name } = bizRes.rows[0];
+    const fmtAmt = (a) => `$${parseFloat(a || 0).toFixed(2)}`;
+    const fecha = closingDate || ecuadorToday();
+    const hora = new Date().toLocaleTimeString('es-EC', { hour: '2-digit', minute: '2-digit' });
+
+    const diffNum = parseFloat(diferencia || 0);
+    const diffColor = diffNum > 0 ? '#059669' : diffNum < 0 ? '#ef4444' : '#64748b';
+    const diffLabel = diffNum === 0 ? 'Cuadrado' : diffNum > 0 ? `Sobrante ${fmtAmt(Math.abs(diffNum))}` : `Faltante ${fmtAmt(Math.abs(diffNum))}`;
+
+    const html = `
+      <div style="font-family:Arial,sans-serif;max-width:520px;margin:auto;color:#1e293b">
+        <div style="background:#ff8c42;padding:24px 28px;border-radius:10px 10px 0 0">
+          <h2 style="color:#fff;margin:0;font-size:20px">${business_name}</h2>
+          <p style="color:#fff3e0;margin:4px 0 0;font-size:13px">Reporte de Cierre de Caja</p>
+        </div>
+        <div style="background:#f8fafc;padding:24px 28px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 10px 10px">
+          <p style="margin:0 0 20px;color:#475569;font-size:14px">
+            Se adjunta el reporte de cierre de caja del día <strong>${fecha}</strong> generado a las <strong>${hora}</strong>.
+          </p>
+          <table style="width:100%;font-size:13px;border-collapse:collapse">
+            <tr>
+              <td style="padding:7px 10px;background:#fff;border:1px solid #e2e8f0;color:#64748b">Fecha</td>
+              <td style="padding:7px 10px;background:#fff;border:1px solid #e2e8f0;font-weight:700">${fecha}</td>
+            </tr>
+            <tr>
+              <td style="padding:7px 10px;background:#f8fafc;border:1px solid #e2e8f0;color:#64748b">Total Ventas</td>
+              <td style="padding:7px 10px;background:#f8fafc;border:1px solid #e2e8f0;font-weight:700;color:#059669">${fmtAmt(totalVentas)}</td>
+            </tr>
+            <tr>
+              <td style="padding:7px 10px;background:#fff;border:1px solid #e2e8f0;color:#64748b">Total Contado</td>
+              <td style="padding:7px 10px;background:#fff;border:1px solid #e2e8f0;font-weight:700">${fmtAmt(totalContado)}</td>
+            </tr>
+            <tr>
+              <td style="padding:7px 10px;background:#f8fafc;border:1px solid #e2e8f0;color:#64748b">Diferencia</td>
+              <td style="padding:7px 10px;background:#f8fafc;border:1px solid #e2e8f0;font-weight:700;color:${diffColor}">${diffLabel}</td>
+            </tr>
+          </table>
+          <p style="margin:20px 0 0;font-size:11px;color:#cbd5e1;text-align:center">
+            Idon Plataforma — cierre de caja automático.
+          </p>
+        </div>
+      </div>`;
+
+    const attachments = pdfBase64
+      ? [{ filename: `cierre-caja-${fecha}.pdf`, content: pdfBase64 }]
+      : [];
+
+    await sendGenericEmail({
+      to: email,
+      subject: `Cierre de Caja ${fecha} — ${business_name}`,
+      html,
+      businessName: business_name,
+      attachments,
+    });
+
+    res.json({ ok: true, sentTo: email });
+  } catch (err) {
+    console.error('[SendCloseEmail]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 

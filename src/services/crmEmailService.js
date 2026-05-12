@@ -62,8 +62,8 @@ export async function sendCampaign({ recipients, subject, html, batchSize = 50, 
 /**
  * Correo genérico a un solo destinatario (para notificaciones, alertas, etc.)
  */
-export async function sendGenericEmail({ to, subject, html, businessName }) {
-  return sendEmail({ to, subject, html, businessName });
+export async function sendGenericEmail({ to, subject, html, businessName, attachments = [] }) {
+  return sendEmail({ to, subject, html, businessName, attachments });
 }
 
 /**
