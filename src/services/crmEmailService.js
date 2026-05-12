@@ -43,7 +43,8 @@ export async function sendCampaign({ recipients, subject, html, batchSize = 50, 
     try {
       const { data, error } = await resend.emails.send({
         from: buildFrom(businessName),
-        bcc: batch,
+        to:   [NOTIFICATIONS_ADDRESS], // Resend requiere "to" — clientes van en BCC
+        bcc:  batch,
         subject,
         html,
       });
