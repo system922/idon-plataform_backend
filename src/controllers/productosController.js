@@ -1,5 +1,6 @@
 import * as productService from '../services/productosService.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
+import { emitToBusiness } from '../socket.js';
 
 const getSchema = (req, res) => {
   if (!req.schema && !req.user?.businessId) {
@@ -53,6 +54,7 @@ export const create = async (req, res) => {
     if (!productPrice) return res.status(400).json({ error: 'Precio requerido' });
 
     const product = await productService.create(schema, req.body);
+    emitToBusiness(req.user.businessId, 'data_changed', { entity: 'products', action: 'created' });
     res.status(201).json(product);
   } catch (err) {
     console.error('Error en create:', err);
@@ -73,6 +75,7 @@ export const update = async (req, res) => {
     }
 
     const product = await productService.update(schema, id, req.body);
+    emitToBusiness(req.user.businessId, 'data_changed', { entity: 'products', action: 'updated' });
     res.json(product);
   } catch (err) {
     console.error('Error en update:', err);
@@ -86,6 +89,7 @@ export const remove = async (req, res) => {
     if (!schema) return;
 
     await productService.remove(schema, req.params.id);
+    emitToBusiness(req.user.businessId, 'data_changed', { entity: 'products', action: 'deleted' });
     res.json({ success: true });
   } catch (err) {
     console.error('Error en remove:', err);

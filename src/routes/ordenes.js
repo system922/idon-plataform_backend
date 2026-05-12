@@ -145,10 +145,8 @@ router.post('/', authMiddleware, async (req, res) => {
 
     const businessId = req.user?.businessId;
     if (businessId) {
-      emitToBusiness(businessId, 'new_order', {
-        ...responsePayload,
-        schema,
-      });
+      emitToBusiness(businessId, 'new_order', { ...responsePayload, schema });
+      emitToBusiness(businessId, 'data_changed', { entity: 'orders', action: 'created' });
     }
 
     res.status(201).json(responsePayload);
@@ -464,6 +462,7 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
         order_number: updatedOrder.order_number,
         schema,
       });
+      emitToBusiness(businessId, 'data_changed', { entity: 'orders', action: 'updated' });
     }
 
     res.json(updatedOrder);
@@ -635,6 +634,8 @@ router.delete('/:id', authMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'Orden no encontrada' });
     }
     await client.query('COMMIT');
+    const businessId = req.user?.businessId;
+    if (businessId) emitToBusiness(businessId, 'data_changed', { entity: 'orders', action: 'deleted' });
     res.json({ success: true });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -720,6 +721,8 @@ router.patch('/:id', authMiddleware, async (req, res) => {
     );
 
     await client.query('COMMIT');
+    const businessId = req.user?.businessId;
+    if (businessId) emitToBusiness(businessId, 'data_changed', { entity: 'orders', action: 'updated' });
     res.json({ success: true, subtotal: finalSubtotal, tax_amount: finalTax, total: finalTotal });
   } catch (err) {
     await client.query('ROLLBACK');

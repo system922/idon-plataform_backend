@@ -2,6 +2,7 @@ import * as expenseService from '../services/expenseService.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 import { ecuadorToday } from '../utils/dateHelper.js';
 import { query } from '../config/database.js';
+import { emitToBusiness } from '../socket.js';
 
 // Listar gastos con filtros avanzados (date_from, date_to, category_id)
 export const getAllExpenses = async (req, res) => {
@@ -106,6 +107,7 @@ export const createExpense = async (req, res) => {
       [Number(amount), description || null, reference || null, category_id || null, created_by || null, targetDate]
     );
 
+    emitToBusiness(req.headers['x-business-id'] || req.user?.businessId, 'data_changed', { entity: 'expenses', action: 'created' });
     res.status(201).json(result.rows[0]);
   } catch (e) {
     console.error('Error creando gasto:', e);
@@ -129,6 +131,7 @@ export const updateExpense = async (req, res) => {
       [Number(amount), description || null, reference || null, category_id || null, date, id]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: 'Gasto no encontrado' });
+    emitToBusiness(req.headers['x-business-id'] || req.user?.businessId, 'data_changed', { entity: 'expenses', action: 'updated' });
     res.json(result.rows[0]);
   } catch (e) {
     res.status(500).json({ error: 'Error actualizando gasto', detail: e.message });
@@ -146,6 +149,7 @@ export const deleteExpense = async (req, res) => {
       [id]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: 'Gasto no encontrado' });
+    emitToBusiness(req.headers['x-business-id'] || req.user?.businessId, 'data_changed', { entity: 'expenses', action: 'deleted' });
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: 'Error eliminando gasto', detail: e.message });

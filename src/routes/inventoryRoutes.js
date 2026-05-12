@@ -2,6 +2,7 @@ import express from 'express';
 import { query } from '../config/database.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 import { authMiddleware } from '../middleware/auth.js';
+import { emitToBusiness } from '../socket.js';
 
 const router = express.Router();
 
@@ -118,6 +119,8 @@ router.post('/movements', authMiddleware, async (req, res) => {
       WHERE id = $2
     `, [delta, product_id]);
 
+    const businessId = req.headers['x-business-id'] || req.user?.businessId;
+    emitToBusiness(businessId, 'data_changed', { entity: 'inventory', action: 'updated' });
     res.status(201).json(rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -207,6 +210,8 @@ router.post('/:id/close', authMiddleware, async (req, res) => {
       WHERE id = $1
     `, [req.params.id]);
 
+    const businessId = req.headers['x-business-id'] || req.user?.businessId;
+    emitToBusiness(businessId, 'data_changed', { entity: 'inventory', action: 'closed' });
     res.json({ success: true });
   } catch (err) {
     console.error(err);

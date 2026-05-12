@@ -2,6 +2,7 @@ import express from 'express';
 import { query } from '../config/database.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 import { authMiddleware } from '../middleware/auth.js';
+import { emitToBusiness } from '../socket.js';
 
 const router = express.Router();
 
@@ -368,6 +369,7 @@ router.post('/', authMiddleware, async (req, res) => {
       [nombre, email || null, phone || null, cedula, document_type, address || null, notes || null]
     );
 
+    emitToBusiness(req.headers['x-business-id'] || req.user?.businessId, 'data_changed', { entity: 'customers', action: 'created' });
     res.status(201).json({
       success: true,
       data: result.rows[0],
@@ -427,6 +429,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
       [nombre, email || null, phone || null, cedula, document_type, address || null, notes || null, is_active, id]
     );
 
+    emitToBusiness(req.headers['x-business-id'] || req.user?.businessId, 'data_changed', { entity: 'customers', action: 'updated' });
     res.json({
       success: true,
       data: result.rows[0],
@@ -479,12 +482,14 @@ router.delete('/:id', authMiddleware, async (req, res) => {
 
     if (permanent === 'true' && !hasTransactions) {
       await query(`DELETE FROM "${schema}".customers WHERE id = $1`, [id]);
+      emitToBusiness(req.headers['x-business-id'] || req.user?.businessId, 'data_changed', { entity: 'customers', action: 'deleted' });
       res.json({ success: true, message: 'Cliente eliminado permanentemente' });
     } else {
       await query(
         `UPDATE "${schema}".customers SET is_active = false, updated_at = NOW() WHERE id = $1`,
         [id]
       );
+      emitToBusiness(req.headers['x-business-id'] || req.user?.businessId, 'data_changed', { entity: 'customers', action: 'deleted' });
       res.json({ success: true, message: 'Cliente desactivado exitosamente' });
     }
   } catch (err) {

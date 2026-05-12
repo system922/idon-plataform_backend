@@ -2,6 +2,7 @@ import express from 'express';
 import { query } from '../config/database.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 import { authMiddleware } from '../middleware/auth.js';
+import { emitToBusiness } from '../socket.js';
 
 const router = express.Router();
 
@@ -45,6 +46,8 @@ router.post('/', authMiddleware, async (req, res) => {
        VALUES ($1, $2) RETURNING ${SELECT_COLS}`,
       [name.trim(), description || null]
     );
+    const businessId = req.headers['x-business-id'] || req.user?.businessId;
+    emitToBusiness(businessId, 'data_changed', { entity: 'categories', action: 'created' });
     res.status(201).json(result.rows[0]);
   } catch (err) {
     if (err.code === '23505')
@@ -73,6 +76,8 @@ router.put('/:id', authMiddleware, async (req, res) => {
     );
     if (result.rows.length === 0)
       return res.status(404).json({ error: 'Categoría no encontrada' });
+    const businessId = req.headers['x-business-id'] || req.user?.businessId;
+    emitToBusiness(businessId, 'data_changed', { entity: 'categories', action: 'updated' });
     res.json(result.rows[0]);
   } catch (err) {
     if (err.code === '23505')
@@ -96,6 +101,8 @@ router.delete('/:id', authMiddleware, async (req, res) => {
     );
     if (result.rows.length === 0)
       return res.status(404).json({ error: 'Categoría no encontrada' });
+    const businessId = req.headers['x-business-id'] || req.user?.businessId;
+    emitToBusiness(businessId, 'data_changed', { entity: 'categories', action: 'deleted' });
     res.json({ success: true, id: req.params.id });
   } catch (err) {
     res.status(500).json({ error: err.message });
