@@ -290,7 +290,7 @@ BEGIN
         v_today DATE;
       BEGIN
         -- Obtener la fecha actual de Ecuador
-        v_today := CURRENT_DATE AT TIME ZONE ''America/Guayaquil'';
+        v_today := (CURRENT_TIMESTAMP AT TIME ZONE ''America/Guayaquil'')::DATE;
         
         -- Insertar o actualizar el contador diario de forma atómica
         INSERT INTO %I.daily_order_counter (order_date, last_number)
