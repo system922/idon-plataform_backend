@@ -233,6 +233,86 @@ router.get('/', authMiddleware, async (req, res) => {
 });
 
 /**
+ * GET /api/ordenes/unprinted
+ * Órdenes pendientes recientes que no han sido impresas (para polling de cocina)
+ */
+router.get('/unprinted', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    await query(`
+      ALTER TABLE "${schema}".pos_orders
+      ADD COLUMN IF NOT EXISTS printed BOOLEAN NOT NULL DEFAULT FALSE
+    `);
+
+    const result = await query(
+      `SELECT
+         o.id, o.order_number, o.order_number AS numero_pedido,
+         o.order_type, o.status, o.mesa_numero, o.notes AS notas,
+         o.created_at,
+         COALESCE(
+           json_agg(
+             json_build_object(
+               'id',           i.id,
+               'product_id',   i.product_id,
+               'product_name', p.name,
+               'quantity',     i.quantity,
+               'notes',        i.notes,
+               'paid',         COALESCE(i.paid, false)
+             ) ORDER BY i.created_at
+           ) FILTER (WHERE i.id IS NOT NULL),
+           '[]'::json
+         ) AS items
+       FROM "${schema}".pos_orders o
+       LEFT JOIN "${schema}".pos_order_items i ON i.order_id = o.id
+       LEFT JOIN "${schema}".products p ON i.product_id = p.id
+       WHERE o.printed = FALSE
+         AND o.status NOT IN ('cancelled', 'void')
+         AND o.created_at > NOW() - INTERVAL '2 hours'
+       GROUP BY o.id
+       ORDER BY o.created_at ASC
+       LIMIT 20`
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error en GET /ordenes/unprinted:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/ordenes/mark-printed
+ * Marca órdenes como impresas
+ * Body: { order_ids: [uuid, ...] }
+ */
+router.post('/mark-printed', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { order_ids = [] } = req.body;
+    if (!order_ids.length) return res.json({ success: true, updated: 0 });
+
+    await query(`
+      ALTER TABLE "${schema}".pos_orders
+      ADD COLUMN IF NOT EXISTS printed BOOLEAN NOT NULL DEFAULT FALSE
+    `);
+
+    const result = await query(
+      `UPDATE "${schema}".pos_orders SET printed = TRUE WHERE id = ANY($1::uuid[])`,
+      [order_ids]
+    );
+
+    res.json({ success: true, updated: result.rowCount });
+  } catch (err) {
+    console.error('Error en POST /ordenes/mark-printed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * GET /api/ordenes/:id
  * Obtiene una orden específica con sus items
  */
