@@ -50,8 +50,9 @@ router.post('/', authMiddleware, async (req, res) => {
     `);
     
     const dailyNumber = counterResult.rows[0].next_number;
-    const orderNumber = String(dailyNumber).padStart(4, '0');
-    
+    const datePrefix = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' }).replace(/-/g, '').slice(2); // "260512"
+    const orderNumber = `${datePrefix}-${String(dailyNumber).padStart(3, '0')}`;
+
     console.log(`📊 Orden #${orderNumber} generada con función de BD`);
 
     let customerName = null;
