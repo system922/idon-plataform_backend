@@ -14,6 +14,7 @@ INSERT INTO public.features (code, name, description, module_id, is_premium) SEL
 -- POS
 -- ══════════════════════════════════════════════════════
 INSERT INTO public.features (code, name, description, module_id, is_premium) SELECT 'pos.sales',            'Ventas en caja',               'Registrar ventas y cobros en caja',                id, FALSE FROM public.modules WHERE code='pos' ON CONFLICT (code) DO NOTHING;
+INSERT INTO public.features (code, name, description, module_id, is_premium) SELECT 'pos.retail',           'POS Tienda / Retail',          'POS directo con escaneo de código de barras y carrito para tiendas', id, FALSE FROM public.modules WHERE code='pos' ON CONFLICT (code) DO NOTHING;
 INSERT INTO public.features (code, name, description, module_id, is_premium) SELECT 'pos.discounts',        'Descuentos y promociones',     'Aplicar descuentos manuales y cupones',            id, FALSE FROM public.modules WHERE code='pos' ON CONFLICT (code) DO NOTHING;
 INSERT INTO public.features (code, name, description, module_id, is_premium) SELECT 'pos.cash_register',    'Apertura/cierre de caja',      'Control de arqueo y cierre de turno',              id, FALSE FROM public.modules WHERE code='pos' ON CONFLICT (code) DO NOTHING;
 INSERT INTO public.features (code, name, description, module_id, is_premium) SELECT 'pos.receipt_print',    'Impresión de recibos',         'Imprimir tickets y facturas en caja',              id, FALSE FROM public.modules WHERE code='pos' ON CONFLICT (code) DO NOTHING;

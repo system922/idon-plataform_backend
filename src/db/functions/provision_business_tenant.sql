@@ -60,12 +60,13 @@ BEGIN
     v_modules := array_append(v_modules, 'suppliers');
   END IF;
 
-  -- kitchen, tables, delivery, einvoicing y orders requieren pos (pos_orders FK)
+  -- kitchen, tables, delivery, einvoicing, orders y retail requieren pos (pos_orders FK)
   IF (ANY_MATCH(v_modules, 'kitchen')    OR
       ANY_MATCH(v_modules, 'tables')     OR
       ANY_MATCH(v_modules, 'delivery')   OR
       ANY_MATCH(v_modules, 'einvoicing') OR
-      ANY_MATCH(v_modules, 'orders'))
+      ANY_MATCH(v_modules, 'orders')     OR
+      ANY_MATCH(v_modules, 'retail'))
      AND NOT ANY_MATCH(v_modules, 'pos') THEN
     v_modules := array_append(v_modules, 'pos');
   END IF;
@@ -208,6 +209,15 @@ BEGIN
   EXECUTE format(
     'CREATE INDEX %I_products_is_active_idx ON %I.products (is_active)',
     p_schema_name, p_schema_name);
+  EXECUTE format(
+    'CREATE INDEX %I_products_barcode_idx ON %I.products (barcode)',
+    p_schema_name, p_schema_name);
+  EXECUTE format(
+    'CREATE INDEX %I_products_sku_idx ON %I.products (sku)',
+    p_schema_name, p_schema_name);
+  EXECUTE format(
+    'CREATE INDEX %I_products_code_idx ON %I.products (code)',
+    p_schema_name, p_schema_name);
   v_table_count := v_table_count + 1;
 
   -- ─ audit_logs (user_id sin FK — intencional para no bloquear borrado) ───────
@@ -305,84 +315,7 @@ BEGIN
       p_schema_name, p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- pos_orders (FK → customers, users)
-    EXECUTE format('
-      CREATE TABLE %I.pos_orders (
-        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        order_number  VARCHAR(20)     NOT NULL UNIQUE,
-        order_type    VARCHAR(20)     NOT NULL DEFAULT ''dine_in'',
-        status        %I.order_status NOT NULL DEFAULT ''pending'',
-        customer_id   UUID REFERENCES %I.customers(id) ON DELETE SET NULL,
-        customer_name VARCHAR(255),
-        mesa_numero   INT,
-        subtotal      NUMERIC(12,2)   NOT NULL DEFAULT 0,
-        tax_rate      NUMERIC(5,2)    NOT NULL DEFAULT 15,
-        tax_amount    NUMERIC(12,2)   NOT NULL DEFAULT 0,
-        total         NUMERIC(12,2)   NOT NULL DEFAULT 0,
-        notes         TEXT,
-        created_by    UUID REFERENCES %I.users(id) ON DELETE SET NULL,
-        created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )', p_schema_name, p_schema_name, p_schema_name, p_schema_name);
-    EXECUTE format(
-      'CREATE INDEX %I_pos_orders_status_idx ON %I.pos_orders (status)',
-      p_schema_name, p_schema_name);
-    EXECUTE format(
-      'CREATE INDEX %I_pos_orders_order_type_idx ON %I.pos_orders (order_type)',
-      p_schema_name, p_schema_name);
-    EXECUTE format(
-      'CREATE INDEX %I_pos_orders_created_at_desc_idx ON %I.pos_orders (created_at DESC)',
-      p_schema_name, p_schema_name);
-    v_table_count := v_table_count + 1;
-
-    -- pos_order_items (solo guarda referencia, precios vienen de products)
-    EXECUTE format('
-      CREATE TABLE %I.pos_order_items (
-        id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        order_id     UUID NOT NULL REFERENCES %I.pos_orders(id) ON DELETE CASCADE,
-        product_id   UUID NOT NULL REFERENCES %I.products(id) ON DELETE RESTRICT,
-        quantity     INT  NOT NULL DEFAULT 1,
-        notes        TEXT,
-        paid         BOOLEAN DEFAULT FALSE,
-        created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )', p_schema_name, p_schema_name, p_schema_name);
-    
-    EXECUTE format(
-      'CREATE INDEX %I_pos_order_items_order_id_idx ON %I.pos_order_items (order_id)',
-      p_schema_name, p_schema_name);
-    v_table_count := v_table_count + 1;
-
-    -- pos_payments (FK → pos_orders)
-    EXECUTE format('
-      CREATE TABLE %I.pos_payments (
-        id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        order_id         UUID NOT NULL REFERENCES %I.pos_orders(id) ON DELETE RESTRICT,
-        payment_method   VARCHAR(50)      NOT NULL DEFAULT ''cash'',
-        amount           NUMERIC(12,2)    NOT NULL,
-        reference_number VARCHAR(100),
-        status           %I.payment_status NOT NULL DEFAULT ''pending'',
-        paid_at          TIMESTAMP,
-        created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )', p_schema_name, p_schema_name, p_schema_name);
-    EXECUTE format(
-      'CREATE INDEX %I_pos_payments_order_id_idx ON %I.pos_payments (order_id)',
-      p_schema_name, p_schema_name);
-    v_table_count := v_table_count + 1;
-
-    -- pos_receipts (FK → pos_orders)
-    EXECUTE format('
-      CREATE TABLE %I.pos_receipts (
-        id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        order_id       UUID NOT NULL REFERENCES %I.pos_orders(id) ON DELETE CASCADE,
-        receipt_number VARCHAR(50) UNIQUE,
-        subtotal       NUMERIC(12,2),
-        tax_amount     NUMERIC(12,2),
-        total          NUMERIC(12,2),
-        issued_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )', p_schema_name, p_schema_name);
-    v_table_count := v_table_count + 1;
-
-    -- ─── pos_discounts (descuentos avanzados: cupones, horarios, producto) ───────
+    -- ─── pos_discounts (creado ANTES de pos_orders para permitir FK) ──────────────
     EXECUTE format('
       CREATE TABLE %I.pos_discounts (
         id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -424,6 +357,105 @@ BEGIN
     EXECUTE format('CREATE INDEX %I_pos_discounts_priority_idx ON %I.pos_discounts (priority DESC)', p_schema_name, p_schema_name);
     EXECUTE format('CREATE INDEX %I_pos_discounts_days_of_week_idx ON %I.pos_discounts USING GIN (days_of_week)', p_schema_name, p_schema_name);
 
+    v_table_count := v_table_count + 1;
+
+    -- pos_orders (FK → customers, users, pos_discounts)
+    EXECUTE format('
+      CREATE TABLE %I.pos_orders (
+        id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        order_number             VARCHAR(20)     NOT NULL UNIQUE,
+        order_type               VARCHAR(20)     NOT NULL DEFAULT ''dine_in'',
+        status                   %I.order_status NOT NULL DEFAULT ''pending'',
+        customer_id              UUID REFERENCES %I.customers(id) ON DELETE SET NULL,
+        customer_name            VARCHAR(255),
+        customer_document_number VARCHAR(50),
+        mesa_numero              INT,
+        subtotal                 NUMERIC(12,2)   NOT NULL DEFAULT 0,
+        tax_rate                 NUMERIC(5,2)    NOT NULL DEFAULT 15,
+        tax_amount               NUMERIC(12,2)   NOT NULL DEFAULT 0,
+        total                    NUMERIC(12,2)   NOT NULL DEFAULT 0,
+        discount_id              UUID REFERENCES %I.pos_discounts(id) ON DELETE SET NULL,
+        discount_amount          NUMERIC(12,2)   DEFAULT 0,
+        payment_method           VARCHAR(50),
+        amount_paid              NUMERIC(12,2)   DEFAULT 0,
+        reference_number         VARCHAR(100),
+        payments                 JSONB           DEFAULT ''[]''::jsonb,
+        printed                  BOOLEAN         NOT NULL DEFAULT FALSE,
+        notes                    TEXT,
+        created_by               UUID REFERENCES %I.users(id) ON DELETE SET NULL,
+        created_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )', p_schema_name, p_schema_name, p_schema_name, p_schema_name, p_schema_name);
+    EXECUTE format(
+      'CREATE INDEX %I_pos_orders_status_idx ON %I.pos_orders (status)',
+      p_schema_name, p_schema_name);
+    EXECUTE format(
+      'CREATE INDEX %I_pos_orders_order_type_idx ON %I.pos_orders (order_type)',
+      p_schema_name, p_schema_name);
+    EXECUTE format(
+      'CREATE INDEX %I_pos_orders_created_at_desc_idx ON %I.pos_orders (created_at DESC)',
+      p_schema_name, p_schema_name);
+    EXECUTE format(
+      'CREATE INDEX %I_pos_orders_customer_document_idx ON %I.pos_orders (customer_document_number)',
+      p_schema_name, p_schema_name);
+    EXECUTE format(
+      'CREATE INDEX %I_pos_orders_discount_id_idx ON %I.pos_orders (discount_id)',
+      p_schema_name, p_schema_name);
+    v_table_count := v_table_count + 1;
+
+    -- pos_order_items — almacena precio al momento de la venta (inmutable)
+    EXECUTE format('
+      CREATE TABLE %I.pos_order_items (
+        id           UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
+        order_id     UUID          NOT NULL REFERENCES %I.pos_orders(id) ON DELETE CASCADE,
+        product_id   UUID          NOT NULL REFERENCES %I.products(id)   ON DELETE RESTRICT,
+        product_name VARCHAR(255)  NOT NULL DEFAULT '''',
+        code         VARCHAR(50),
+        quantity     INT           NOT NULL DEFAULT 1,
+        unit_price   NUMERIC(12,2) NOT NULL DEFAULT 0,
+        tax_rate     NUMERIC(10,2) NOT NULL DEFAULT 0,
+        iva_amount   NUMERIC(10,2) NOT NULL DEFAULT 0,
+        line_total   NUMERIC(12,2) NOT NULL DEFAULT 0,
+        notes        TEXT,
+        paid         BOOLEAN       DEFAULT FALSE,
+        created_at   TIMESTAMP     DEFAULT CURRENT_TIMESTAMP
+      )', p_schema_name, p_schema_name, p_schema_name);
+    EXECUTE format(
+      'CREATE INDEX %I_pos_order_items_order_id_idx ON %I.pos_order_items (order_id)',
+      p_schema_name, p_schema_name);
+    EXECUTE format(
+      'CREATE INDEX %I_pos_order_items_product_id_idx ON %I.pos_order_items (product_id)',
+      p_schema_name, p_schema_name);
+    v_table_count := v_table_count + 1;
+
+    -- pos_payments (FK → pos_orders)
+    EXECUTE format('
+      CREATE TABLE %I.pos_payments (
+        id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        order_id         UUID NOT NULL REFERENCES %I.pos_orders(id) ON DELETE RESTRICT,
+        payment_method   VARCHAR(50)       NOT NULL DEFAULT ''cash'',
+        amount           NUMERIC(12,2)     NOT NULL,
+        reference_number VARCHAR(100),
+        status           %I.payment_status NOT NULL DEFAULT ''pending'',
+        paid_at          TIMESTAMP,
+        created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )', p_schema_name, p_schema_name, p_schema_name);
+    EXECUTE format(
+      'CREATE INDEX %I_pos_payments_order_id_idx ON %I.pos_payments (order_id)',
+      p_schema_name, p_schema_name);
+    v_table_count := v_table_count + 1;
+
+    -- pos_receipts (FK → pos_orders)
+    EXECUTE format('
+      CREATE TABLE %I.pos_receipts (
+        id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        order_id       UUID NOT NULL REFERENCES %I.pos_orders(id) ON DELETE CASCADE,
+        receipt_number VARCHAR(50) UNIQUE,
+        subtotal       NUMERIC(12,2),
+        tax_amount     NUMERIC(12,2),
+        total          NUMERIC(12,2),
+        issued_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )', p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
     -- ─── pos_order_discounts (historial de descuentos aplicados) ────────────────
@@ -1519,6 +1551,78 @@ BEGIN
   END IF;
 
 
+
+  -- ─── RETAIL ─────────────────────────────────────────────────────────────
+  -- El módulo retail extiende pos con sesiones de caja y configuración
+  -- específica de tienda (modo escaneo, precios en visor, etc.)
+  IF ANY_MATCH(v_modules, 'retail') THEN
+
+    -- retail_settings (una fila por negocio, extiende settings con opciones retail)
+    EXECUTE format('
+      CREATE TABLE %I.retail_settings (
+        id                       INT PRIMARY KEY DEFAULT 1,
+        barcode_scan_enabled     BOOLEAN       DEFAULT true,
+        show_stock_in_pos        BOOLEAN       DEFAULT true,
+        require_customer_on_sale BOOLEAN       DEFAULT false,
+        auto_open_cash_drawer    BOOLEAN       DEFAULT true,
+        default_payment_method   VARCHAR(50)   DEFAULT ''cash'',
+        price_display_mode       VARCHAR(20)   DEFAULT ''with_tax'',
+        low_stock_threshold      INT           DEFAULT 5,
+        allow_negative_stock     BOOLEAN       DEFAULT false,
+        updated_at               TIMESTAMP     DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT retail_only_one_row CHECK (id = 1)
+      )', p_schema_name);
+    EXECUTE format(
+      'INSERT INTO %I.retail_settings (id) VALUES (1) ON CONFLICT DO NOTHING',
+      p_schema_name);
+    v_table_count := v_table_count + 1;
+
+    -- retail_sessions (turno de cajero: apertura → cierre, agrupa ventas del turno)
+    EXECUTE format('
+      CREATE TABLE %I.retail_sessions (
+        id              UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
+        cashier_id      UUID          REFERENCES %I.users(id) ON DELETE SET NULL,
+        cashier_name    VARCHAR(255),
+        opening_amount  NUMERIC(14,2) NOT NULL DEFAULT 0,
+        closing_amount  NUMERIC(14,2),
+        cash_sales      NUMERIC(14,2) DEFAULT 0,
+        card_sales      NUMERIC(14,2) DEFAULT 0,
+        transfer_sales  NUMERIC(14,2) DEFAULT 0,
+        total_sales     NUMERIC(14,2) DEFAULT 0,
+        orders_count    INT           DEFAULT 0,
+        items_sold      INT           DEFAULT 0,
+        discounts_total NUMERIC(14,2) DEFAULT 0,
+        status          VARCHAR(20)   DEFAULT ''open'',
+        opened_at       TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        closed_at       TIMESTAMP,
+        notes           TEXT
+      )', p_schema_name, p_schema_name);
+    EXECUTE format(
+      'CREATE INDEX %I_retail_sessions_status_idx ON %I.retail_sessions (status)',
+      p_schema_name, p_schema_name);
+    EXECUTE format(
+      'CREATE INDEX %I_retail_sessions_cashier_id_idx ON %I.retail_sessions (cashier_id)',
+      p_schema_name, p_schema_name);
+    EXECUTE format(
+      'CREATE INDEX %I_retail_sessions_opened_at_idx ON %I.retail_sessions (opened_at DESC)',
+      p_schema_name, p_schema_name);
+    v_table_count := v_table_count + 1;
+
+    -- retail_session_orders (vincula ventas retail con su sesión de turno)
+    EXECUTE format('
+      CREATE TABLE %I.retail_session_orders (
+        id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        session_id UUID NOT NULL REFERENCES %I.retail_sessions(id) ON DELETE CASCADE,
+        order_id   UUID NOT NULL REFERENCES %I.pos_orders(id)      ON DELETE CASCADE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT uq_session_order UNIQUE (order_id)
+      )', p_schema_name, p_schema_name, p_schema_name);
+    EXECUTE format(
+      'CREATE INDEX %I_retail_session_orders_session_id_idx ON %I.retail_session_orders (session_id)',
+      p_schema_name, p_schema_name);
+    v_table_count := v_table_count + 1;
+
+  END IF;
 
   -- ─── REPORTS (sin FK) ───────────────────────────────────────────────────
   IF ANY_MATCH(v_modules, 'reports') THEN
