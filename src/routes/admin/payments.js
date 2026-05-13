@@ -118,96 +118,31 @@ router.post('/email/send-template', async (req, res, next) => {
     const { to, templateKey, businessName, ownerName, amount, dueDate } = req.body;
     if (!to || !templateKey) return res.status(400).json({ ok: false, message: 'to y templateKey son requeridos' });
 
+    const { rows } = await query(
+      `SELECT subject, body, is_active FROM public.email_templates WHERE type=$1`,
+      [templateKey]
+    );
+    if (!rows.length) return res.status(400).json({ ok: false, message: 'Plantilla no encontrada' });
+    const tpl = rows[0];
+    if (!tpl.is_active) return res.status(400).json({ ok: false, message: 'Plantilla inactiva' });
+
     const fmtDate = (d) => d ? new Date(d).toLocaleDateString('es-EC', { day: '2-digit', month: 'long', year: 'numeric' }) : '—';
     const fmtAmt  = (a) => a ? `$${parseFloat(a).toFixed(2)}` : '—';
 
-    const wrap = (title, subtitle, body) => `
-      <div style="font-family:Arial,sans-serif;max-width:520px;margin:auto;color:#1e293b">
-        <div style="background:#ff8c42;padding:24px 28px;border-radius:10px 10px 0 0">
-          <h2 style="color:#fff;margin:0;font-size:20px">Idon Plataforma</h2>
-          <p style="color:#fff3e0;margin:4px 0 0;font-size:13px">${subtitle}</p>
-        </div>
-        <div style="background:#f8fafc;padding:24px 28px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 10px 10px">
-          ${body}
-          <p style="margin:20px 0 0;font-size:11px;color:#cbd5e1;text-align:center">
-            Idon Plataforma — mensaje automático, no responder a este correo.
-          </p>
-        </div>
-      </div>`;
-
-    const row = (label, value, alt) => `
-      <tr>
-        <td style="padding:7px 10px;background:${alt ? '#f8fafc' : '#fff'};border:1px solid #e2e8f0;color:#64748b">${label}</td>
-        <td style="padding:7px 10px;background:${alt ? '#f8fafc' : '#fff'};border:1px solid #e2e8f0;font-weight:700">${value}</td>
-      </tr>`;
-
-    const tpls = {
-      bienvenida: {
-        subject: `Bienvenido a Idon Plataforma — ${businessName}`,
-        html: wrap('Bienvenida', 'Tu cuenta está lista', `
-          <p style="margin:0 0 8px">Estimado/a <strong>${ownerName || 'usuario'}</strong>,</p>
-          <p style="margin:0 0 20px;color:#475569;font-size:14px">
-            Tu negocio <strong>${businessName}</strong> ya está activo en <strong>Idon Plataforma</strong>. Desde ahora puedes gestionar tus ventas, inventario, empleados y más desde un solo lugar.
-          </p>
-          <table style="width:100%;font-size:13px;border-collapse:collapse">
-            ${row('Negocio', businessName, false)}
-            ${row('Estado', '<span style="color:#059669">✓ Activo</span>', true)}
-          </table>
-          <p style="margin:16px 0 0;color:#475569;font-size:13px">Si tienes alguna duda, contáctanos.</p>
-        `),
-      },
-      recordatorio_pago: {
-        subject: `Recordatorio de pago — ${businessName}`,
-        html: wrap('Recordatorio de pago', 'Tienes un pago pendiente', `
-          <p style="margin:0 0 8px">Estimado/a <strong>${ownerName || 'usuario'}</strong>,</p>
-          <p style="margin:0 0 20px;color:#475569;font-size:14px">
-            Te recordamos que tienes un pago pendiente para mantener activa tu suscripción de <strong>${businessName}</strong>.
-          </p>
-          <table style="width:100%;font-size:13px;border-collapse:collapse">
-            ${row('Negocio', businessName, false)}
-            ${row('Monto a pagar', `<span style="color:#d97706;font-weight:800">${fmtAmt(amount)}</span>`, true)}
-            ${row('Fecha de vencimiento', `<span style="color:#ef4444">${fmtDate(dueDate)}</span>`, false)}
-          </table>
-          <p style="margin:16px 0 0;color:#475569;font-size:13px">Por favor realiza tu pago a tiempo para evitar la suspensión del servicio.</p>
-        `),
-      },
-      suspension: {
-        subject: `Suscripción suspendida — ${businessName}`,
-        html: wrap('Suscripción suspendida', 'Acceso bloqueado temporalmente', `
-          <p style="margin:0 0 8px">Estimado/a <strong>${ownerName || 'usuario'}</strong>,</p>
-          <p style="margin:0 0 20px;color:#475569;font-size:14px">
-            Lamentamos informarte que la suscripción de <strong>${businessName}</strong> ha sido <strong>suspendida</strong> por falta de pago y el acceso ha sido bloqueado.
-          </p>
-          <table style="width:100%;font-size:13px;border-collapse:collapse">
-            ${row('Negocio', businessName, false)}
-            ${row('Estado', '<span style="color:#ef4444">✗ Suspendida</span>', true)}
-            ${row('Monto pendiente', `<span style="color:#ef4444;font-weight:800">${fmtAmt(amount)}</span>`, false)}
-          </table>
-          <p style="margin:16px 0 0;color:#475569;font-size:13px">Para reactivar tu cuenta, comunícate con nosotros y realiza el pago correspondiente.</p>
-        `),
-      },
-      activacion: {
-        subject: `Suscripción activada — ${businessName}`,
-        html: wrap('Suscripción activada', 'Tu cuenta está activa nuevamente', `
-          <p style="margin:0 0 8px">Estimado/a <strong>${ownerName || 'usuario'}</strong>,</p>
-          <p style="margin:0 0 20px;color:#475569;font-size:14px">
-            Confirmamos que la suscripción de <strong>${businessName}</strong> ha sido <strong>activada exitosamente</strong>. ¡Ya puedes acceder a todas las funciones de la plataforma!
-          </p>
-          <table style="width:100%;font-size:13px;border-collapse:collapse">
-            ${row('Negocio', businessName, false)}
-            ${row('Estado', '<span style="color:#059669">✓ Activa</span>', true)}
-            ${row('Próximo cobro', fmtDate(dueDate), false)}
-            ${row('Monto', `<span style="color:#059669;font-weight:800">${fmtAmt(amount)}</span>`, true)}
-          </table>
-          <p style="margin:16px 0 0;color:#475569;font-size:13px">Gracias por continuar con nosotros.</p>
-        `),
-      },
+    const vars = {
+      owner_name:    ownerName    || 'usuario',
+      business_name: businessName || '',
+      amount:        fmtAmt(amount),
+      due_date:      fmtDate(dueDate),
     };
+    const interpolate = (str) => str.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? `{{${k}}}`);
 
-    const tpl = tpls[templateKey];
-    if (!tpl) return res.status(400).json({ ok: false, message: 'Plantilla no válida' });
-
-    await sendGenericEmail({ to, subject: tpl.subject, html: tpl.html, businessName: 'Idon Plataforma' });
+    await sendGenericEmail({
+      to,
+      subject: interpolate(tpl.subject),
+      html:    interpolate(tpl.body),
+      businessName: 'Idon Plataforma',
+    });
     logger.info({ to, templateKey, businessName }, 'Admin email sent');
     res.json({ ok: true, message: 'Correo enviado correctamente' });
   } catch (e) { next(e); }
