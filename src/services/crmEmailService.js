@@ -5,7 +5,7 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 const NOTIFICATIONS_ADDRESS = process.env.NOTIFICATIONS_EMAIL || process.env.FROM_EMAIL || 'onboarding@resend.dev';
 
 function buildFrom(businessName) {
-  const name = businessName || 'Idon Plataforma';
+  const name = businessName || 'IDON PLATAFORM';
   return `${name} <${NOTIFICATIONS_ADDRESS}>`;
 }
 
