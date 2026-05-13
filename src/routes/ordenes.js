@@ -266,7 +266,7 @@ router.get('/unprinted', authMiddleware, async (req, res) => {
        LEFT JOIN "${schema}".pos_order_items i ON i.order_id = o.id
        LEFT JOIN "${schema}".products p ON i.product_id = p.id
        WHERE o.printed = FALSE
-         AND o.status NOT IN ('cancelled', 'void')
+         AND o.status NOT IN ('cancelled')
          AND o.created_at > NOW() - INTERVAL '2 hours'
        GROUP BY o.id
        ORDER BY o.created_at ASC

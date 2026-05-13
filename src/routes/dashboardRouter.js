@@ -131,6 +131,7 @@ router.get('/stats', async (req, res) => {
         pending_count:  pendingCount,
         sales_month:    Number(monthRes.rows[0]?.total) || 0,
         debug_date:     today,
+        debug_status_counts: diagRes.rows,
       },
     });
   } catch (err) {
