@@ -5,6 +5,7 @@
 -- CORE
 -- ══════════════════════════════════════════════════════
 INSERT INTO public.features (code, name, description, module_id, is_premium) SELECT 'core.dashboard',      'Dashboard principal',          'Panel de resumen del negocio',                    id, FALSE FROM public.modules WHERE code='core' ON CONFLICT (code) DO NOTHING;
+INSERT INTO public.features (code, name, description, module_id, is_premium) SELECT 'core.retail_dashboard', 'Dashboard Retail',             'Estadísticas del día: ventas, métodos de pago y productos más vendidos', id, FALSE FROM public.modules WHERE code='core' ON CONFLICT (code) DO NOTHING;
 INSERT INTO public.features (code, name, description, module_id, is_premium) SELECT 'core.users',          'Gestión de usuarios',          'Crear y administrar usuarios del negocio',         id, FALSE FROM public.modules WHERE code='core' ON CONFLICT (code) DO NOTHING;
 INSERT INTO public.features (code, name, description, module_id, is_premium) SELECT 'core.roles',          'Roles y permisos',             'Configurar roles y permisos por usuario',          id, FALSE FROM public.modules WHERE code='core' ON CONFLICT (code) DO NOTHING;
 INSERT INTO public.features (code, name, description, module_id, is_premium) SELECT 'core.settings',       'Configuración general',        'Ajustes del negocio, moneda, zona horaria',        id, FALSE FROM public.modules WHERE code='core' ON CONFLICT (code) DO NOTHING;
@@ -14,7 +15,7 @@ INSERT INTO public.features (code, name, description, module_id, is_premium) SEL
 -- POS
 -- ══════════════════════════════════════════════════════
 INSERT INTO public.features (code, name, description, module_id, is_premium) SELECT 'pos.sales',            'Ventas en caja',               'Registrar ventas y cobros en caja',                id, FALSE FROM public.modules WHERE code='pos' ON CONFLICT (code) DO NOTHING;
-INSERT INTO public.features (code, name, description, module_id, is_premium) SELECT 'pos.retail',           'POS Tienda / Retail',          'POS directo con escaneo de código de barras y carrito para tiendas', id, FALSE FROM public.modules WHERE code='pos' ON CONFLICT (code) DO NOTHING;
+INSERT INTO public.features (code, name, description, module_id, is_premium) SELECT 'pos.retail',            'POS Tienda / Retail',          'POS directo con escaneo de código de barras y carrito para tiendas',    id, FALSE FROM public.modules WHERE code='pos' ON CONFLICT (code) DO NOTHING;
 INSERT INTO public.features (code, name, description, module_id, is_premium) SELECT 'pos.discounts',        'Descuentos y promociones',     'Aplicar descuentos manuales y cupones',            id, FALSE FROM public.modules WHERE code='pos' ON CONFLICT (code) DO NOTHING;
 INSERT INTO public.features (code, name, description, module_id, is_premium) SELECT 'pos.cash_register',    'Apertura/cierre de caja',      'Control de arqueo y cierre de turno',              id, FALSE FROM public.modules WHERE code='pos' ON CONFLICT (code) DO NOTHING;
 INSERT INTO public.features (code, name, description, module_id, is_premium) SELECT 'pos.receipt_print',    'Impresión de recibos',         'Imprimir tickets y facturas en caja',              id, FALSE FROM public.modules WHERE code='pos' ON CONFLICT (code) DO NOTHING;

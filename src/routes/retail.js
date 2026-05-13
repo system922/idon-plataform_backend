@@ -1,5 +1,5 @@
 import express from 'express';
-import { getClient } from '../config/database.js';
+import { getClient, query as dbQuery } from '../config/database.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { emitToBusiness } from '../socket.js';
@@ -181,6 +181,105 @@ router.post('/orders', authMiddleware, async (req, res) => {
     res.status(500).json({ error: err.message });
   } finally {
     client.release();
+  }
+});
+
+/**
+ * GET /api/retail/stats
+ * Estadísticas del día para el dashboard de retail.
+ */
+router.get('/stats', async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const tz = 'America/Guayaquil';
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: tz });
+
+    // Ventas del día: total, transacciones, ticket promedio
+    const summaryRes = await dbQuery(`
+      SELECT
+        COUNT(*)::int                        AS transacciones,
+        COALESCE(SUM(total), 0)::numeric     AS total_ventas,
+        COALESCE(AVG(total), 0)::numeric     AS ticket_promedio
+      FROM "${schema}".pos_orders
+      WHERE status = 'paid'
+        AND printed = TRUE
+        AND DATE(created_at AT TIME ZONE '${tz}') = $1
+    `, [today]);
+
+    // Distribución por método de pago
+    const paymentRes = await dbQuery(`
+      SELECT pp.payment_method,
+             COUNT(*)::int            AS cantidad,
+             SUM(pp.amount)::numeric  AS monto
+      FROM "${schema}".pos_payments pp
+      JOIN "${schema}".pos_orders po ON pp.order_id = po.id
+      WHERE po.status = 'paid'
+        AND po.printed = TRUE
+        AND DATE(po.created_at AT TIME ZONE '${tz}') = $1
+        AND pp.status = 'completed'
+      GROUP BY pp.payment_method
+      ORDER BY monto DESC
+    `, [today]);
+
+    // Top 5 productos más vendidos hoy
+    const topProductsRes = await dbQuery(`
+      SELECT oi.product_name,
+             SUM(oi.quantity)::int          AS cantidad,
+             SUM(oi.line_total)::numeric    AS total
+      FROM "${schema}".pos_order_items oi
+      JOIN "${schema}".pos_orders po ON oi.order_id = po.id
+      WHERE po.status = 'paid'
+        AND po.printed = TRUE
+        AND DATE(po.created_at AT TIME ZONE '${tz}') = $1
+      GROUP BY oi.product_name
+      ORDER BY cantidad DESC
+      LIMIT 5
+    `, [today]);
+
+    // Ventas por hora del día actual
+    const byHourRes = await dbQuery(`
+      SELECT EXTRACT(HOUR FROM created_at AT TIME ZONE '${tz}')::int AS hora,
+             COUNT(*)::int              AS transacciones,
+             SUM(total)::numeric        AS total
+      FROM "${schema}".pos_orders
+      WHERE status = 'paid'
+        AND printed = TRUE
+        AND DATE(created_at AT TIME ZONE '${tz}') = $1
+      GROUP BY hora
+      ORDER BY hora ASC
+    `, [today]);
+
+    const summary = summaryRes.rows[0];
+
+    res.json({
+      ok: true,
+      data: {
+        transacciones:  summary.transacciones,
+        total_ventas:   parseFloat(summary.total_ventas),
+        ticket_promedio: parseFloat(summary.ticket_promedio),
+        pagos:          paymentRes.rows.map(r => ({
+          method: r.payment_method,
+          cantidad: r.cantidad,
+          monto: parseFloat(r.monto),
+        })),
+        top_productos:  topProductsRes.rows.map(r => ({
+          name: r.product_name,
+          cantidad: r.cantidad,
+          total: parseFloat(r.total),
+        })),
+        por_hora: byHourRes.rows.map(r => ({
+          hora: r.hora,
+          label: `${String(r.hora).padStart(2, '0')}:00`,
+          transacciones: r.transacciones,
+          total: parseFloat(r.total),
+        })),
+      },
+    });
+  } catch (err) {
+    console.error('Error en GET /retail/stats:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
