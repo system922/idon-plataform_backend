@@ -1,8 +1,13 @@
 import express from 'express';
+import multer from 'multer';
+import { v2 as cloudinary } from 'cloudinary';
 import { query } from '../config/database.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { sendCampaign, sendGenericEmail } from '../services/crmEmailService.js';
+
+cloudinary.config({ cloudinary_url: process.env.CLOUDINARY_URL });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
 
 const router = express.Router();
 
@@ -708,20 +713,45 @@ router.get('/email-campaigns', authMiddleware, async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 // 2. CREAR nueva campaña
 // ─────────────────────────────────────────────────────────────
+// 2b. SUBIR IMAGEN de campaña a Cloudinary
+// ─────────────────────────────────────────────────────────────
+router.post('/email-campaigns/upload-image', authMiddleware, upload.single('file'), async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+    if (!req.file)  return res.status(400).json({ error: 'Se requiere una imagen' });
+
+    const imageUrl = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { folder: `idon/${schema}/campaigns`, resource_type: 'image' },
+        (err, result) => err ? reject(err) : resolve(result.secure_url)
+      );
+      stream.end(req.file.buffer);
+    });
+
+    res.json({ image_url: imageUrl });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
 router.post('/email-campaigns', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    const { title, subject, content, is_active } = req.body;
+    const { title, subject, content, is_active, image_url } = req.body;
 
     if (!title || !subject || !content) {
       return res.status(400).json({ error: 'Título, asunto y contenido son requeridos' });
     }
 
+    await query(`ALTER TABLE "${schema}".email_campaigns ADD COLUMN IF NOT EXISTS image_url TEXT`).catch(() => {});
+
     const result = await query(`
-      INSERT INTO "${schema}".email_campaigns (title, subject, content, is_active)
-      VALUES ($1, $2, $3, $4)
+      INSERT INTO "${schema}".email_campaigns (title, subject, content, is_active, image_url)
+      VALUES ($1, $2, $3, $4, $5)
       RETURNING *
-    `, [title, subject, content, is_active !== false]);
+    `, [title, subject, content, is_active !== false, image_url || null]);
 
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -737,14 +767,16 @@ router.put('/email-campaigns/:id', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     const { id } = req.params;
-    const { title, subject, content, is_active } = req.body;
+    const { title, subject, content, is_active, image_url } = req.body;
+
+    await query(`ALTER TABLE "${schema}".email_campaigns ADD COLUMN IF NOT EXISTS image_url TEXT`).catch(() => {});
 
     const result = await query(`
       UPDATE "${schema}".email_campaigns
-      SET title = $1, subject = $2, content = $3, is_active = $4, updated_at = NOW()
-      WHERE id = $5
+      SET title = $1, subject = $2, content = $3, is_active = $4, image_url = $5, updated_at = NOW()
+      WHERE id = $6
       RETURNING *
-    `, [title, subject, content, is_active, id]);
+    `, [title, subject, content, is_active, image_url ?? null, id]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Campaña no encontrada' });

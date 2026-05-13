@@ -1241,6 +1241,7 @@ BEGIN
         title      VARCHAR(255) NOT NULL,
         subject    VARCHAR(500) NOT NULL,
         content    TEXT         NOT NULL,
+        image_url  TEXT,
         is_active  BOOLEAN      DEFAULT true,
         sent_at    TIMESTAMPTZ,
         created_at TIMESTAMPTZ  DEFAULT NOW(),
