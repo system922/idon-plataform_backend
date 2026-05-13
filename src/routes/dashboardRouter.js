@@ -71,6 +71,19 @@ router.get('/stats', async (req, res) => {
 
     const today = new Date().toLocaleDateString('en-CA', { timeZone: TZ });
 
+    // ── DIAGNÓSTICO: ver todos los status y las últimas órdenes ──
+    const diagRes = await query(`
+      SELECT status, COUNT(*)::INT AS cnt,
+             MAX(created_at) AS ultima,
+             MAX(DATE(created_at AT TIME ZONE '${TZ}')) AS ultima_fecha_tz
+      FROM "${schema}".pos_orders
+      GROUP BY status
+      ORDER BY cnt DESC
+    `);
+    console.log('[dashboard/stats] schema:', schema, '| today:', today);
+    console.log('[dashboard/stats] status_counts:', JSON.stringify(diagRes.rows));
+    // ────────────────────────────────────────────────────────────
+
     const salesRes = await query(`
       SELECT
         COUNT(*)::INT                    AS tickets_count,
