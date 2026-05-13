@@ -58,12 +58,6 @@ router.post('/orders', authMiddleware, async (req, res) => {
       .slice(2);
     const orderNumber = `${datePrefix}-${String(dailyNumber).padStart(3, '0')}`;
 
-    // Asegurar columna printed
-    await client.query(`
-      ALTER TABLE "${schema}".pos_orders
-      ADD COLUMN IF NOT EXISTS printed BOOLEAN NOT NULL DEFAULT FALSE
-    `);
-
     // Insertar orden como pagada y ya impresa (retail no usa cocina)
     const insertRes = await client.query(
       `INSERT INTO "${schema}".pos_orders

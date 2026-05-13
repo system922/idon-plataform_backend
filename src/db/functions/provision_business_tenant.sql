@@ -360,32 +360,32 @@ BEGIN
     v_table_count := v_table_count + 1;
 
     -- pos_orders (FK → customers, users, pos_discounts)
+    -- Los pagos van en pos_payments; pos_orders solo almacena totales y estado.
     EXECUTE format('
       CREATE TABLE %I.pos_orders (
-        id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        order_number             VARCHAR(20)     NOT NULL UNIQUE,
-        order_type               VARCHAR(20)     NOT NULL DEFAULT ''dine_in'',
-        status                   %I.order_status NOT NULL DEFAULT ''pending'',
-        customer_id              UUID REFERENCES %I.customers(id) ON DELETE SET NULL,
-        customer_name            VARCHAR(255),
-        customer_document_number VARCHAR(50),
-        mesa_numero              INT,
-        subtotal                 NUMERIC(12,2)   NOT NULL DEFAULT 0,
-        tax_rate                 NUMERIC(5,2)    NOT NULL DEFAULT 15,
-        tax_amount               NUMERIC(12,2)   NOT NULL DEFAULT 0,
-        total                    NUMERIC(12,2)   NOT NULL DEFAULT 0,
-        discount_id              UUID REFERENCES %I.pos_discounts(id) ON DELETE SET NULL,
-        discount_amount          NUMERIC(12,2)   DEFAULT 0,
-        payment_method           VARCHAR(50),
-        amount_paid              NUMERIC(12,2)   DEFAULT 0,
-        reference_number         VARCHAR(100),
-        payments                 JSONB           DEFAULT ''[]''::jsonb,
-        printed                  BOOLEAN         NOT NULL DEFAULT FALSE,
-        notes                    TEXT,
-        created_by               UUID REFERENCES %I.users(id) ON DELETE SET NULL,
-        created_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        order_number    VARCHAR(20)     NOT NULL,
+        order_type      VARCHAR(20)     NOT NULL DEFAULT ''dine_in'',
+        status          %I.order_status NOT NULL DEFAULT ''pending'',
+        customer_id     UUID REFERENCES %I.customers(id) ON DELETE SET NULL,
+        customer_name   VARCHAR(255),
+        mesa_numero     INT,
+        subtotal        NUMERIC(12,2)   NOT NULL DEFAULT 0,
+        tax_rate        NUMERIC(5,2)    NOT NULL DEFAULT 15,
+        tax_amount      NUMERIC(12,2)   NOT NULL DEFAULT 0,
+        total           NUMERIC(12,2)   NOT NULL DEFAULT 0,
+        discount_id     UUID REFERENCES %I.pos_discounts(id) ON DELETE SET NULL,
+        discount_amount NUMERIC(12,2)   DEFAULT 0,
+        notes           TEXT,
+        created_by      UUID REFERENCES %I.users(id) ON DELETE SET NULL,
+        created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        printed_at      TIMESTAMP,
+        printed         BOOLEAN NOT NULL DEFAULT FALSE
       )', p_schema_name, p_schema_name, p_schema_name, p_schema_name, p_schema_name);
+    EXECUTE format(
+      'CREATE UNIQUE INDEX %I_pos_orders_number_date_idx ON %I.pos_orders (order_number, date(created_at))',
+      p_schema_name, p_schema_name);
     EXECUTE format(
       'CREATE INDEX %I_pos_orders_status_idx ON %I.pos_orders (status)',
       p_schema_name, p_schema_name);
@@ -394,9 +394,6 @@ BEGIN
       p_schema_name, p_schema_name);
     EXECUTE format(
       'CREATE INDEX %I_pos_orders_created_at_desc_idx ON %I.pos_orders (created_at DESC)',
-      p_schema_name, p_schema_name);
-    EXECUTE format(
-      'CREATE INDEX %I_pos_orders_customer_document_idx ON %I.pos_orders (customer_document_number)',
       p_schema_name, p_schema_name);
     EXECUTE format(
       'CREATE INDEX %I_pos_orders_discount_id_idx ON %I.pos_orders (discount_id)',
