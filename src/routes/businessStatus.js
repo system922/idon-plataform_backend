@@ -285,13 +285,32 @@ router.get('/navigation', async (req, res, next) => {
     }
 
     // ── Dueño / empleado público (nivel 1 y 2) ──────────────────────────────
-    const { rows: userBiz } = await query(`
-      SELECT bu.business_id, r.id AS role_id, r.code AS role_code, r.name AS role_name
-      FROM public.business_users bu
-      JOIN public.roles r ON bu.role_id = r.id
-      WHERE bu.user_id = $1
-      LIMIT 1
-    `, [userId]);
+    // Leer x-business-id del header para soportar usuarios con múltiples negocios
+    const headerBusinessId = req.headers['x-business-id'] || null;
+    console.log('[NAV] userId:', userId, '| x-business-id header:', headerBusinessId);
+
+    let userBiz;
+    if (headerBusinessId) {
+      const { rows } = await query(`
+        SELECT bu.business_id, r.id AS role_id, r.code AS role_code, r.name AS role_name
+        FROM public.business_users bu
+        JOIN public.roles r ON bu.role_id = r.id
+        WHERE bu.user_id = $1 AND bu.business_id = $2
+        LIMIT 1
+      `, [userId, headerBusinessId]);
+      userBiz = rows;
+    } else {
+      const { rows } = await query(`
+        SELECT bu.business_id, r.id AS role_id, r.code AS role_code, r.name AS role_name
+        FROM public.business_users bu
+        JOIN public.roles r ON bu.role_id = r.id
+        WHERE bu.user_id = $1
+        LIMIT 1
+      `, [userId]);
+      userBiz = rows;
+    }
+
+    console.log('[NAV] business_id usado:', userBiz[0]?.business_id);
 
     if (userBiz.length === 0) {
       return res.json({ ok: true, data: { role: null, modules: [] } });
@@ -308,6 +327,8 @@ router.get('/navigation', async (req, res, next) => {
       ORDER BY m.sort_order ASC
     `, [business_id]);
 
+    console.log('[NAV] Módulos activos:', modules.map(m => m.code));
+
     const menuModules = [];
     for (const mod of modules) {
       const { rows: featureRows } = await query(`
@@ -317,6 +338,8 @@ router.get('/navigation', async (req, res, next) => {
         WHERE bf.business_id = $1 AND f.module_id = $2 AND bf.is_active = true
         ORDER BY f.name ASC
       `, [business_id, mod.id]);
+
+      console.log(`[NAV] Módulo ${mod.code} → features: [${featureRows.map(f => f.code).join(', ')}]`);
 
       const pages = buildModulePages(mod, featureRows);
       if (pages.length > 0) {

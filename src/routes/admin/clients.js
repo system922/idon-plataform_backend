@@ -286,6 +286,13 @@ router.put('/businesses/:businessId/modules', async (req, res, next) => {
       }
       await client.query('COMMIT');
       logger.info(`[MODULES] Actualizados para business=${businessId} mods=${moduleIds.length} feats=${featureIds.length}`);
+      logger.info(`[MODULES] featureIds guardados: ${JSON.stringify(featureIds)}`);
+      // Verificar qué quedó en business_features
+      const { rows: saved } = await client.query(
+        `SELECT f.id, f.code FROM public.business_features bf JOIN public.features f ON bf.feature_id=f.id WHERE bf.business_id=$1`,
+        [businessId]
+      );
+      logger.info(`[MODULES] Features activas tras guardar: ${saved.map(r => r.code).join(', ')}`);
       res.json({ ok: true, message: 'Módulos del negocio actualizados correctamente' });
     } catch (err) {
       await client.query('ROLLBACK');
