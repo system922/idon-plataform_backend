@@ -2,7 +2,7 @@ import express from 'express';
 import { query } from '../config/database.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 import { authMiddleware } from '../middleware/auth.js';
-import { sendCampaign } from '../services/crmEmailService.js';
+import { sendCampaign, sendGenericEmail } from '../services/crmEmailService.js';
 
 const router = express.Router();
 
@@ -779,63 +779,89 @@ router.delete('/email-campaigns/:id', authMiddleware, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// 5. ENVIAR campaña a todos los clientes con email (usando Resend)
+// 5. ENVIAR campaña — soporta todos / selección / segmento
 // ─────────────────────────────────────────────────────────────
 router.post('/email-campaigns/:id/send', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     const { id } = req.params;
+    const { customer_ids, segment_id, send_to_all = true } = req.body;
 
-    // 5.1 Obtener la campaña
-    const campaignRes = await query(`
-      SELECT * FROM "${schema}".email_campaigns WHERE id = $1
-    `, [id]);
-    if (campaignRes.rows.length === 0) {
-      return res.status(404).json({ error: 'Campaña no encontrada' });
-    }
+    const campaignRes = await query(
+      `SELECT * FROM "${schema}".email_campaigns WHERE id = $1`, [id]
+    );
+    if (!campaignRes.rows.length) return res.status(404).json({ error: 'Campaña no encontrada' });
     const campaign = campaignRes.rows[0];
 
-    // 5.2 Obtener todos los clientes con email registrado
-    const customersRes = await query(`
-      SELECT email FROM "${schema}".customers
-      WHERE email IS NOT NULL AND email != ''
-    `);
-    const emails = customersRes.rows.map(c => c.email);
-
-    if (emails.length === 0) {
-      return res.status(400).json({ error: 'No hay clientes con correo electrónico registrado' });
-    }
-
-    // 5.3 Obtener nombre del negocio para el remitente
-    let businessName = 'Idon Plataforma';
+    let businessName = 'IDON PLATAFORM';
     try {
-      const settingsRes = await query(
-        `SELECT trade_name, company_name FROM "${schema}".pos_settings LIMIT 1`
-      );
-      businessName = settingsRes.rows[0]?.trade_name || settingsRes.rows[0]?.company_name || businessName;
+      const s = await query(`SELECT trade_name, company_name FROM "${schema}".pos_settings LIMIT 1`);
+      businessName = s.rows[0]?.trade_name || s.rows[0]?.company_name || businessName;
     } catch (_) {}
 
-    // 5.4 Enviar campaña usando el servicio con Resend (BCC, lotes)
-    const result = await sendCampaign({
-      recipients: emails,
-      subject: campaign.subject,
-      html: campaign.content,
-      batchSize: 50,
-      businessName,
-    });
+    // Determinar destinatarios
+    let customers = [];
 
-    // 5.5 Actualizar fecha de envío de la campaña (aunque haya fallos parciales)
-    await query(`
-      UPDATE "${schema}".email_campaigns SET sent_at = NOW() WHERE id = $1
-    `, [id]);
+    if (!send_to_all && customer_ids?.length > 0) {
+      // Clientes específicos por UUID
+      const r = await query(
+        `SELECT id, name, email FROM "${schema}".customers
+         WHERE id = ANY($1::uuid[]) AND email IS NOT NULL AND email != '' AND is_active = true`,
+        [customer_ids]
+      );
+      customers = r.rows;
+    } else if (!send_to_all && segment_id) {
+      // Por segmento (predefinido o custom)
+      const allStats = await getCustomerStats(schema);
+      const predefined = PREDEFINED_SEGMENTS.find(s => s.id === segment_id);
+      let segFiltered;
+      if (predefined) {
+        segFiltered = allStats.filter(predefined.filter);
+      } else {
+        const segRes = await query(
+          `SELECT conditions FROM "${schema}".crm_custom_segments WHERE id=$1`, [parseInt(segment_id)]
+        );
+        if (!segRes.rows.length) return res.status(404).json({ error: 'Segmento no encontrado' });
+        segFiltered = applyCustomConditions(allStats, segRes.rows[0].conditions || {});
+      }
+      customers = segFiltered.filter(c => c.email && c.email.trim() !== '');
+    } else {
+      // Todos los activos con email
+      const r = await query(
+        `SELECT id, name, email FROM "${schema}".customers
+         WHERE email IS NOT NULL AND email != '' AND is_active = true`
+      );
+      customers = r.rows;
+    }
 
-    res.json({
-      success: true,
-      sent_count: result.sent,
-      total: emails.length,
-      failed: result.failed,
-      errors: result.errors.length > 0 ? result.errors : undefined,
-    });
+    if (!customers.length)
+      return res.status(400).json({ error: 'No hay destinatarios con correo electrónico' });
+
+    // Envío personalizado por cliente
+    let sent = 0, failed = 0;
+    const interpolate = (str, name) =>
+      str
+        .replace(/\{\{customer_name\}\}/g, name || 'Estimado cliente')
+        .replace(/\{\{business_name\}\}/g, businessName);
+
+    for (const customer of customers) {
+      try {
+        await sendGenericEmail({
+          to:           customer.email,
+          subject:      interpolate(campaign.subject, customer.name),
+          html:         interpolate(campaign.content, customer.name),
+          businessName,
+        });
+        sent++;
+      } catch (e) {
+        console.error(`Error enviando a ${customer.email}:`, e.message);
+        failed++;
+      }
+    }
+
+    await query(`UPDATE "${schema}".email_campaigns SET sent_at = NOW() WHERE id = $1`, [id]);
+
+    res.json({ success: true, sent_count: sent, total: customers.length, failed });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
