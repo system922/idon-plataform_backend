@@ -793,11 +793,23 @@ router.post('/email-campaigns/:id/send', authMiddleware, async (req, res) => {
     if (!campaignRes.rows.length) return res.status(404).json({ error: 'Campaña no encontrada' });
     const campaign = campaignRes.rows[0];
 
-    let businessName = 'IDON PLATAFORM';
+    let businessName = '', businessAddress = '';
     try {
-      const s = await query(`SELECT trade_name, company_name FROM "${schema}".pos_settings LIMIT 1`);
-      businessName = s.rows[0]?.trade_name || s.rows[0]?.company_name || businessName;
+      const cfg = await query(
+        `SELECT nombre_comercial, razon_social, direccion_matriz, direccion_establecimiento
+         FROM "${schema}".einvoice_config WHERE id = 1 LIMIT 1`
+      );
+      if (cfg.rows.length) {
+        businessName    = cfg.rows[0].nombre_comercial || cfg.rows[0].razon_social || '';
+        businessAddress = cfg.rows[0].direccion_establecimiento || cfg.rows[0].direccion_matriz || '';
+      }
     } catch (_) {}
+    if (!businessName) {
+      try {
+        const b = await query(`SELECT name FROM public.businesses WHERE schema_name = $1 LIMIT 1`, [schema]);
+        businessName = b.rows[0]?.name || 'Mi Negocio';
+      } catch (_) { businessName = 'Mi Negocio'; }
+    }
 
     // Determinar destinatarios
     let customers = [];
@@ -842,7 +854,8 @@ router.post('/email-campaigns/:id/send', authMiddleware, async (req, res) => {
     const interpolate = (str, name) =>
       str
         .replace(/\{\{customer_name\}\}/g, name || 'Estimado cliente')
-        .replace(/\{\{business_name\}\}/g, businessName);
+        .replace(/\{\{business_name\}\}/g, businessName)
+        .replace(/\{\{business_address\}\}/g, businessAddress || '');
 
     for (const customer of customers) {
       try {
