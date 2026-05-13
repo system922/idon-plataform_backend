@@ -71,27 +71,20 @@ router.get('/stats', async (req, res) => {
 
     const today = new Date().toLocaleDateString('en-CA', { timeZone: TZ });
 
-    // Intentar con cast directo y con timezone; tomar el mayor
     const salesRes = await query(`
       SELECT
         COUNT(*)::INT                    AS tickets_count,
         COALESCE(SUM(total), 0)::FLOAT   AS total_cobrado
       FROM "${schema}".pos_orders
       WHERE status = 'paid'
-        AND (
-          created_at::date = $1::date
-          OR DATE(created_at AT TIME ZONE '${TZ}') = $1
-        )
+        AND DATE(created_at AT TIME ZONE '${TZ}') = $1
     `, [today]);
 
     const monthRes = await query(`
       SELECT COALESCE(SUM(total), 0)::FLOAT AS total
       FROM "${schema}".pos_orders
       WHERE status = 'paid'
-        AND (
-          created_at::date >= ($1::date - INTERVAL '29 days')
-          OR DATE(created_at AT TIME ZONE '${TZ}') >= ($1::date - INTERVAL '29 days')
-        )
+        AND DATE(created_at AT TIME ZONE '${TZ}') >= ($1::date - INTERVAL '29 days')
     `, [today]);
 
     let expensesTotal = 0;

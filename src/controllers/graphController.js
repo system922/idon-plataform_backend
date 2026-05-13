@@ -7,16 +7,15 @@ export const getSalesByDay = async (req, res) => {
     const schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
 
+    const tz = 'America/Guayaquil';
     const params = [];
     let sql = `
-      SELECT to_char(o.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Guayaquil', 'YYYY-MM-DD') AS day,
-             COALESCE(SUM(CASE WHEN p.amount::text != 'NaN' THEN p.amount ELSE 0 END), 0) AS total
-      FROM "${schema}".pos_orders  o
-      JOIN "${schema}".pos_payments p ON p.order_id = o.id
-      WHERE o.status = 'paid'
-        AND p.status = 'completed'
+      SELECT to_char(created_at AT TIME ZONE '${tz}', 'YYYY-MM-DD') AS day,
+             COALESCE(SUM(total), 0) AS total
+      FROM "${schema}".pos_orders
+      WHERE status = 'paid'
     `;
-    sql = applyDateRange(sql, params, req.query, 'o.created_at');
+    sql = applyDateRange(sql, params, req.query, 'created_at');
     sql += ` GROUP BY day ORDER BY day ASC`;
 
     const { rows } = await query(sql, params);
