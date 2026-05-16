@@ -65,6 +65,8 @@ async function ensureTablesExist(schema) {
     )
   `);
 
+  await query(`ALTER TABLE ${schema}.employee_payrolls ADD COLUMN IF NOT EXISTS payment_type VARCHAR(20) DEFAULT 'hourly'`);
+
   await query(`
     CREATE TABLE IF NOT EXISTS ${schema}.employee_payroll_details (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -390,8 +392,16 @@ router.post('/', authMiddleware, async (req, res) => {
       console.error('❌ ERRORES DURANTE GUARDADO:', errors);
     }
     
-    res.json({ 
-      success: true, 
+    if (savedCount === 0) {
+      return res.status(500).json({
+        success: false,
+        error: `No se guardó ningún empleado. Errores: ${errors.join('; ')}`,
+        errors
+      });
+    }
+
+    res.json({
+      success: true,
       message: `Nómina guardada correctamente (${savedCount} de ${rows.length} empleados)`,
       savedCount,
       totalRows: rows.length,
