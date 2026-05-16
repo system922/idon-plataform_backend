@@ -611,6 +611,58 @@ router.get('/all-saved', authMiddleware, async (req, res) => {
   }
 });
 
+/* =============== NÓMINAS PAGADAS ================ */
+router.get('/all-paid', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    await ensureTablesExist(schema);
+
+    const payrollsRes = await query(`
+      SELECT
+        p.id as payroll_id,
+        p.employee_id,
+        p.period_start as start_date,
+        p.period_end as end_date,
+        p.payment_type,
+        p.base_salary,
+        p.total_hours,
+        p.extra_hours,
+        p.gross_salary as total_pay,
+        p.status,
+        p.payment_date,
+        p.created_at,
+        e.full_name
+      FROM ${schema}.employee_payrolls p
+      JOIN ${schema}.employees e ON e.id = p.employee_id
+      WHERE p.status = 'paid'
+      ORDER BY p.payment_date DESC, p.period_start DESC
+    `);
+
+    const groupedPayrolls = new Map();
+    payrollsRes.rows.forEach(payroll => {
+      const key = `${payroll.start_date}|${payroll.end_date}|${payroll.payment_date}`;
+      if (!groupedPayrolls.has(key)) {
+        groupedPayrolls.set(key, {
+          start_date: payroll.start_date,
+          end_date: payroll.end_date,
+          payment_date: payroll.payment_date,
+          payment_type: payroll.payment_type,
+          total_amount: 0,
+          total_employees: 0,
+        });
+      }
+      const group = groupedPayrolls.get(key);
+      group.total_amount += Number(payroll.total_pay) || 0;
+      group.total_employees += 1;
+    });
+
+    res.json(Array.from(groupedPayrolls.values()));
+  } catch (err) {
+    console.error('Error obteniendo nóminas pagadas:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 /* =============== OBTENER DETALLE DE NÓMINA POR FECHA (SOLO NO PAGADAS) ================ */
 router.get('/saved-by-date', authMiddleware, async (req, res) => {
   try {
