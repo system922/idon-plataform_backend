@@ -156,11 +156,13 @@ router.post('/generate', authMiddleware, async (req, res) => {
             SUM(hours) as daily_hours
           FROM ${schema}.worked_hours
           WHERE employee_id = $1 
-            AND worked_date >= $2 
-            AND worked_date <= $3
+            AND worked_date >= $2::DATE
+            AND worked_date <= $3::DATE
           GROUP BY worked_date
           ORDER BY worked_date
         `, [emp.id, start, end]);
+
+        console.log(`    📊 Horas encontradas para ${emp.full_name}: ${workedHoursRes.rows.length} días`);
 
         // Calcular horas según el ministerio de trabajo
         const hourlyRate = salary / 240; // SBU / 240 horas mensuales
@@ -171,26 +173,34 @@ router.post('/generate', authMiddleware, async (req, res) => {
         let extraordinary_hours = 0;
         let total_hours = 0;
         
-        for (const dayRow of workedHoursRes.rows) {
-          const dailyHours = Number(dayRow.daily_hours) || 0;
-          total_hours += dailyHours;
-          
-          // Primeras 8 horas: ordinarias
-          if (dailyHours <= 8) {
-            ordinary_hours += dailyHours;
-          } else {
-            // 8 horas ordinarias
-            ordinary_hours += 8;
-            const extraHours = dailyHours - 8;
+        // Si no hay horas registradas, usar 8 horas diarias como estándar
+        if (workedHoursRes.rows.length === 0) {
+          console.log(`    ⚠️ Sin horas registradas. Usando 8h/día x ${daysInPeriod} días = ${8 * daysInPeriod}h`);
+          ordinary_hours = 8 * daysInPeriod;
+          total_hours = 8 * daysInPeriod;
+        } else {
+          // Procesar horas registradas
+          for (const dayRow of workedHoursRes.rows) {
+            const dailyHours = Number(dayRow.daily_hours) || 0;
+            total_hours += dailyHours;
             
-            // Determinar si es fin de semana/feriado (extraordinarias) o suplementarias
-            const dayOfWeek = new Date(dayRow.worked_date).getDay();
-            if (dayOfWeek === 0 || dayOfWeek === 6) {
-              // Fin de semana: extraordinarias (100% extra)
-              extraordinary_hours += extraHours;
+            // Primeras 8 horas: ordinarias
+            if (dailyHours <= 8) {
+              ordinary_hours += dailyHours;
             } else {
-              // Entre semana: suplementarias (50% extra)
-              supplementary_hours += extraHours;
+              // 8 horas ordinarias
+              ordinary_hours += 8;
+              const extraHours = dailyHours - 8;
+              
+              // Determinar si es fin de semana/feriado (extraordinarias) o suplementarias
+              const dayOfWeek = new Date(dayRow.worked_date).getDay();
+              if (dayOfWeek === 0 || dayOfWeek === 6) {
+                // Fin de semana: extraordinarias (100% extra)
+                extraordinary_hours += extraHours;
+              } else {
+                // Entre semana: suplementarias (50% extra)
+                supplementary_hours += extraHours;
+              }
             }
           }
         }
@@ -271,8 +281,9 @@ router.post('/', authMiddleware, async (req, res) => {
         // Eliminar duplicados existentes
         const deleteResult = await query(`
           DELETE FROM ${schema}.employee_payrolls
-          WHERE employee_id = $1 AND period_start = $2 AND period_end = $3 AND payment_type = $4
+          WHERE employee_id = $1 AND period_start = $2::DATE AND period_end = $3::DATE AND payment_type = $4
         `, [r.employee_id, start, end, payment_type]);
+        console.log(`  🗑️  Eliminados duplicados: ${deleteResult.rowCount} filas`);
 
         let base_salary_value;
         let total_pay_value;
@@ -282,11 +293,13 @@ router.post('/', authMiddleware, async (req, res) => {
         if (payment_type === 'daily') {
           base_salary_value = Number(r.daily_rate) || 0;
           total_pay_value = Number(r.total_pay) || (base_salary_value * daysInPeriod);
+          console.log(`    Pago diario: $${base_salary_value}/día × ${daysInPeriod} días = $${total_pay_value}`);
         } else {
           base_salary_value = Number(r.hourly_rate) || 0;
           total_pay_value = Number(r.total_pay) || 0;
           total_hours_value = Number(r.total_hours) || 0;
           extra_hours_value = Number(r.extra_hours) || 0;
+          console.log(`    Pago horario: $${base_salary_value}/h × ${total_hours_value}h = $${total_pay_value}`);
         }
 
         const insertPayroll = await query(`
@@ -295,7 +308,7 @@ router.post('/', authMiddleware, async (req, res) => {
             base_salary, total_hours, extra_hours,
             bonuses, deductions, gross_salary, net_salary, status, notes
           ) VALUES (
-            $1, $2, $3, $4,
+            $1, $2::DATE, $3::DATE, $4,
             $5, $6, $7,
             0, 0, $8, $8, 'generated', ''
           ) RETURNING id
@@ -309,6 +322,8 @@ router.post('/', authMiddleware, async (req, res) => {
           extra_hours_value,
           total_pay_value
         ]);
+        
+        console.log(`  ✅ Insertado payroll para ${r.full_name}, total_pay=${total_pay_value}`);
         
         const payrollId = insertPayroll.rows[0]?.id;
         
@@ -371,6 +386,10 @@ router.post('/', authMiddleware, async (req, res) => {
 
     console.log(`✅ Nómina guardada: ${savedCount} de ${rows.length} empleados`);
     
+    if (errors.length > 0) {
+      console.error('❌ ERRORES DURANTE GUARDADO:', errors);
+    }
+    
     res.json({ 
       success: true, 
       message: `Nómina guardada correctamente (${savedCount} de ${rows.length} empleados)`,
@@ -380,7 +399,7 @@ router.post('/', authMiddleware, async (req, res) => {
     });
 
   } catch (err) {
-    console.error('Error guardando nómina:', err);
+    console.error('❌ Error crítico guardando nómina:', err);
     res.status(500).json({ error: 'Error guardando nómina: ' + err.message });
   }
 });
