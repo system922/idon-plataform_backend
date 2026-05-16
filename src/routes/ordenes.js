@@ -651,6 +651,35 @@ router.delete('/:id', authMiddleware, async (req, res) => {
 });
 
 /**
+ * POST /api/ordenes/:id/kitchen-ready
+ * Notifica a caja que la orden está lista en cocina (emite socket order_ready)
+ */
+router.post('/:id/kitchen-ready', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const businessId = req.user?.businessId;
+    const schema = await getSchemaName(req);
+
+    const orderRes = await query(
+      `SELECT order_number, mesa_numero FROM "${schema}".pos_orders WHERE id = $1 LIMIT 1`,
+      [id]
+    );
+    const order = orderRes.rows[0] || {};
+
+    emitToBusiness(businessId, 'order_ready', {
+      order_id:     id,
+      order_number: order.order_number,
+      mesa_numero:  order.mesa_numero,
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error kitchen-ready:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * PATCH /api/ordenes/:id
  * Actualiza los items de una orden (edición desde historial)
  * Body: { items: [{ product_id, quantity, notes }], subtotal, tax_amount, total }
