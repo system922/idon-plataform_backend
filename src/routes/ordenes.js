@@ -299,12 +299,15 @@ router.post('/mark-printed', authMiddleware, async (req, res) => {
       ADD COLUMN IF NOT EXISTS printed BOOLEAN NOT NULL DEFAULT FALSE
     `);
 
+    // Atomic claim: solo actualiza si aún NO está impresa → evita doble impresión entre pestañas
     const result = await query(
-      `UPDATE "${schema}".pos_orders SET printed = TRUE WHERE id = ANY($1::uuid[])`,
+      `UPDATE "${schema}".pos_orders SET printed = TRUE
+       WHERE id = ANY($1::uuid[]) AND printed = FALSE
+       RETURNING id`,
       [order_ids]
     );
 
-    res.json({ success: true, updated: result.rowCount });
+    res.json({ success: true, updated: result.rowCount, claimed_ids: result.rows.map(r => r.id) });
   } catch (err) {
     console.error('Error en POST /ordenes/mark-printed:', err);
     res.status(500).json({ error: err.message });
