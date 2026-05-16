@@ -24,6 +24,7 @@ router.post('/', authMiddleware, async (req, res) => {
       items = [],
       notas = '',
       order_type = 'dine_in',
+      order_number: customOrderNumber,
     } = req.body;
 
     if (!items.length) {
@@ -51,7 +52,7 @@ router.post('/', authMiddleware, async (req, res) => {
     
     const dailyNumber = counterResult.rows[0].next_number;
     const datePrefix = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' }).replace(/-/g, '').slice(2); // "260512"
-    const orderNumber = `${datePrefix}-${String(dailyNumber).padStart(3, '0')}`;
+    const orderNumber = customOrderNumber || `${datePrefix}-${String(dailyNumber).padStart(3, '0')}`;
 
     console.log(`📊 Orden #${orderNumber} generada con función de BD`);
 
