@@ -117,7 +117,6 @@ router.post('/generate', authMiddleware, async (req, res) => {
     }
 
     const result = [];
-
     const startDate = new Date(start);
     const endDate = new Date(end);
     const daysInPeriod = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
@@ -128,6 +127,7 @@ router.post('/generate', authMiddleware, async (req, res) => {
       console.log(`💰 Procesando: ${emp.full_name}, salary=${salary}`);
       
       if (payment_type === 'daily') {
+        // Pago diario: usa el sueldo como monto fijo diario
         const total_pay = salary * daysInPeriod;
         
         result.push({
@@ -141,25 +141,83 @@ router.post('/generate', authMiddleware, async (req, res) => {
           total_days: daysInPeriod,
           extra_pay: 0,
           total_pay: total_pay,
-          payment_type: 'daily'
+          payment_type: 'daily',
+          ordinary_hours: 0,
+          night_hours: 0,
+          supplementary_hours: 0,
+          extraordinary_hours: 0
         });
       } else {
-        const hourly_rate = salary / 8;
-        const total_hours = 8 * daysInPeriod;
-        const total_pay = hourly_rate * total_hours;
+        // Pago por horas: usa el sueldo como sueldo mensual
+        // Obtener horas reales trabajadas
+        const workedHoursRes = await query(`
+          SELECT 
+            worked_date,
+            SUM(hours) as daily_hours
+          FROM ${schema}.worked_hours
+          WHERE employee_id = $1 
+            AND worked_date >= $2 
+            AND worked_date <= $3
+          GROUP BY worked_date
+          ORDER BY worked_date
+        `, [emp.id, start, end]);
+
+        // Calcular horas según el ministerio de trabajo
+        const hourlyRate = salary / 240; // SBU / 240 horas mensuales
+        
+        let ordinary_hours = 0;
+        let night_hours = 0;
+        let supplementary_hours = 0;
+        let extraordinary_hours = 0;
+        let total_hours = 0;
+        
+        for (const dayRow of workedHoursRes.rows) {
+          const dailyHours = Number(dayRow.daily_hours) || 0;
+          total_hours += dailyHours;
+          
+          // Primeras 8 horas: ordinarias
+          if (dailyHours <= 8) {
+            ordinary_hours += dailyHours;
+          } else {
+            // 8 horas ordinarias
+            ordinary_hours += 8;
+            const extraHours = dailyHours - 8;
+            
+            // Determinar si es fin de semana/feriado (extraordinarias) o suplementarias
+            const dayOfWeek = new Date(dayRow.worked_date).getDay();
+            if (dayOfWeek === 0 || dayOfWeek === 6) {
+              // Fin de semana: extraordinarias (100% extra)
+              extraordinary_hours += extraHours;
+            } else {
+              // Entre semana: suplementarias (50% extra)
+              supplementary_hours += extraHours;
+            }
+          }
+        }
+
+        // Calcular monto por tipo de hora (basado en ministerio de trabajo Ecuador)
+        const ordinaryAmount = ordinary_hours * hourlyRate; // $2.01 * 0%
+        const nightAmount = night_hours * (hourlyRate * 1.25); // $2.01 * 1.25
+        const supplementaryAmount = supplementary_hours * (hourlyRate * 1.50); // $2.01 * 1.5
+        const extraordinaryAmount = extraordinary_hours * (hourlyRate * 2.00); // $2.01 * 2
+        const total_pay = ordinaryAmount + nightAmount + supplementaryAmount + extraordinaryAmount;
         
         result.push({
           employee_id: emp.id,
           full_name: emp.full_name,
           total_hours: total_hours,
-          extra_hours: 0,
-          days_worked: daysInPeriod,
-          hourly_rate: hourly_rate,
+          extra_hours: supplementary_hours + extraordinary_hours,
+          days_worked: workedHoursRes.rows.length,
+          hourly_rate: hourlyRate,
           daily_rate: salary,
           total_days: daysInPeriod,
-          extra_pay: 0,
+          extra_pay: nightAmount + supplementaryAmount + extraordinaryAmount,
           total_pay: total_pay,
-          payment_type: 'hourly'
+          payment_type: 'hourly',
+          ordinary_hours: ordinary_hours,
+          night_hours: night_hours,
+          supplementary_hours: supplementary_hours,
+          extraordinary_hours: extraordinary_hours
         });
       }
     }
@@ -210,7 +268,7 @@ router.post('/', authMiddleware, async (req, res) => {
           continue;
         }
 
-        // Eliminar duplicados existentes (incluyendo los pagados para regenerar)
+        // Eliminar duplicados existentes
         const deleteResult = await query(`
           DELETE FROM ${schema}.employee_payrolls
           WHERE employee_id = $1 AND period_start = $2 AND period_end = $3 AND payment_type = $4
@@ -218,6 +276,8 @@ router.post('/', authMiddleware, async (req, res) => {
 
         let base_salary_value;
         let total_pay_value;
+        let total_hours_value = 0;
+        let extra_hours_value = 0;
         
         if (payment_type === 'daily') {
           base_salary_value = Number(r.daily_rate) || 0;
@@ -225,6 +285,8 @@ router.post('/', authMiddleware, async (req, res) => {
         } else {
           base_salary_value = Number(r.hourly_rate) || 0;
           total_pay_value = Number(r.total_pay) || 0;
+          total_hours_value = Number(r.total_hours) || 0;
+          extra_hours_value = Number(r.extra_hours) || 0;
         }
 
         const insertPayroll = await query(`
@@ -243,8 +305,8 @@ router.post('/', authMiddleware, async (req, res) => {
           end,
           payment_type,
           base_salary_value,
-          Number(r.total_hours) || 0,
-          Number(r.extra_hours) || 0,
+          total_hours_value,
+          extra_hours_value,
           total_pay_value
         ]);
         
@@ -256,16 +318,47 @@ router.post('/', authMiddleware, async (req, res) => {
           continue;
         }
 
+        // Guardar detalles del pago según tipo
         if (payment_type === 'daily') {
           await query(`
             INSERT INTO ${schema}.employee_payroll_details (payroll_id, concept, type, amount)
             VALUES ($1, $2, 'daily_wage', $3)
-          `, [payrollId, `Sueldo fijo diario x ${daysInPeriod} días`, total_pay_value]);
+          `, [payrollId, `Sueldo fijo diario x ${daysInPeriod} días @ $${base_salary_value.toFixed(2)}/día`, total_pay_value]);
         } else {
-          await query(`
-            INSERT INTO ${schema}.employee_payroll_details (payroll_id, concept, type, amount)
-            VALUES ($1, $2, 'hourly_wage', $3)
-          `, [payrollId, `Horas trabajadas x ${daysInPeriod} días`, total_pay_value]);
+          // Pago por horas: guardar detalles de cada tipo de hora
+          const hourlyRate = base_salary_value;
+          
+          if (Number(r.ordinary_hours) > 0) {
+            const ordinaryAmount = Number(r.ordinary_hours) * hourlyRate;
+            await query(`
+              INSERT INTO ${schema}.employee_payroll_details (payroll_id, concept, type, amount, notes)
+              VALUES ($1, $2, 'ordinary_hours', $3, $4)
+            `, [payrollId, `Horas ordinarias`, ordinaryAmount, `${Number(r.ordinary_hours).toFixed(2)}h @ $${hourlyRate.toFixed(2)}/h`]);
+          }
+          
+          if (Number(r.night_hours) > 0) {
+            const nightAmount = Number(r.night_hours) * (hourlyRate * 1.25);
+            await query(`
+              INSERT INTO ${schema}.employee_payroll_details (payroll_id, concept, type, amount, notes)
+              VALUES ($1, $2, 'night_hours', $3, $4)
+            `, [payrollId, `Horas nocturnas (25% recargo)`, nightAmount, `${Number(r.night_hours).toFixed(2)}h @ $${(hourlyRate * 1.25).toFixed(2)}/h`]);
+          }
+          
+          if (Number(r.supplementary_hours) > 0) {
+            const supplementaryAmount = Number(r.supplementary_hours) * (hourlyRate * 1.50);
+            await query(`
+              INSERT INTO ${schema}.employee_payroll_details (payroll_id, concept, type, amount, notes)
+              VALUES ($1, $2, 'supplementary_hours', $3, $4)
+            `, [payrollId, `Horas suplementarias (50% recargo)`, supplementaryAmount, `${Number(r.supplementary_hours).toFixed(2)}h @ $${(hourlyRate * 1.50).toFixed(2)}/h`]);
+          }
+          
+          if (Number(r.extraordinary_hours) > 0) {
+            const extraordinaryAmount = Number(r.extraordinary_hours) * (hourlyRate * 2.00);
+            await query(`
+              INSERT INTO ${schema}.employee_payroll_details (payroll_id, concept, type, amount, notes)
+              VALUES ($1, $2, 'extraordinary_hours', $3, $4)
+            `, [payrollId, `Horas extraordinarias (100% recargo)`, extraordinaryAmount, `${Number(r.extraordinary_hours).toFixed(2)}h @ $${(hourlyRate * 2.00).toFixed(2)}/h`]);
+          }
         }
         
         savedCount++;
@@ -341,7 +434,11 @@ router.get('/saved', authMiddleware, async (req, res) => {
       daily_rate: row.payment_type === 'daily' ? Number(row.base_salary) : 0,
       total_pay: Number(row.total_pay) || 0,
       payment_type: row.payment_type,
-      status: row.status
+      status: row.status,
+      ordinary_hours: 0,
+      night_hours: 0,
+      supplementary_hours: 0,
+      extraordinary_hours: 0
     }));
     
     console.log(`📊 Nóminas no pagadas encontradas: ${transformed.length}`);
