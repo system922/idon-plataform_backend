@@ -184,13 +184,15 @@ router.get('/', authMiddleware, async (req, res) => {
     let params = [];
 
     if (status) {
-      const statuses = status.split(',').map(s => s.trim()).filter(Boolean);
-      if (statuses.length === 1) {
-        conditions = `WHERE o.status = $1`;
-        params = [statuses[0]];
+      if (status === 'kitchen') {
+        // Cocina: todo lo que no está pagado ni cancelado ni en borrador
+        conditions = `WHERE (o.status IN ('pending', 'sent', 'completed') OR o.status IS NULL)`;
+        params = [];
       } else {
-        conditions = `WHERE o.status = ANY($1::text[])`;
-        params = [statuses];
+        const statuses = status.split(',').map(s => s.trim()).filter(Boolean);
+        const placeholders = statuses.map((_, i) => `$${i + 1}`).join(', ');
+        conditions = `WHERE o.status IN (${placeholders})`;
+        params = statuses;
       }
     }
 
