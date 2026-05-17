@@ -182,10 +182,16 @@ router.get('/', authMiddleware, async (req, res) => {
 
     let conditions = '';
     let params = [];
-    
+
     if (status) {
-      conditions = `WHERE o.status = $1`;
-      params = [status];
+      const statuses = status.split(',').map(s => s.trim()).filter(Boolean);
+      if (statuses.length === 1) {
+        conditions = `WHERE o.status = $1`;
+        params = [statuses[0]];
+      } else {
+        conditions = `WHERE o.status = ANY($1::text[])`;
+        params = [statuses];
+      }
     }
 
     const result = await query(
@@ -660,6 +666,11 @@ router.post('/:id/kitchen-ready', authMiddleware, async (req, res) => {
     const businessId = req.user?.businessId;
     const schema = await getSchemaName(req);
 
+    await query(
+      `UPDATE "${schema}".pos_orders SET status = 'completed', updated_at = NOW() WHERE id = $1`,
+      [id]
+    );
+
     const orderRes = await query(
       `SELECT order_number, mesa_numero FROM "${schema}".pos_orders WHERE id = $1 LIMIT 1`,
       [id]
@@ -671,6 +682,7 @@ router.post('/:id/kitchen-ready', authMiddleware, async (req, res) => {
       order_number: order.order_number,
       mesa_numero:  order.mesa_numero,
     });
+    emitToBusiness(businessId, 'data_changed', { entity: 'orders', action: 'updated' });
 
     res.json({ success: true });
   } catch (err) {
