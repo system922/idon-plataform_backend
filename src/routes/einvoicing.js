@@ -341,29 +341,36 @@ router.post('/credit-notes', authMiddleware, async (req, res) => {
   }
 });
 
-// GET /api/einvoicing/credit-notes/available?customer_ruc=RUC
-// Notas de crédito con saldo disponible para usar como pago
+// GET /api/einvoicing/credit-notes/available?customer_ruc=RUC&customer_name=NAME
+// Solo notas de crédito del cliente exacto con saldo disponible
 router.get('/credit-notes/available', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     await ensureCreditNotesTable(schema);
     const { customer_ruc, customer_name } = req.query;
 
-    let whereClause = `WHERE remaining_balance > 0`;
-    const params = [];
+    const hasRuc  = customer_ruc && customer_ruc !== '9999999999';
+    const hasName = customer_name && customer_name.trim().length > 0;
 
-    if (customer_ruc && customer_ruc !== '9999999999') {
-      params.push(customer_ruc);
-      whereClause += ` AND customer_ruc = $${params.length}`;
-    } else if (customer_name) {
-      params.push(`%${customer_name}%`);
-      whereClause += ` AND customer_name ILIKE $${params.length}`;
+    // Sin datos del cliente no se devuelve nada
+    if (!hasRuc && !hasName) return res.json([]);
+
+    const params = [];
+    const conditions = ['remaining_balance > 0'];
+
+    if (hasRuc) {
+      params.push(customer_ruc.trim());
+      conditions.push(`customer_ruc = $${params.length}`);
+    }
+    if (hasName) {
+      params.push(customer_name.trim());
+      conditions.push(`LOWER(customer_name) = LOWER($${params.length})`);
     }
 
     const { rows } = await query(
       `SELECT id, reference_invoice, reason, total, remaining_balance, customer_name, customer_ruc, created_at
          FROM "${schema}".credit_notes
-         ${whereClause}
+         WHERE ${conditions.join(' AND ')}
          ORDER BY created_at DESC
          LIMIT 20`,
       params
