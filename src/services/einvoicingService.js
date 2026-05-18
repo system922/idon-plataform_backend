@@ -428,7 +428,8 @@ export async function listInvoices(schema, { limit = 50, status } = {}) {
   const { rows } = await query(
     `SELECT id, invoice_number, access_key, auth_number,
             customer_id, customer_name, customer_ruc, customer_email, customer_phone,
-            subtotal, iva_amount, total, discount_amount,
+            subtotal, iva_amount, total, discount_amount, items,
+            COALESCE(credited_amount, 0) AS credited_amount,
             status, sri_message, sri_json,
             emission_date, auth_date, created_at
        FROM "${schema}".einvoices

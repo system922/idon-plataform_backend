@@ -185,8 +185,11 @@ router.get('/', authMiddleware, async (req, res) => {
 
     if (status) {
       if (status === 'kitchen') {
-        // Cocina: todo lo que no está pagado ni cancelado ni en borrador
         conditions = `WHERE (o.status IN ('pending', 'sent', 'completed') OR o.status IS NULL)`;
+        params = [];
+      } else if (status === 'active') {
+        // Todo excepto paid y draft
+        conditions = `WHERE o.status NOT IN ('paid', 'draft') OR o.status IS NULL`;
         params = [];
       } else {
         const statuses = status.split(',').map(s => s.trim()).filter(Boolean);
