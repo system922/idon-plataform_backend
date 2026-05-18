@@ -266,8 +266,8 @@ async function ensureCreditNotesTable(schema) {
     )
   `);
   await query(`ALTER TABLE IF EXISTS "${schema}".credit_notes ADD COLUMN IF NOT EXISTS remaining_balance NUMERIC(10,2) DEFAULT 0`);
-  // Back-fill existing rows where remaining_balance = 0 but total > 0
-  await query(`UPDATE "${schema}".credit_notes SET remaining_balance = total WHERE remaining_balance = 0 AND total > 0`);
+  // Back-fill solo notas emitidas que nunca tuvieron remaining_balance inicializado
+  await query(`UPDATE "${schema}".credit_notes SET remaining_balance = total WHERE remaining_balance = 0 AND total > 0 AND status NOT IN ('utilizada', 'anulada')`);
 }
 
 // GET /api/einvoicing/credit-notes
@@ -356,7 +356,7 @@ router.get('/credit-notes/available', authMiddleware, async (req, res) => {
     if (!hasRuc && !hasName) return res.json([]);
 
     const params = [];
-    const conditions = ['remaining_balance > 0'];
+    const conditions = ["remaining_balance > 0", "status NOT IN ('utilizada', 'anulada')"];
 
     if (hasRuc) {
       params.push(customer_ruc.trim());
