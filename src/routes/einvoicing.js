@@ -312,12 +312,12 @@ router.post('/credit-notes', authMiddleware, async (req, res) => {
       INSERT INTO "${schema}".credit_notes
         (invoice_id, reference_invoice, reason, items, subtotal, iva_amount, discount_amount, total,
          remaining_balance, customer_name, customer_ruc, customer_email, status)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10,$11,'emitida')
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'emitida')
       RETURNING *
     `, [
       invoice_id || null, reference_invoice || null, reason,
       JSON.stringify(items || []),
-      subtotal || 0, iva_amount || 0, discount_amount || 0, creditedTotal,
+      subtotal || 0, iva_amount || 0, discount_amount || 0, creditedTotal, creditedTotal,
       customer_name || null, customer_ruc || null, customer_email || null
     ]);
 
@@ -405,8 +405,8 @@ router.post('/credit-notes/:id/apply', authMiddleware, async (req, res) => {
     const newBalance = Math.max(0, balance - amount);
     const { rows: updated } = await query(
       `UPDATE "${schema}".credit_notes
-          SET remaining_balance = $1,
-              status = CASE WHEN $1 <= 0 THEN 'utilizada' ELSE status END
+          SET remaining_balance = $1::numeric,
+              status = CASE WHEN $1::numeric <= 0 THEN 'utilizada' ELSE status END
         WHERE id = $2
         RETURNING *`,
       [newBalance, id]
