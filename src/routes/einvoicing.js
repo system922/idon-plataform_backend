@@ -257,6 +257,7 @@ async function ensureCreditNotesTable(schema) {
       iva_amount NUMERIC(10,2) DEFAULT 0,
       discount_amount NUMERIC(10,2) DEFAULT 0,
       total NUMERIC(10,2) DEFAULT 0,
+      remaining_balance NUMERIC(10,2) DEFAULT 0,
       customer_name VARCHAR(255),
       customer_ruc VARCHAR(20),
       customer_email VARCHAR(255),
@@ -264,6 +265,9 @@ async function ensureCreditNotesTable(schema) {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `);
+  await query(`ALTER TABLE IF EXISTS "${schema}".credit_notes ADD COLUMN IF NOT EXISTS remaining_balance NUMERIC(10,2) DEFAULT 0`);
+  // Back-fill existing rows where remaining_balance = 0 but total > 0
+  await query(`UPDATE "${schema}".credit_notes SET remaining_balance = total WHERE remaining_balance = 0 AND total > 0`);
 }
 
 // GET /api/einvoicing/credit-notes
@@ -307,8 +311,8 @@ router.post('/credit-notes', authMiddleware, async (req, res) => {
     const result = await query(`
       INSERT INTO "${schema}".credit_notes
         (invoice_id, reference_invoice, reason, items, subtotal, iva_amount, discount_amount, total,
-         customer_name, customer_ruc, customer_email, status)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'emitida')
+         remaining_balance, customer_name, customer_ruc, customer_email, status)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10,$11,'emitida')
       RETURNING *
     `, [
       invoice_id || null, reference_invoice || null, reason,
@@ -333,6 +337,75 @@ router.post('/credit-notes', authMiddleware, async (req, res) => {
     res.status(201).json(result.rows[0]);
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/einvoicing/credit-notes/available?customer_ruc=RUC
+// Notas de crédito con saldo disponible para usar como pago
+router.get('/credit-notes/available', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    await ensureCreditNotesTable(schema);
+    const { customer_ruc, customer_name } = req.query;
+
+    let whereClause = `WHERE remaining_balance > 0`;
+    const params = [];
+
+    if (customer_ruc && customer_ruc !== '9999999999') {
+      params.push(customer_ruc);
+      whereClause += ` AND customer_ruc = $${params.length}`;
+    } else if (customer_name) {
+      params.push(`%${customer_name}%`);
+      whereClause += ` AND customer_name ILIKE $${params.length}`;
+    }
+
+    const { rows } = await query(
+      `SELECT id, reference_invoice, reason, total, remaining_balance, customer_name, customer_ruc, created_at
+         FROM "${schema}".credit_notes
+         ${whereClause}
+         ORDER BY created_at DESC
+         LIMIT 20`,
+      params
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/einvoicing/credit-notes/:id/apply  { amount }
+// Aplica (consume) saldo de una nota de crédito como forma de pago
+router.post('/credit-notes/:id/apply', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    await ensureCreditNotesTable(schema);
+    const { id } = req.params;
+    const amount = parseFloat(req.body.amount);
+    if (!amount || amount <= 0) return res.status(400).json({ error: 'Monto inválido' });
+
+    const { rows } = await query(
+      `SELECT id, remaining_balance FROM "${schema}".credit_notes WHERE id = $1`, [id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Nota de crédito no encontrada' });
+
+    const cn = rows[0];
+    const balance = parseFloat(cn.remaining_balance);
+    if (amount > balance + 0.01) {
+      return res.status(400).json({ error: `Saldo insuficiente. Disponible: $${balance.toFixed(2)}` });
+    }
+
+    const newBalance = Math.max(0, balance - amount);
+    const { rows: updated } = await query(
+      `UPDATE "${schema}".credit_notes
+          SET remaining_balance = $1,
+              status = CASE WHEN $1 <= 0 THEN 'utilizada' ELSE status END
+        WHERE id = $2
+        RETURNING *`,
+      [newBalance, id]
+    );
+    res.json(updated[0]);
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
