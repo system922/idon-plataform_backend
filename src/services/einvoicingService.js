@@ -423,6 +423,7 @@ export async function resendInvoice(schema, invoiceId) {
 
 // ------------------- HISTORIAL -------------------
 export async function listInvoices(schema, { limit = 50, status } = {}) {
+  await query(`ALTER TABLE IF EXISTS "${schema}".einvoices ADD COLUMN IF NOT EXISTS credited_amount NUMERIC(10,2) DEFAULT 0`);
   const where = status ? `WHERE status = $1` : '';
   const params = status ? [status] : [];
   const { rows } = await query(
