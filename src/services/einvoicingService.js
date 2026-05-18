@@ -513,6 +513,222 @@ async function generateBarcode(text) {
   } catch { return null; }
 }
 
+// ------------------- PDF NOTA DE CRÉDITO -------------------
+export async function generateCreditNotePdf(schema, cnId) {
+  const { rows } = await query(`SELECT * FROM "${schema}".credit_notes WHERE id = $1`, [cnId]);
+  const cn = rows[0];
+  if (!cn) throw new Error('Nota de crédito no encontrada');
+
+  const cfg = await getConfig(schema);
+
+  let logoBuf = null;
+  if (cfg?.logo_url) {
+    try {
+      const r = await fetch(cfg.logo_url);
+      if (r.ok) logoBuf = Buffer.from(await r.arrayBuffer());
+    } catch { }
+  }
+
+  const razonSocial   = cfg?.razon_social       || 'EMISOR';
+  const ruc           = cfg?.ruc                || '-';
+  const dirMatriz     = cfg?.direccion_matriz    || '';
+  const serieEstab    = cfg?.serie_estab         || '001';
+  const seriePto      = cfg?.serie_pto_emision   || '001';
+  const cnNumber      = `${serieEstab}-${seriePto}-${String(cn.id).padStart(9,'0')}`;
+  const rawItems      = typeof cn.items === 'string' ? JSON.parse(cn.items) : (cn.items || []);
+  const subtotal      = parseFloat(cn.subtotal)    || 0;
+  const ivaAmount     = parseFloat(cn.iva_amount)  || 0;
+  const total         = parseFloat(cn.total)       || 0;
+  const emDate        = cn.created_at
+    ? new Date(cn.created_at).toLocaleDateString('es-EC', { day:'2-digit', month:'2-digit', year:'numeric' })
+    : '-';
+
+  return new Promise((resolve, reject) => {
+    const doc    = new PDFDocument({ size: 'A4', margin: 0 });
+    const chunks = [];
+    doc.on('data', c => chunks.push(c));
+    doc.on('end',  () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+
+    const M    = 30;
+    const PW   = doc.page.width;
+    const W    = PW - M * 2;
+    const BK   = '#000000';
+    const GR   = '#666666';
+    const LGR  = '#eeeeee';
+    const VLGR = '#f9f9f9';
+    const WHT  = '#ffffff';
+    const RED  = '#c0392b';
+    const BDR  = '#999999';
+
+    const bord = (x, y2, w, h, lw = 0.5) => doc.rect(x, y2, w, h).lineWidth(lw).stroke(BDR);
+    const fill = (x, y2, w, h, color)    => doc.rect(x, y2, w, h).fill(color);
+
+    let y = M;
+
+    // ── HEADER ───────────────────────────────────────────────────────────────
+    const leftW  = Math.round(W * 0.52);
+    const rightW = W - leftW - 4;
+    const rightX = M + leftW + 4;
+    const hH     = 160;
+
+    bord(rightX, y, rightW, hH, 0.8);
+
+    const LOGO_FIT = 90;
+    if (logoBuf) {
+      try { doc.image(logoBuf, M, y, { fit: [LOGO_FIT, LOGO_FIT] }); } catch { }
+    }
+    let ly = logoBuf ? y + LOGO_FIT + 4 : y + 2;
+
+    doc.fillColor(BK).fontSize(8.5).font('Helvetica')
+       .text('R.U.C.:   ' + ruc, M, ly, { width: leftW - 2 });
+    ly += 12;
+    doc.fontSize(9).font('Helvetica-Bold')
+       .text(razonSocial, M, ly, { width: leftW - 2 });
+    ly += 13;
+    if (cfg?.nombre_comercial && cfg.nombre_comercial !== razonSocial) {
+      doc.fontSize(8).font('Helvetica').text(cfg.nombre_comercial, M, ly, { width: leftW - 2 });
+      ly += 11;
+    }
+    if (dirMatriz) {
+      doc.fontSize(8).font('Helvetica').text('Dir. Matriz:  ' + dirMatriz, M, ly, { width: leftW - 2 });
+      ly += 11;
+    }
+    if (cfg?.contribuyente_especial) {
+      doc.fontSize(8).font('Helvetica')
+         .text('Contribuyente Especial  ' + cfg.contribuyente_especial, M, ly, { width: leftW - 2 });
+      ly += 11;
+    }
+    doc.fontSize(8).font('Helvetica')
+       .text('OBLIGADO A LLEVAR CONTABILIDAD:   ' + (cfg?.obligado_contabilidad ? 'SI' : 'NO'), M, ly, { width: leftW - 2 });
+
+    let ry = y + 10;
+    doc.fillColor(RED).fontSize(12).font('Helvetica-Bold')
+       .text('NOTA DE CRÉDITO', rightX, ry, { width: rightW, align: 'center' });
+    ry += 18;
+    doc.fillColor(BK).fontSize(10).font('Helvetica-Bold')
+       .text('No.  ' + cnNumber, rightX, ry, { width: rightW, align: 'center' });
+    ry += 16;
+    doc.moveTo(rightX + 6, ry).lineTo(rightX + rightW - 6, ry).lineWidth(0.4).stroke(BDR);
+    ry += 8;
+    doc.fillColor(BK).fontSize(7.5).font('Helvetica')
+       .text('Factura de referencia:', rightX + 4, ry, { width: rightW - 8 });
+    ry += 11;
+    doc.fontSize(8.5).font('Helvetica-Bold').fillColor(RED)
+       .text(cn.reference_invoice || '-', rightX + 4, ry, { width: rightW - 8 });
+    ry += 13;
+    doc.fillColor(BK).fontSize(7).font('Helvetica')
+       .text('Fecha de emisión:  ' + emDate, rightX + 4, ry, { width: rightW - 8 });
+    ry += 10;
+    doc.text('Ambiente:  ' + (cfg?.ambiente === '2' ? 'PRODUCCIÓN' : 'PRUEBAS'), rightX + 4, ry, { width: rightW - 8 });
+
+    y = M + hH + 4;
+
+    // ── CLIENTE ───────────────────────────────────────────────────────────────
+    const cliH = 30;
+    bord(M, y, W, cliH);
+    const cW1 = W * 0.18, cW2 = W * 0.445, cW3 = W * 0.11, cW4 = W * 0.215;
+    const cX1 = M + 4, cX2 = cX1 + cW1 + 2, cX3 = cX2 + cW2 + 2, cX4 = cX3 + cW3 + 2;
+
+    doc.fontSize(7.5).font('Helvetica').fillColor(BK)
+       .text('Razón Social / Nombres', cX1, y + 4, { width: cW1 })
+       .text('Fecha Emisión:', cX1, y + 17, { width: cW1 });
+    doc.fontSize(8).font('Helvetica-Bold')
+       .text(cn.customer_name || 'CONSUMIDOR FINAL', cX2, y + 4, { width: cW2 })
+       .text(emDate, cX2, y + 17, { width: cW2 });
+    doc.fontSize(7.5).font('Helvetica')
+       .text('RUC / CI:', cX3, y + 4, { width: cW3 });
+    doc.fontSize(8).font('Helvetica-Bold')
+       .text(cn.customer_ruc || '-', cX4, y + 4, { width: cW4 });
+    y += cliH + 2;
+
+    // ── MOTIVO ────────────────────────────────────────────────────────────────
+    const motH = 22;
+    bord(M, y, W, motH);
+    doc.fontSize(7.5).font('Helvetica').fillColor(BK)
+       .text('Motivo:', M + 4, y + 4, { width: W * 0.12 });
+    doc.fontSize(8).font('Helvetica-Bold')
+       .text(cn.reason || '-', M + 4 + W * 0.12 + 2, y + 4, { width: W * 0.86 });
+    y += motH + 4;
+
+    // ── TABLA ÍTEMS ───────────────────────────────────────────────────────────
+    const COLS = [
+      { h: 'Cant',         w: 0.07,  a: 'right' },
+      { h: 'Descripción',  w: 0.55,  a: 'left'  },
+      { h: 'P. Unitario',  w: 0.12,  a: 'right' },
+      { h: 'Total',        w: 0.10,  a: 'right' },
+    ];
+
+    const thH = 18;
+    fill(M, y, W, thH, LGR);
+    bord(M, y, W, thH, 0.5);
+    let cx = M;
+    for (const col of COLS) {
+      const cw = W * col.w;
+      doc.fillColor(BK).fontSize(7).font('Helvetica-Bold')
+         .text(col.h, cx + 2, y + 5, { width: cw - 4, align: 'center' });
+      if (cx > M) doc.moveTo(cx, y).lineTo(cx, y + thH).lineWidth(0.3).stroke(BDR);
+      cx += cw;
+    }
+    y += thH;
+
+    let alt = false;
+    for (const item of rawItems) {
+      const qty   = parseFloat(item.quantity ?? item.qty ?? 0);
+      const price = parseFloat(item.unit_price ?? 0);
+      const sub   = parseFloat(item.subtotal   ?? qty * price);
+      const rH    = 14;
+      fill(M, y, W, rH, alt ? VLGR : WHT);
+      bord(M, y, W, rH, 0.25);
+      cx = M;
+      const vals = [qty.toFixed(2), item.description || '-', price.toFixed(4), sub.toFixed(2)];
+      for (let i = 0; i < COLS.length; i++) {
+        const cw = W * COLS[i].w;
+        doc.fillColor(BK).fontSize(7.5).font('Helvetica')
+           .text(vals[i], cx + 2, y + 3, { width: cw - 4, align: COLS[i].a, lineBreak: false });
+        cx += cw;
+      }
+      y += rH;
+      alt = !alt;
+      if (y > doc.page.height - 160) { doc.addPage(); y = M; }
+    }
+    if (rawItems.length === 0) {
+      fill(M, y, W, 14, WHT);
+      doc.fillColor(GR).fontSize(7).text('(anulación total — sin detalle de ítems)', M + 6, y + 3);
+      y += 14;
+    }
+    y += 6;
+
+    // ── TOTALES ───────────────────────────────────────────────────────────────
+    const totW = W * 0.38;
+    const totX = M + W - totW;
+    const totRows = [
+      ['SUBTOTAL SIN IVA', subtotal.toFixed(2)],
+      ['IVA 15%',          ivaAmount.toFixed(2)],
+    ];
+    const totRowH = 13;
+    for (const [label, val] of totRows) {
+      fill(totX, y, totW, totRowH, VLGR);
+      bord(totX, y, totW, totRowH, 0.3);
+      doc.fillColor(BK).fontSize(7).font('Helvetica')
+         .text(label, totX + 4, y + 3, { width: totW * 0.65 })
+         .text(val, totX + 4, y + 3, { width: totW - 8, align: 'right' });
+      y += totRowH;
+    }
+    fill(totX, y, totW, 16, RED);
+    doc.fillColor(WHT).fontSize(8.5).font('Helvetica-Bold')
+       .text('VALOR TOTAL A ACREDITAR', totX + 4, y + 4, { width: totW * 0.65 })
+       .text(total.toFixed(2), totX + 4, y + 4, { width: totW - 8, align: 'right' });
+    y += 30;
+
+    // ── PIE ───────────────────────────────────────────────────────────────────
+    doc.fillColor(GR).fontSize(7).font('Helvetica')
+       .text('Documento generado por sistema interno · No sustituye comprobante electrónico autorizado por el SRI', M, y, { width: W, align: 'center' });
+
+    doc.end();
+  });
+}
+
 // ------------------- GENERACIÓN PDF (CON DESCUENTO) -------------------
 export async function generateInvoicePdf(schema, invoiceId) {
   const { rows: invRows } = await query(

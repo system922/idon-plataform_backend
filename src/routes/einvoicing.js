@@ -337,30 +337,14 @@ router.post('/credit-notes', authMiddleware, async (req, res) => {
   }
 });
 
-// GET /api/einvoicing/credit-notes/:id/pdf — retorna PDF simple
+// GET /api/einvoicing/credit-notes/:id/pdf
 router.get('/credit-notes/:id/pdf', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    const { id } = req.params;
-    const result = await query(`SELECT * FROM "${schema}".credit_notes WHERE id=$1`, [id]);
-    if (!result.rows.length) return res.status(404).json({ error: 'Nota de crédito no encontrada' });
-
-    const cn = result.rows[0];
-    const html = `
-      <html><body style="font-family:Arial;padding:20px">
-        <h2>Nota de Crédito</h2>
-        <p><b>Factura referida:</b> ${cn.reference_invoice || '-'}</p>
-        <p><b>Motivo:</b> ${cn.reason}</p>
-        <p><b>Cliente:</b> ${cn.customer_name || '-'} | RUC: ${cn.customer_ruc || '-'}</p>
-        <p><b>Subtotal:</b> $${parseFloat(cn.subtotal).toFixed(2)}</p>
-        <p><b>IVA:</b> $${parseFloat(cn.iva_amount).toFixed(2)}</p>
-        <p><b>Total:</b> $${parseFloat(cn.total).toFixed(2)}</p>
-        <p><b>Estado:</b> ${cn.status}</p>
-        <p><b>Fecha:</b> ${new Date(cn.created_at).toLocaleDateString('es-EC')}</p>
-      </body></html>
-    `;
-    res.setHeader('Content-Type', 'text/html');
-    res.send(html);
+    const pdfBuf = await svc.generateCreditNotePdf(schema, req.params.id);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="nota_credito_${req.params.id}.pdf"`);
+    res.send(pdfBuf);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
