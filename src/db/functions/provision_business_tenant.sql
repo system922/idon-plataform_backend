@@ -1,5 +1,5 @@
--- ============================================================================
--- Helper: debe definirse ANTES de la función principal (runtime resolution)
+﻿-- ============================================================================
+-- Helper: debe definirse ANTES de la funciÃ³n principal (runtime resolution)
 -- ============================================================================
 CREATE OR REPLACE FUNCTION ANY_MATCH(arr VARCHAR[], val VARCHAR)
 RETURNS BOOLEAN AS $$
@@ -27,9 +27,9 @@ DECLARE
   v_modules     VARCHAR[];
 BEGIN
 
-  -- ══════════════════════════════════════════════════════════════════════════
+  -- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
   -- 1. Validar solicitud aprobada
-  -- ══════════════════════════════════════════════════════════════════════════
+  -- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
   SELECT * INTO v_request
   FROM public.business_registration_requests
   WHERE id = p_request_id AND status = 'approved';
@@ -39,9 +39,9 @@ BEGIN
       'error', 'Request not found or not in approved status');
   END IF;
 
-  -- ══════════════════════════════════════════════════════════════════════════
+  -- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
   -- 2. Crear schema
-  -- ══════════════════════════════════════════════════════════════════════════
+  -- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
   BEGIN
     EXECUTE format('CREATE SCHEMA IF NOT EXISTS %I', p_schema_name);
     v_result := v_result || jsonb_build_object('schema_created', true);
@@ -50,9 +50,9 @@ BEGIN
       'error', 'Schema creation failed: ' || SQLERRM);
   END;
 
-  -- ══════════════════════════════════════════════════════════════════════════
-  -- 3. Resolver dependencias entre módulos
-  -- ══════════════════════════════════════════════════════════════════════════
+  -- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  -- 3. Resolver dependencias entre mÃ³dulos
+  -- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
   v_modules := p_modules;
 
   -- purchases requiere suppliers como FK target
@@ -71,21 +71,30 @@ BEGIN
     v_modules := array_append(v_modules, 'pos');
   END IF;
 
-  -- ══════════════════════════════════════════════════════════════════════════
+  -- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
   -- 4. ENUMs del tenant (deben existir antes que las tablas que los usan)
-  -- ══════════════════════════════════════════════════════════════════════════
-  EXECUTE format('CREATE TYPE %I.order_status   AS ENUM (''draft'',''pending'',''sent'',''completed'',''paid'',''cancelled'')', p_schema_name);
-  EXECUTE format('CREATE TYPE %I.payment_status AS ENUM (''pending'',''completed'',''failed'',''refunded'')', p_schema_name);
-  EXECUTE format('CREATE TYPE %I.user_role      AS ENUM (''admin'',''manager'',''staff'',''viewer'',''client'')', p_schema_name);
+  -- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  BEGIN
+    EXECUTE format('CREATE TYPE %I.order_status AS ENUM (''draft'',''pending'',''sent'',''completed'',''paid'',''cancelled'')', p_schema_name);
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+  BEGIN
+    EXECUTE format('CREATE TYPE %I.payment_status AS ENUM (''pending'',''completed'',''failed'',''refunded'')', p_schema_name);
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+  BEGIN
+    EXECUTE format('CREATE TYPE %I.user_role AS ENUM (''admin'',''manager'',''staff'',''viewer'',''client'')', p_schema_name);
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
 
-  -- ══════════════════════════════════════════════════════════════════════════
-  -- 5. TABLAS CORE — siempre se crean, ordenadas por dependencia
-  --    Orden: sin FK primero → luego las que referencian tablas ya creadas
-  -- ══════════════════════════════════════════════════════════════════════════
+  -- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  -- 5. TABLAS CORE â€” siempre se crean, ordenadas por dependencia
+  --    Orden: sin FK primero â†’ luego las que referencian tablas ya creadas
+  -- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-  -- ─ roles (sin FK) ──────────────────────────────────────────────────────────
+  -- â”€ roles (sin FK) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   EXECUTE format('
-    CREATE TABLE %I.roles (
+    CREATE TABLE IF NOT EXISTS roles (
       id          SERIAL PRIMARY KEY,
       name        VARCHAR(50)  NOT NULL UNIQUE,
       description TEXT,
@@ -94,9 +103,9 @@ BEGIN
     )', p_schema_name);
   v_table_count := v_table_count + 1;
 
-  -- ─ settings (sin FK) ───────────────────────────────────────────────────────
+  -- â”€ settings (sin FK) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   EXECUTE format('
-    CREATE TABLE %I.settings (
+    CREATE TABLE IF NOT EXISTS settings (
       key         VARCHAR(100) PRIMARY KEY,
       value       TEXT,
       data_type   VARCHAR(50),
@@ -106,9 +115,9 @@ BEGIN
     )', p_schema_name);
   v_table_count := v_table_count + 1;
 
-  -- ─ business_profile (sin FK) ───────────────────────────────────────────────
+  -- â”€ business_profile (sin FK) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   EXECUTE format('
-    CREATE TABLE %I.business_profile (
+    CREATE TABLE IF NOT EXISTS business_profile (
       id                  INT PRIMARY KEY DEFAULT 1,
       legal_name          VARCHAR(255) NOT NULL,
       tax_id              VARCHAR(50),
@@ -129,9 +138,9 @@ BEGIN
     )', p_schema_name);
   v_table_count := v_table_count + 1;
 
-  -- ─ customers (sin FK) ──────────────────────────────────────────────────────
+  -- â”€ customers (sin FK) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   EXECUTE format('
-    CREATE TABLE %I.customers (
+    CREATE TABLE IF NOT EXISTS customers (
       id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       name            VARCHAR(255) NOT NULL,
       email           VARCHAR(255),
@@ -145,16 +154,16 @@ BEGIN
       updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )', p_schema_name);
   EXECUTE format(
-    'CREATE INDEX %I_customers_document_number_idx ON %I.customers (document_number)',
+    'CREATE INDEX IF NOT EXISTS %I_customers_document_number_idx ON %I.customers (document_number)',
     p_schema_name, p_schema_name);
   EXECUTE format(
-    'CREATE INDEX %I_customers_name_idx ON %I.customers (name)',
+    'CREATE INDEX IF NOT EXISTS %I_customers_name_idx ON %I.customers (name)',
     p_schema_name, p_schema_name);
   v_table_count := v_table_count + 1;
 
-  -- ─ categories (sin FK) ─────────────────────────────────────────────────────
+  -- â”€ categories (sin FK) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   EXECUTE format('
-    CREATE TABLE %I.categories (
+    CREATE TABLE IF NOT EXISTS categories (
       id          SERIAL PRIMARY KEY,
       name        VARCHAR(100) NOT NULL UNIQUE,
       description VARCHAR(250),
@@ -163,13 +172,13 @@ BEGIN
       updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )', p_schema_name);
   EXECUTE format(
-    'CREATE INDEX %I_categories_name_idx ON %I.categories (name)',
+    'CREATE INDEX IF NOT EXISTS %I_categories_name_idx ON %I.categories (name)',
     p_schema_name, p_schema_name);
   v_table_count := v_table_count + 1;
 
-  -- ─ users (FK → roles) ──────────────────────────────────────────────────────
+  -- â”€ users (FK â†’ roles) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   EXECUTE format('
-    CREATE TABLE %I.users (
+    CREATE TABLE IF NOT EXISTS users (
       id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       email         VARCHAR(255) NOT NULL UNIQUE,
       password_hash VARCHAR(255) NOT NULL,
@@ -183,9 +192,9 @@ BEGIN
     )', p_schema_name, p_schema_name);
   v_table_count := v_table_count + 1;
 
-  -- ─ products (FK → categories) ──────────────────────────────────────────────
+  -- â”€ products (FK â†’ categories) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   EXECUTE format('
-    CREATE TABLE %I.products (
+    CREATE TABLE IF NOT EXISTS products (
       id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       code          VARCHAR(50)   NOT NULL UNIQUE,
       name          VARCHAR(255)  NOT NULL,
@@ -204,25 +213,25 @@ BEGIN
       updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )', p_schema_name, p_schema_name);
   EXECUTE format(
-    'CREATE INDEX %I_products_category_id_idx ON %I.products (category_id)',
+    'CREATE INDEX IF NOT EXISTS %I_products_category_id_idx ON %I.products (category_id)',
     p_schema_name, p_schema_name);
   EXECUTE format(
-    'CREATE INDEX %I_products_is_active_idx ON %I.products (is_active)',
+    'CREATE INDEX IF NOT EXISTS %I_products_is_active_idx ON %I.products (is_active)',
     p_schema_name, p_schema_name);
   EXECUTE format(
-    'CREATE INDEX %I_products_barcode_idx ON %I.products (barcode)',
+    'CREATE INDEX IF NOT EXISTS %I_products_barcode_idx ON %I.products (barcode)',
     p_schema_name, p_schema_name);
   EXECUTE format(
-    'CREATE INDEX %I_products_sku_idx ON %I.products (sku)',
+    'CREATE INDEX IF NOT EXISTS %I_products_sku_idx ON %I.products (sku)',
     p_schema_name, p_schema_name);
   EXECUTE format(
-    'CREATE INDEX %I_products_code_idx ON %I.products (code)',
+    'CREATE INDEX IF NOT EXISTS %I_products_code_idx ON %I.products (code)',
     p_schema_name, p_schema_name);
   v_table_count := v_table_count + 1;
 
-  -- ─ audit_logs (user_id sin FK — intencional para no bloquear borrado) ───────
+  -- â”€ audit_logs (user_id sin FK â€” intencional para no bloquear borrado) â”€â”€â”€â”€â”€â”€â”€
   EXECUTE format('
-    CREATE TABLE %I.audit_logs (
+    CREATE TABLE IF NOT EXISTS audit_logs (
       id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       user_id     UUID,
       table_name  VARCHAR(100),
@@ -234,22 +243,22 @@ BEGIN
       created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )', p_schema_name);
   EXECUTE format(
-    'CREATE INDEX %I_audit_logs_table_name_action_idx ON %I.audit_logs (table_name, action)',
+    'CREATE INDEX IF NOT EXISTS %I_audit_logs_table_name_action_idx ON %I.audit_logs (table_name, action)',
     p_schema_name, p_schema_name);
   EXECUTE format(
-    'CREATE INDEX %I_audit_logs_created_at_desc_idx ON %I.audit_logs (created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS %I_audit_logs_created_at_desc_idx ON %I.audit_logs (created_at DESC)',
     p_schema_name, p_schema_name);
   v_table_count := v_table_count + 1;
 
-  -- ══════════════════════════════════════════════════════════════════════════
-  -- 6. TABLAS POR MÓDULO — ordenadas: sin FK → luego sus dependientes
-  -- ══════════════════════════════════════════════════════════════════════════
+  -- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+  -- 6. TABLAS POR MÃ“DULO â€” ordenadas: sin FK â†’ luego sus dependientes
+  -- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-    -- ─── POS ────────────────────────────────────────────────────────────────
+    -- â”€â”€â”€ POS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   IF ANY_MATCH(v_modules, 'pos') THEN
 
     -- ========================================================================
-    -- TABLA DE CONTADOR DIARIO DE ÓRDENES (para numeración automática)
+    -- TABLA DE CONTADOR DIARIO DE Ã“RDENES (para numeraciÃ³n automÃ¡tica)
     -- ========================================================================
     EXECUTE format('
       CREATE TABLE IF NOT EXISTS %I.daily_order_counter (
@@ -261,14 +270,14 @@ BEGIN
       )', p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- Índice para búsqueda rápida por fecha
+    -- Ãndice para bÃºsqueda rÃ¡pida por fecha
     EXECUTE format('
       CREATE INDEX IF NOT EXISTS %I_daily_order_counter_date_idx 
       ON %I.daily_order_counter (order_date DESC)',
       p_schema_name, p_schema_name);
 
     -- ========================================================================
-    -- FUNCIÓN PARA ACTUALIZAR updated_at AUTOMÁTICAMENTE
+    -- FUNCIÃ“N PARA ACTUALIZAR updated_at AUTOMÃTICAMENTE
     -- ========================================================================
     EXECUTE format('
       CREATE OR REPLACE FUNCTION %I.update_updated_at_column()
@@ -290,7 +299,7 @@ BEGIN
       p_schema_name, p_schema_name);
 
     -- ========================================================================
-    -- FUNCIÓN PARA OBTENER EL SIGUIENTE NÚMERO DE ORDEN (CON HORA ECUADOR)
+    -- FUNCIÃ“N PARA OBTENER EL SIGUIENTE NÃšMERO DE ORDEN (CON HORA ECUADOR)
     -- ========================================================================
     EXECUTE format('
       CREATE OR REPLACE FUNCTION %I.get_next_order_number()
@@ -302,7 +311,7 @@ BEGIN
         -- Obtener la fecha actual de Ecuador
         v_today := (CURRENT_TIMESTAMP AT TIME ZONE ''America/Guayaquil'')::DATE;
         
-        -- Insertar o actualizar el contador diario de forma atómica
+        -- Insertar o actualizar el contador diario de forma atÃ³mica
         INSERT INTO %I.daily_order_counter (order_date, last_number)
         VALUES (v_today, 1)
         ON CONFLICT (order_date) 
@@ -315,9 +324,9 @@ BEGIN
       p_schema_name, p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- ─── pos_discounts (creado ANTES de pos_orders para permitir FK) ──────────────
+    -- â”€â”€â”€ pos_discounts (creado ANTES de pos_orders para permitir FK) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     EXECUTE format('
-      CREATE TABLE %I.pos_discounts (
+      CREATE TABLE IF NOT EXISTS pos_discounts (
         id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         name                VARCHAR(100) NOT NULL,
         description         TEXT,
@@ -347,22 +356,22 @@ BEGIN
         updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name, p_schema_name, p_schema_name);
 
-    -- Índices para pos_discounts
-    EXECUTE format('CREATE INDEX %I_pos_discounts_type_idx ON %I.pos_discounts (type)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_pos_discounts_is_active_idx ON %I.pos_discounts (is_active)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_pos_discounts_code_idx ON %I.pos_discounts (code)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_pos_discounts_product_id_idx ON %I.pos_discounts (product_id)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_pos_discounts_category_id_idx ON %I.pos_discounts (category_id)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_pos_discounts_dates_idx ON %I.pos_discounts (start_date, end_date)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_pos_discounts_priority_idx ON %I.pos_discounts (priority DESC)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_pos_discounts_days_of_week_idx ON %I.pos_discounts USING GIN (days_of_week)', p_schema_name, p_schema_name);
+    -- Ãndices para pos_discounts
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_pos_discounts_type_idx ON %I.pos_discounts (type)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_pos_discounts_is_active_idx ON %I.pos_discounts (is_active)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_pos_discounts_code_idx ON %I.pos_discounts (code)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_pos_discounts_product_id_idx ON %I.pos_discounts (product_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_pos_discounts_category_id_idx ON %I.pos_discounts (category_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_pos_discounts_dates_idx ON %I.pos_discounts (start_date, end_date)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_pos_discounts_priority_idx ON %I.pos_discounts (priority DESC)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_pos_discounts_days_of_week_idx ON %I.pos_discounts USING GIN (days_of_week)', p_schema_name, p_schema_name);
 
     v_table_count := v_table_count + 1;
 
-    -- pos_orders (FK → customers, users, pos_discounts)
+    -- pos_orders (FK â†’ customers, users, pos_discounts)
     -- Los pagos van en pos_payments; pos_orders solo almacena totales y estado.
     EXECUTE format('
-      CREATE TABLE %I.pos_orders (
+      CREATE TABLE IF NOT EXISTS pos_orders (
         id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         order_number    VARCHAR(20)     NOT NULL,
         order_type      VARCHAR(20)     NOT NULL DEFAULT ''dine_in'',
@@ -384,25 +393,25 @@ BEGIN
         printed         BOOLEAN NOT NULL DEFAULT FALSE
       )', p_schema_name, p_schema_name, p_schema_name, p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE UNIQUE INDEX %I_pos_orders_number_date_idx ON %I.pos_orders (order_number, date(created_at))',
+      'CREATE UNIQUE INDEX IF NOT EXISTS %I_pos_orders_number_date_idx ON %I.pos_orders (order_number, date(created_at))',
       p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_pos_orders_status_idx ON %I.pos_orders (status)',
+      'CREATE INDEX IF NOT EXISTS %I_pos_orders_status_idx ON %I.pos_orders (status)',
       p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_pos_orders_order_type_idx ON %I.pos_orders (order_type)',
+      'CREATE INDEX IF NOT EXISTS %I_pos_orders_order_type_idx ON %I.pos_orders (order_type)',
       p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_pos_orders_created_at_desc_idx ON %I.pos_orders (created_at DESC)',
+      'CREATE INDEX IF NOT EXISTS %I_pos_orders_created_at_desc_idx ON %I.pos_orders (created_at DESC)',
       p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_pos_orders_discount_id_idx ON %I.pos_orders (discount_id)',
+      'CREATE INDEX IF NOT EXISTS %I_pos_orders_discount_id_idx ON %I.pos_orders (discount_id)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- pos_order_items — almacena precio al momento de la venta (inmutable)
+    -- pos_order_items â€” almacena precio al momento de la venta (inmutable)
     EXECUTE format('
-      CREATE TABLE %I.pos_order_items (
+      CREATE TABLE IF NOT EXISTS pos_order_items (
         id           UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
         order_id     UUID          NOT NULL REFERENCES %I.pos_orders(id) ON DELETE CASCADE,
         product_id   UUID          NOT NULL REFERENCES %I.products(id)   ON DELETE RESTRICT,
@@ -418,16 +427,16 @@ BEGIN
         created_at   TIMESTAMP     DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_pos_order_items_order_id_idx ON %I.pos_order_items (order_id)',
+      'CREATE INDEX IF NOT EXISTS %I_pos_order_items_order_id_idx ON %I.pos_order_items (order_id)',
       p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_pos_order_items_product_id_idx ON %I.pos_order_items (product_id)',
+      'CREATE INDEX IF NOT EXISTS %I_pos_order_items_product_id_idx ON %I.pos_order_items (product_id)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- pos_payments (FK → pos_orders)
+    -- pos_payments (FK â†’ pos_orders)
     EXECUTE format('
-      CREATE TABLE %I.pos_payments (
+      CREATE TABLE IF NOT EXISTS pos_payments (
         id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         order_id         UUID NOT NULL REFERENCES %I.pos_orders(id) ON DELETE RESTRICT,
         payment_method   VARCHAR(50)       NOT NULL DEFAULT ''cash'',
@@ -438,13 +447,13 @@ BEGIN
         created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_pos_payments_order_id_idx ON %I.pos_payments (order_id)',
+      'CREATE INDEX IF NOT EXISTS %I_pos_payments_order_id_idx ON %I.pos_payments (order_id)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- pos_receipts (FK → pos_orders)
+    -- pos_receipts (FK â†’ pos_orders)
     EXECUTE format('
-      CREATE TABLE %I.pos_receipts (
+      CREATE TABLE IF NOT EXISTS pos_receipts (
         id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         order_id       UUID NOT NULL REFERENCES %I.pos_orders(id) ON DELETE CASCADE,
         receipt_number VARCHAR(50) UNIQUE,
@@ -455,9 +464,9 @@ BEGIN
       )', p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- ─── pos_order_discounts (historial de descuentos aplicados) ────────────────
+    -- â”€â”€â”€ pos_order_discounts (historial de descuentos aplicados) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     EXECUTE format('
-      CREATE TABLE %I.pos_order_discounts (
+      CREATE TABLE IF NOT EXISTS pos_order_discounts (
         id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         order_id            UUID NOT NULL REFERENCES %I.pos_orders(id) ON DELETE CASCADE,
         discount_id         UUID REFERENCES %I.pos_discounts(id) ON DELETE SET NULL,
@@ -471,15 +480,15 @@ BEGIN
         created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name, p_schema_name);
 
-    EXECUTE format('CREATE INDEX %I_pos_order_discounts_order_id_idx ON %I.pos_order_discounts (order_id)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_pos_order_discounts_discount_id_idx ON %I.pos_order_discounts (discount_id)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_pos_order_discounts_created_at_idx ON %I.pos_order_discounts (created_at DESC)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_pos_order_discounts_order_id_idx ON %I.pos_order_discounts (order_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_pos_order_discounts_discount_id_idx ON %I.pos_order_discounts (discount_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_pos_order_discounts_created_at_idx ON %I.pos_order_discounts (created_at DESC)', p_schema_name, p_schema_name);
 
     v_table_count := v_table_count + 1;
 
-    -- ─── coupons (cupones específicos) ──────────────────────────────────────────
+    -- â”€â”€â”€ coupons (cupones especÃ­ficos) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     EXECUTE format('
-      CREATE TABLE %I.coupons (
+      CREATE TABLE IF NOT EXISTS coupons (
         id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         code                VARCHAR(50) UNIQUE NOT NULL,
         discount_id         UUID NOT NULL REFERENCES %I.pos_discounts(id) ON DELETE CASCADE,
@@ -491,15 +500,15 @@ BEGIN
         created_by          UUID REFERENCES %I.users(id) ON DELETE SET NULL
       )', p_schema_name, p_schema_name, p_schema_name);
 
-    EXECUTE format('CREATE INDEX %I_coupons_code_idx ON %I.coupons (code)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_coupons_discount_id_idx ON %I.coupons (discount_id)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_coupons_expires_at_idx ON %I.coupons (expires_at)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_coupons_code_idx ON %I.coupons (code)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_coupons_discount_id_idx ON %I.coupons (discount_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_coupons_expires_at_idx ON %I.coupons (expires_at)', p_schema_name, p_schema_name);
 
     v_table_count := v_table_count + 1;
 
     -- cash_register_openings
     EXECUTE format('
-      CREATE TABLE %I.cash_register_openings (
+      CREATE TABLE IF NOT EXISTS cash_register_openings (
         id             SERIAL PRIMARY KEY,
         user_id        VARCHAR(100)  NOT NULL,
         user_name      VARCHAR(255),
@@ -523,12 +532,12 @@ BEGIN
         created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         CONSTRAINT uq_opening_date_user UNIQUE (date, user_id)
       )', p_schema_name);
-    EXECUTE format('CREATE INDEX %I_cash_register_openings_date_idx ON %I.cash_register_openings (date DESC)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_cash_register_openings_date_idx ON %I.cash_register_openings (date DESC)', p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
     -- cash_register_closing
     EXECUTE format('
-      CREATE TABLE %I.cash_register_closing (
+      CREATE TABLE IF NOT EXISTS cash_register_closing (
         id               SERIAL PRIMARY KEY,
         closing_user_id  VARCHAR(50)   NOT NULL,
         closing_date     DATE          NOT NULL,
@@ -556,13 +565,13 @@ BEGIN
         remarks          TEXT,
         created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name);
-    EXECUTE format('CREATE INDEX %I_cash_register_closing_closing_date_idx ON %I.cash_register_closing (closing_date)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_cash_register_closing_created_at_desc_idx ON %I.cash_register_closing (created_at DESC)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_cash_register_closing_closing_date_idx ON %I.cash_register_closing (closing_date)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_cash_register_closing_created_at_desc_idx ON %I.cash_register_closing (created_at DESC)', p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- incomes_extras (ingresos extras de caja — no ventas, sí afectan cuadre)
+    -- incomes_extras (ingresos extras de caja â€” no ventas, sÃ­ afectan cuadre)
     EXECUTE format('
-      CREATE TABLE %I.incomes_extras (
+      CREATE TABLE IF NOT EXISTS incomes_extras (
         id             SERIAL PRIMARY KEY,
         date           DATE           NOT NULL,
         amount         NUMERIC(10,2)  NOT NULL,
@@ -572,17 +581,17 @@ BEGIN
         user_name      VARCHAR(200),
         created_at     TIMESTAMPTZ    DEFAULT NOW()
       )', p_schema_name);
-    EXECUTE format('CREATE INDEX %I_incomes_extras_date_idx ON %I.incomes_extras (date DESC)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_incomes_extras_date_idx ON %I.incomes_extras (date DESC)', p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
   END IF;
 
-  -- ─── INVENTORY ──────────────────────────────────────────────────────────
+  -- â”€â”€â”€ INVENTORY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   IF ANY_MATCH(v_modules, 'inventory') THEN
 
     -- inventory_physical (sin FK)
     EXECUTE format('
-      CREATE TABLE %I.inventory_physical (
+      CREATE TABLE IF NOT EXISTS inventory_physical (
         id            SERIAL PRIMARY KEY,
         name          VARCHAR(150),
         status        VARCHAR(20) NOT NULL DEFAULT ''open'',
@@ -597,28 +606,28 @@ BEGIN
         created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_inventory_physical_status_idx ON %I.inventory_physical (status)',
+      'CREATE INDEX IF NOT EXISTS %I_inventory_physical_status_idx ON %I.inventory_physical (status)',
       p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_inventory_physical_created_at_desc_idx ON %I.inventory_physical (created_at DESC)',
+      'CREATE INDEX IF NOT EXISTS %I_inventory_physical_created_at_desc_idx ON %I.inventory_physical (created_at DESC)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- inventory_physical_categories (FK → inventory_physical, categories)
+    -- inventory_physical_categories (FK â†’ inventory_physical, categories)
     EXECUTE format('
-      CREATE TABLE %I.inventory_physical_categories (
+      CREATE TABLE IF NOT EXISTS inventory_physical_categories (
         id           SERIAL PRIMARY KEY,
         inventory_id INT NOT NULL REFERENCES %I.inventory_physical(id) ON DELETE CASCADE,
         category_id  INT NOT NULL REFERENCES %I.categories(id) ON DELETE CASCADE
       )', p_schema_name, p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_inventory_physical_categories_inventory_idx ON %I.inventory_physical_categories (inventory_id)',
+      'CREATE INDEX IF NOT EXISTS %I_inventory_physical_categories_inventory_idx ON %I.inventory_physical_categories (inventory_id)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- inventory_physical_items (FK → inventory_physical, products)
+    -- inventory_physical_items (FK â†’ inventory_physical, products)
     EXECUTE format('
-      CREATE TABLE %I.inventory_physical_items (
+      CREATE TABLE IF NOT EXISTS inventory_physical_items (
         id            SERIAL PRIMARY KEY,
         inventory_id  INT  NOT NULL REFERENCES %I.inventory_physical(id) ON DELETE CASCADE,
         product_id    UUID NOT NULL REFERENCES %I.products(id) ON DELETE CASCADE,
@@ -630,16 +639,16 @@ BEGIN
         updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_inventory_physical_items_inventory_idx ON %I.inventory_physical_items (inventory_id)',
+      'CREATE INDEX IF NOT EXISTS %I_inventory_physical_items_inventory_idx ON %I.inventory_physical_items (inventory_id)',
       p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_inventory_physical_items_product_idx ON %I.inventory_physical_items (product_id)',
+      'CREATE INDEX IF NOT EXISTS %I_inventory_physical_items_product_idx ON %I.inventory_physical_items (product_id)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- inventory_movements (FK → products)
+    -- inventory_movements (FK â†’ products)
     EXECUTE format('
-      CREATE TABLE %I.inventory_movements (
+      CREATE TABLE IF NOT EXISTS inventory_movements (
         id           SERIAL PRIMARY KEY,
         product_id   UUID NOT NULL REFERENCES %I.products(id) ON DELETE CASCADE,
         type         VARCHAR(20) NOT NULL,
@@ -650,16 +659,16 @@ BEGIN
         created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_inventory_movements_product_idx ON %I.inventory_movements (product_id)',
+      'CREATE INDEX IF NOT EXISTS %I_inventory_movements_product_idx ON %I.inventory_movements (product_id)',
       p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_inventory_movements_type_idx ON %I.inventory_movements (type)',
+      'CREATE INDEX IF NOT EXISTS %I_inventory_movements_type_idx ON %I.inventory_movements (type)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- recipes (FK → categories)
+    -- recipes (FK â†’ categories)
     EXECUTE format('
-      CREATE TABLE %I.recipes (
+      CREATE TABLE IF NOT EXISTS recipes (
         id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         name        VARCHAR(255) NOT NULL,
         description TEXT,
@@ -673,9 +682,9 @@ BEGIN
       )', p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- recipe_ingredients (FK → recipes, products)
+    -- recipe_ingredients (FK â†’ recipes, products)
     EXECUTE format('
-      CREATE TABLE %I.recipe_ingredients (
+      CREATE TABLE IF NOT EXISTS recipe_ingredients (
         id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         recipe_id       UUID NOT NULL REFERENCES %I.recipes(id) ON DELETE CASCADE,
         product_id      UUID REFERENCES %I.products(id) ON DELETE SET NULL,
@@ -687,18 +696,18 @@ BEGIN
         created_at      TIMESTAMP     DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_recipe_ingredients_recipe_idx ON %I.recipe_ingredients (recipe_id)',
+      'CREATE INDEX IF NOT EXISTS %I_recipe_ingredients_recipe_idx ON %I.recipe_ingredients (recipe_id)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
   END IF;
 
-  -- ─── SUPPLIERS ──────────────────────────────────────────────────────────
+  -- â”€â”€â”€ SUPPLIERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   IF ANY_MATCH(v_modules, 'suppliers') THEN
 
     -- suppliers (sin FK)
     EXECUTE format('
-      CREATE TABLE %I.suppliers (
+      CREATE TABLE IF NOT EXISTS suppliers (
         id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         name       VARCHAR(255) NOT NULL,
         tax_id     VARCHAR(50),
@@ -714,12 +723,12 @@ BEGIN
 
   END IF;
 
-  -- ─── PURCHASES ──────────────────────────────────────────────────────────
+  -- â”€â”€â”€ PURCHASES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   IF ANY_MATCH(v_modules, 'purchases') THEN
 
-    -- purchase_orders (FK → suppliers)
+    -- purchase_orders (FK â†’ suppliers)
     EXECUTE format('
-      CREATE TABLE %I.purchase_orders (
+      CREATE TABLE IF NOT EXISTS purchase_orders (
         id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         order_number VARCHAR(50) UNIQUE,
         supplier_id  UUID REFERENCES %I.suppliers(id) ON DELETE RESTRICT,
@@ -735,9 +744,9 @@ BEGIN
       )', p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- purchase_order_items (FK → purchase_orders, products)
+    -- purchase_order_items (FK â†’ purchase_orders, products)
     EXECUTE format('
-      CREATE TABLE %I.purchase_order_items (
+      CREATE TABLE IF NOT EXISTS purchase_order_items (
         id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         purchase_order_id UUID NOT NULL REFERENCES %I.purchase_orders(id) ON DELETE CASCADE,
         product_id        UUID REFERENCES %I.products(id) ON DELETE RESTRICT,
@@ -752,12 +761,12 @@ BEGIN
 
   END IF;
 
-  -- ─── ACCOUNTING (gastos operativos + cuentas por cobrar/pagar) ──────────────
+  -- â”€â”€â”€ ACCOUNTING (gastos operativos + cuentas por cobrar/pagar) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   IF ANY_MATCH(v_modules, 'accounting') THEN
 
-    -- Categorías de gastos (SERIAL id para compatibilidad con routes)
+    -- CategorÃ­as de gastos (SERIAL id para compatibilidad con routes)
     EXECUTE format('
-      CREATE TABLE %I.expense_categories (
+      CREATE TABLE IF NOT EXISTS expense_categories (
         id         SERIAL PRIMARY KEY,
         name       VARCHAR(100) NOT NULL UNIQUE,
         color      VARCHAR(7)   DEFAULT ''#95a5a6'',
@@ -772,7 +781,7 @@ BEGIN
         (''Alquiler'',      ''#f39c12''),
         (''Servicios'',     ''#3498db''),
         (''Proveedores'',   ''#2ecc71''),
-        (''Nómina'',        ''#e74c3c''),
+        (''NÃ³mina'',        ''#e74c3c''),
         (''Publicidad'',    ''#9b59b6''),
         (''Mantenimiento'', ''#1abc9c''),
         (''Transporte'',    ''#e67e22''),
@@ -781,7 +790,7 @@ BEGIN
 
     -- Gastos operativos
     EXECUTE format('
-      CREATE TABLE %I.expenses (
+      CREATE TABLE IF NOT EXISTS expenses (
         id          SERIAL PRIMARY KEY,
         reference   VARCHAR(100),
         description VARCHAR(500),
@@ -796,13 +805,13 @@ BEGIN
       )', p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    EXECUTE format('CREATE INDEX %I_expenses_date_idx          ON %I.expenses (date)',         p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_expenses_category_id_idx   ON %I.expenses (category_id)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_expenses_created_at_idx    ON %I.expenses (created_at DESC)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_expenses_date_idx          ON %I.expenses (date)',         p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_expenses_category_id_idx   ON %I.expenses (category_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_expenses_created_at_idx    ON %I.expenses (created_at DESC)', p_schema_name, p_schema_name);
 
-    -- Categorías de ingresos
+    -- CategorÃ­as de ingresos
     EXECUTE format('
-      CREATE TABLE %I.income_categories (
+      CREATE TABLE IF NOT EXISTS income_categories (
         id         SERIAL PRIMARY KEY,
         name       VARCHAR(100) NOT NULL UNIQUE,
         color      VARCHAR(7)   DEFAULT ''#27ae60'',
@@ -820,7 +829,7 @@ BEGIN
 
     -- Ingresos
     EXECUTE format('
-      CREATE TABLE %I.incomes (
+      CREATE TABLE IF NOT EXISTS incomes (
         id          SERIAL PRIMARY KEY,
         date        DATE          NOT NULL DEFAULT CURRENT_DATE,
         category_id INTEGER REFERENCES %I.income_categories(id) ON DELETE SET NULL,
@@ -832,13 +841,13 @@ BEGIN
       )', p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    EXECUTE format('CREATE INDEX %I_incomes_date_idx        ON %I.incomes (date)',         p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_incomes_category_id_idx ON %I.incomes (category_id)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_incomes_created_at_idx  ON %I.incomes (created_at DESC)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_incomes_date_idx        ON %I.incomes (date)',         p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_incomes_category_id_idx ON %I.incomes (category_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_incomes_created_at_idx  ON %I.incomes (created_at DESC)', p_schema_name, p_schema_name);
 
     -- Cuentas por pagar
     EXECUTE format('
-      CREATE TABLE %I.accounts_payable (
+      CREATE TABLE IF NOT EXISTS accounts_payable (
         id             SERIAL PRIMARY KEY,
         invoice_number VARCHAR(50),
         supplier_name  VARCHAR(255) NOT NULL,
@@ -859,12 +868,12 @@ BEGIN
       )', p_schema_name);
     v_table_count := v_table_count + 1;
 
-    EXECUTE format('CREATE INDEX %I_accounts_payable_status_idx   ON %I.accounts_payable (status)',   p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_accounts_payable_due_date_idx ON %I.accounts_payable (due_date)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_accounts_payable_status_idx   ON %I.accounts_payable (status)',   p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_accounts_payable_due_date_idx ON %I.accounts_payable (due_date)', p_schema_name, p_schema_name);
 
     -- Pagos de cuentas por pagar
     EXECUTE format('
-      CREATE TABLE %I.accounts_payable_payments (
+      CREATE TABLE IF NOT EXISTS accounts_payable_payments (
         id               SERIAL PRIMARY KEY,
         payable_id       INTEGER NOT NULL REFERENCES %I.accounts_payable(id) ON DELETE CASCADE,
         payment_date     DATE    DEFAULT CURRENT_DATE,
@@ -875,11 +884,11 @@ BEGIN
       )', p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    EXECUTE format('CREATE INDEX %I_accounts_payable_payments_payable_id_idx ON %I.accounts_payable_payments (payable_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_accounts_payable_payments_payable_id_idx ON %I.accounts_payable_payments (payable_id)', p_schema_name, p_schema_name);
 
     -- Cuentas por cobrar
     EXECUTE format('
-      CREATE TABLE %I.accounts_receivable (
+      CREATE TABLE IF NOT EXISTS accounts_receivable (
         id           SERIAL PRIMARY KEY,
         order_number VARCHAR(50),
         invoice_number VARCHAR(50),
@@ -898,17 +907,17 @@ BEGIN
       )', p_schema_name);
     v_table_count := v_table_count + 1;
 
-    EXECUTE format('CREATE INDEX %I_accounts_receivable_status_idx      ON %I.accounts_receivable (status)',    p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_accounts_receivable_customer_id_idx ON %I.accounts_receivable (customer_id)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_accounts_receivable_due_date_idx    ON %I.accounts_receivable (due_date)',  p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_accounts_receivable_status_idx      ON %I.accounts_receivable (status)',    p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_accounts_receivable_customer_id_idx ON %I.accounts_receivable (customer_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_accounts_receivable_due_date_idx    ON %I.accounts_receivable (due_date)',  p_schema_name, p_schema_name);
 
   END IF;
 
-  -- ─── TABLES — mesas del restaurante (FK → pos_orders) ───────────────────
+  -- â”€â”€â”€ TABLES â€” mesas del restaurante (FK â†’ pos_orders) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   IF ANY_MATCH(v_modules, 'tables') THEN
 
     EXECUTE format('
-      CREATE TABLE %I.dining_tables (
+      CREATE TABLE IF NOT EXISTS dining_tables (
         id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         table_number     INT NOT NULL UNIQUE,
         seats            INT DEFAULT 4,
@@ -918,17 +927,17 @@ BEGIN
         created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_dining_tables_status_idx ON %I.dining_tables (status)',
+      'CREATE INDEX IF NOT EXISTS %I_dining_tables_status_idx ON %I.dining_tables (status)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
   END IF;
 
-  -- ─── KITCHEN (FK → pos_orders) ──────────────────────────────────────────
+  -- â”€â”€â”€ KITCHEN (FK â†’ pos_orders) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   IF ANY_MATCH(v_modules, 'kitchen') THEN
 
     EXECUTE format('
-      CREATE TABLE %I.kitchen_tasks (
+      CREATE TABLE IF NOT EXISTS kitchen_tasks (
         id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         order_id    UUID NOT NULL REFERENCES %I.pos_orders(id) ON DELETE CASCADE,
         status      VARCHAR(20) NOT NULL DEFAULT ''pending'',
@@ -939,17 +948,17 @@ BEGIN
         created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_kitchen_tasks_status_idx ON %I.kitchen_tasks (status)',
+      'CREATE INDEX IF NOT EXISTS %I_kitchen_tasks_status_idx ON %I.kitchen_tasks (status)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
   END IF;
 
-  -- ─── RESERVATIONS (FK → customers) ──────────────────────────────────────
+  -- â”€â”€â”€ RESERVATIONS (FK â†’ customers) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   IF ANY_MATCH(v_modules, 'reservations') THEN
 
     EXECUTE format('
-      CREATE TABLE %I.reservations (
+      CREATE TABLE IF NOT EXISTS reservations (
         id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         customer_id      UUID REFERENCES %I.customers(id) ON DELETE SET NULL,
         customer_name    VARCHAR(255),
@@ -962,20 +971,20 @@ BEGIN
         updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_reservations_reservation_time_idx ON %I.reservations (reservation_time)',
+      'CREATE INDEX IF NOT EXISTS %I_reservations_reservation_time_idx ON %I.reservations (reservation_time)',
       p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_reservations_status_idx ON %I.reservations (status)',
+      'CREATE INDEX IF NOT EXISTS %I_reservations_status_idx ON %I.reservations (status)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
   END IF;
 
-  -- ─── DELIVERY (FK → pos_orders, customers, users) ───────────────────────
+  -- â”€â”€â”€ DELIVERY (FK â†’ pos_orders, customers, users) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   IF ANY_MATCH(v_modules, 'delivery') THEN
 
     EXECUTE format('
-      CREATE TABLE %I.delivery_orders (
+      CREATE TABLE IF NOT EXISTS delivery_orders (
         id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         order_id     UUID NOT NULL REFERENCES %I.pos_orders(id) ON DELETE CASCADE,
         customer_id  UUID REFERENCES %I.customers(id) ON DELETE SET NULL,
@@ -988,17 +997,17 @@ BEGIN
         created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name, p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_delivery_orders_status_idx ON %I.delivery_orders (status)',
+      'CREATE INDEX IF NOT EXISTS %I_delivery_orders_status_idx ON %I.delivery_orders (status)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
   END IF;
 
-  -- ─── ROUTES (FK → users) ────────────────────────────────────────────────
+  -- â”€â”€â”€ ROUTES (FK â†’ users) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   IF ANY_MATCH(v_modules, 'routes') THEN
 
     EXECUTE format('
-      CREATE TABLE %I.delivery_routes (
+      CREATE TABLE IF NOT EXISTS delivery_routes (
         id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         driver_id   UUID REFERENCES %I.users(id) ON DELETE SET NULL,
         date        DATE        NOT NULL,
@@ -1012,11 +1021,11 @@ BEGIN
 
   END IF;
 
-  -- ─── TRACKING (FK → users) ──────────────────────────────────────────────
+  -- â”€â”€â”€ TRACKING (FK â†’ users) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   IF ANY_MATCH(v_modules, 'tracking') THEN
 
     EXECUTE format('
-      CREATE TABLE %I.tracking_gps (
+      CREATE TABLE IF NOT EXISTS tracking_gps (
         id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         driver_id  UUID REFERENCES %I.users(id) ON DELETE CASCADE,
         latitude   NUMERIC(10,7) NOT NULL,
@@ -1025,18 +1034,18 @@ BEGIN
         tracked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_tracking_gps_driver_id_tracked_at_idx ON %I.tracking_gps (driver_id, tracked_at DESC)',
+      'CREATE INDEX IF NOT EXISTS %I_tracking_gps_driver_id_tracked_at_idx ON %I.tracking_gps (driver_id, tracked_at DESC)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
   END IF;
 
-  -- ─── APPOINTMENTS ───────────────────────────────────────────────────────
+  -- â”€â”€â”€ APPOINTMENTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   IF ANY_MATCH(v_modules, 'appointments') THEN
 
     -- services (sin FK)
     EXECUTE format('
-      CREATE TABLE %I.services (
+      CREATE TABLE IF NOT EXISTS services (
         id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         name             VARCHAR(255)  NOT NULL,
         description      TEXT,
@@ -1047,9 +1056,9 @@ BEGIN
       )', p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- appointments (FK → services, customers)
+    -- appointments (FK â†’ services, customers)
     EXECUTE format('
-      CREATE TABLE %I.appointments (
+      CREATE TABLE IF NOT EXISTS appointments (
         id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         service_id    UUID NOT NULL REFERENCES %I.services(id) ON DELETE RESTRICT,
         customer_id   UUID REFERENCES %I.customers(id) ON DELETE SET NULL,
@@ -1061,21 +1070,21 @@ BEGIN
         updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_appointments_scheduled_for_idx ON %I.appointments (scheduled_for)',
+      'CREATE INDEX IF NOT EXISTS %I_appointments_scheduled_for_idx ON %I.appointments (scheduled_for)',
       p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_appointments_status_idx ON %I.appointments (status)',
+      'CREATE INDEX IF NOT EXISTS %I_appointments_status_idx ON %I.appointments (status)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
   END IF;
 
-  -- ─── EMPLOYEES ──────────────────────────────────────────────────────────
+  -- â”€â”€â”€ EMPLOYEES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   IF ANY_MATCH(v_modules, 'employees') THEN
 
-    -- employees (FK → users)
+    -- employees (FK â†’ users)
     EXECUTE format('
-      CREATE TABLE %I.employees (
+      CREATE TABLE IF NOT EXISTS employees (
         id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         user_id         UUID REFERENCES %I.users(id) ON DELETE SET NULL,
         full_name       VARCHAR(255) NOT NULL,
@@ -1092,9 +1101,9 @@ BEGIN
       )', p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- worked_hours (FK → employees)
+    -- worked_hours (FK â†’ employees)
     EXECUTE format('
-      CREATE TABLE %I.worked_hours (
+      CREATE TABLE IF NOT EXISTS worked_hours (
         id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         employee_id UUID NOT NULL REFERENCES %I.employees(id) ON DELETE CASCADE,
         worked_date DATE         NOT NULL,
@@ -1103,13 +1112,13 @@ BEGIN
         created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_worked_hours_employee_id_worked_date_idx ON %I.worked_hours (employee_id, worked_date)',
+      'CREATE INDEX IF NOT EXISTS %I_worked_hours_employee_id_worked_date_idx ON %I.worked_hours (employee_id, worked_date)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- attendance_records (FK → employees)
+    -- attendance_records (FK â†’ employees)
     EXECUTE format('
-      CREATE TABLE %I.attendance_records (
+      CREATE TABLE IF NOT EXISTS attendance_records (
         id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         employee_id UUID NOT NULL REFERENCES %I.employees(id) ON DELETE CASCADE,
         type        VARCHAR(20) NOT NULL,
@@ -1121,13 +1130,13 @@ BEGIN
         created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_attendance_records_employee_id_event_time_idx ON %I.attendance_records (employee_id, event_time)',
+      'CREATE INDEX IF NOT EXISTS %I_attendance_records_employee_id_event_time_idx ON %I.attendance_records (employee_id, event_time)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- employee_schedules (FK → employees)
+    -- employee_schedules (FK â†’ employees)
     EXECUTE format('
-      CREATE TABLE %I.employee_schedules (
+      CREATE TABLE IF NOT EXISTS employee_schedules (
         id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         employee_id   UUID NOT NULL REFERENCES %I.employees(id) ON DELETE CASCADE,
         schedule_date DATE NOT NULL,
@@ -1138,13 +1147,13 @@ BEGIN
         created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_employee_schedules_employee_id_schedule_date_idx ON %I.employee_schedules (employee_id, schedule_date)',
+      'CREATE INDEX IF NOT EXISTS %I_employee_schedules_employee_id_schedule_date_idx ON %I.employee_schedules (employee_id, schedule_date)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- employee_leaves (FK → employees)
+    -- employee_leaves (FK â†’ employees)
     EXECUTE format('
-      CREATE TABLE %I.employee_leaves (
+      CREATE TABLE IF NOT EXISTS employee_leaves (
         id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         employee_id UUID NOT NULL REFERENCES %I.employees(id) ON DELETE CASCADE,
         leave_type  VARCHAR(30) NOT NULL,
@@ -1155,13 +1164,13 @@ BEGIN
         created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_employee_leaves_employee_id_leave_type_start_date_idx ON %I.employee_leaves (employee_id, leave_type, start_date)',
+      'CREATE INDEX IF NOT EXISTS %I_employee_leaves_employee_id_leave_type_start_date_idx ON %I.employee_leaves (employee_id, leave_type, start_date)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- employee_payrolls (FK → employees)
+    -- employee_payrolls (FK â†’ employees)
     EXECUTE format('
-      CREATE TABLE %I.employee_payrolls (
+      CREATE TABLE IF NOT EXISTS employee_payrolls (
         id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         employee_id  UUID NOT NULL REFERENCES %I.employees(id) ON DELETE CASCADE,
         period_start DATE NOT NULL,
@@ -1179,13 +1188,13 @@ BEGIN
         created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_employee_payrolls_employee_id_period_idx ON %I.employee_payrolls (employee_id, period_start)',
+      'CREATE INDEX IF NOT EXISTS %I_employee_payrolls_employee_id_period_idx ON %I.employee_payrolls (employee_id, period_start)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- employee_payroll_details (FK → employee_payrolls)
+    -- employee_payroll_details (FK â†’ employee_payrolls)
     EXECUTE format('
-      CREATE TABLE %I.employee_payroll_details (
+      CREATE TABLE IF NOT EXISTS employee_payroll_details (
         id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         payroll_id UUID NOT NULL REFERENCES %I.employee_payrolls(id) ON DELETE CASCADE,
         concept    VARCHAR(100)  NOT NULL,
@@ -1194,17 +1203,17 @@ BEGIN
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_employee_payroll_details_payroll_id_idx ON %I.employee_payroll_details (payroll_id)',
+      'CREATE INDEX IF NOT EXISTS %I_employee_payroll_details_payroll_id_idx ON %I.employee_payroll_details (payroll_id)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
   END IF;
 
-  -- ─── CRM (FK → customers, users) ────────────────────────────────────────
+  -- â”€â”€â”€ CRM (FK â†’ customers, users) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   IF ANY_MATCH(v_modules, 'crm') THEN
 
     EXECUTE format('
-      CREATE TABLE %I.crm_interactions (
+      CREATE TABLE IF NOT EXISTS crm_interactions (
         id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         customer_id UUID NOT NULL REFERENCES %I.customers(id) ON DELETE CASCADE,
         type        VARCHAR(50) NOT NULL,
@@ -1214,13 +1223,13 @@ BEGIN
         created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_crm_interactions_customer_id_idx ON %I.crm_interactions (customer_id)',
+      'CREATE INDEX IF NOT EXISTS %I_crm_interactions_customer_id_idx ON %I.crm_interactions (customer_id)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
     -- Segmentos personalizados de clientes
     EXECUTE format('
-      CREATE TABLE %I.crm_custom_segments (
+      CREATE TABLE IF NOT EXISTS crm_custom_segments (
         id          SERIAL PRIMARY KEY,
         name        VARCHAR(255) NOT NULL,
         description TEXT,
@@ -1231,9 +1240,9 @@ BEGIN
       )', p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- Campañas de email
+    -- CampaÃ±as de email
     EXECUTE format('
-      CREATE TABLE %I.email_campaigns (
+      CREATE TABLE IF NOT EXISTS email_campaigns (
         id         SERIAL PRIMARY KEY,
         title      VARCHAR(255) NOT NULL,
         subject    VARCHAR(500) NOT NULL,
@@ -1246,16 +1255,16 @@ BEGIN
       )', p_schema_name);
     v_table_count := v_table_count + 1;
 
-    EXECUTE format('CREATE INDEX %I_email_campaigns_is_active_idx ON %I.email_campaigns (is_active)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_email_campaigns_created_at_idx ON %I.email_campaigns (created_at DESC)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_email_campaigns_is_active_idx ON %I.email_campaigns (is_active)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_email_campaigns_created_at_idx ON %I.email_campaigns (created_at DESC)', p_schema_name, p_schema_name);
 
   END IF;
 
-  -- ─── LOYALTY (FK → customers) ───────────────────────────────────────────
+  -- â”€â”€â”€ LOYALTY (FK â†’ customers) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   IF ANY_MATCH(v_modules, 'loyalty') THEN
 
     EXECUTE format('
-      CREATE TABLE %I.loyalty_points (
+      CREATE TABLE IF NOT EXISTS loyalty_points (
         id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         customer_id  UUID NOT NULL REFERENCES %I.customers(id) ON DELETE CASCADE,
         points       INT  NOT NULL DEFAULT 0,
@@ -1265,17 +1274,17 @@ BEGIN
         created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_loyalty_points_customer_id_idx ON %I.loyalty_points (customer_id)',
+      'CREATE INDEX IF NOT EXISTS %I_loyalty_points_customer_id_idx ON %I.loyalty_points (customer_id)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
   END IF;
 
-  -- ─── QUEUE (FK → customers) ─────────────────────────────────────────────
+  -- â”€â”€â”€ QUEUE (FK â†’ customers) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   IF ANY_MATCH(v_modules, 'queue') THEN
 
     EXECUTE format('
-      CREATE TABLE %I.service_queue (
+      CREATE TABLE IF NOT EXISTS service_queue (
         id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         queue_type  VARCHAR(50) NOT NULL DEFAULT ''general'',
         ticket_num  INT         NOT NULL,
@@ -1286,18 +1295,18 @@ BEGIN
         created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_service_queue_status_created_at_idx ON %I.service_queue (status, created_at)',
+      'CREATE INDEX IF NOT EXISTS %I_service_queue_status_created_at_idx ON %I.service_queue (status, created_at)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
   END IF;
 
-  -- ─── ECOMMERCE ──────────────────────────────────────────────────────────
+  -- â”€â”€â”€ ECOMMERCE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   IF ANY_MATCH(v_modules, 'ecommerce') THEN
 
-    -- ecommerce_orders (FK → customers)
+    -- ecommerce_orders (FK â†’ customers)
     EXECUTE format('
-      CREATE TABLE %I.ecommerce_orders (
+      CREATE TABLE IF NOT EXISTS ecommerce_orders (
         id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         order_number     VARCHAR(50)   NOT NULL UNIQUE,
         customer_id      UUID REFERENCES %I.customers(id) ON DELETE SET NULL,
@@ -1311,13 +1320,13 @@ BEGIN
         updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_ecommerce_orders_status_idx ON %I.ecommerce_orders (status)',
+      'CREATE INDEX IF NOT EXISTS %I_ecommerce_orders_status_idx ON %I.ecommerce_orders (status)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- ecommerce_order_items (FK → ecommerce_orders, products)
+    -- ecommerce_order_items (FK â†’ ecommerce_orders, products)
     EXECUTE format('
-      CREATE TABLE %I.ecommerce_order_items (
+      CREATE TABLE IF NOT EXISTS ecommerce_order_items (
         id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         order_id     UUID NOT NULL REFERENCES %I.ecommerce_orders(id) ON DELETE CASCADE,
         product_id   UUID REFERENCES %I.products(id) ON DELETE RESTRICT,
@@ -1331,11 +1340,11 @@ BEGIN
 
   END IF;
 
-  -- ─── NOTIFICATIONS (FK → users) ─────────────────────────────────────────
+  -- â”€â”€â”€ NOTIFICATIONS (FK â†’ users) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   IF ANY_MATCH(v_modules, 'notifications') THEN
 
     EXECUTE format('
-      CREATE TABLE %I.notifications (
+      CREATE TABLE IF NOT EXISTS notifications (
         id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         user_id    UUID REFERENCES %I.users(id) ON DELETE CASCADE,
         type       VARCHAR(50) NOT NULL,
@@ -1346,13 +1355,13 @@ BEGIN
         created_at TIMESTAMPTZ DEFAULT NOW()
       )', p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_notifications_user_id_is_read_idx ON %I.notifications (user_id, is_read)',
+      'CREATE INDEX IF NOT EXISTS %I_notifications_user_id_is_read_idx ON %I.notifications (user_id, is_read)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
     -- Plantillas de email
     EXECUTE format('
-      CREATE TABLE %I.email_templates (
+      CREATE TABLE IF NOT EXISTS email_templates (
         id         SERIAL PRIMARY KEY,
         name       VARCHAR(255) NOT NULL,
         subject    VARCHAR(500) NOT NULL,
@@ -1364,12 +1373,12 @@ BEGIN
       )', p_schema_name);
     v_table_count := v_table_count + 1;
 
-    EXECUTE format('CREATE INDEX %I_email_templates_is_active_idx  ON %I.email_templates (is_active)',   p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_email_templates_created_at_idx ON %I.email_templates (created_at DESC)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_email_templates_is_active_idx  ON %I.email_templates (is_active)',   p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_email_templates_created_at_idx ON %I.email_templates (created_at DESC)', p_schema_name, p_schema_name);
 
     -- Registro de emails enviados
     EXECUTE format('
-      CREATE TABLE %I.email_logs (
+      CREATE TABLE IF NOT EXISTS email_logs (
         id               SERIAL PRIMARY KEY,
         template_id      INTEGER,
         recipient        VARCHAR(500),
@@ -1386,12 +1395,12 @@ BEGIN
       )', p_schema_name);
     v_table_count := v_table_count + 1;
 
-    EXECUTE format('CREATE INDEX %I_email_logs_status_idx     ON %I.email_logs (status)',          p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_email_logs_created_at_idx ON %I.email_logs (created_at DESC)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_email_logs_status_idx     ON %I.email_logs (status)',          p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_email_logs_created_at_idx ON %I.email_logs (created_at DESC)', p_schema_name, p_schema_name);
 
     -- Suscripciones push (WebPush)
     EXECUTE format('
-      CREATE TABLE %I.push_subscriptions (
+      CREATE TABLE IF NOT EXISTS push_subscriptions (
         id          SERIAL PRIMARY KEY,
         endpoint    TEXT        NOT NULL UNIQUE,
         p256dh      VARCHAR(500) NOT NULL,
@@ -1402,11 +1411,11 @@ BEGIN
       )', p_schema_name);
     v_table_count := v_table_count + 1;
 
-    EXECUTE format('CREATE INDEX %I_push_subscriptions_user_id_idx ON %I.push_subscriptions (user_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_push_subscriptions_user_id_idx ON %I.push_subscriptions (user_id)', p_schema_name, p_schema_name);
 
     -- Historial de notificaciones push enviadas
     EXECUTE format('
-      CREATE TABLE %I.push_notifications_history (
+      CREATE TABLE IF NOT EXISTS push_notifications_history (
         id           SERIAL PRIMARY KEY,
         title        VARCHAR(255) NOT NULL,
         body         TEXT,
@@ -1419,11 +1428,11 @@ BEGIN
       )', p_schema_name);
     v_table_count := v_table_count + 1;
 
-    EXECUTE format('CREATE INDEX %I_push_history_created_at_idx ON %I.push_notifications_history (created_at DESC)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_push_history_created_at_idx ON %I.push_notifications_history (created_at DESC)', p_schema_name, p_schema_name);
 
     -- Notificaciones programadas
     EXECUTE format('
-      CREATE TABLE %I.scheduled_notifications (
+      CREATE TABLE IF NOT EXISTS scheduled_notifications (
         id          SERIAL PRIMARY KEY,
         title       VARCHAR(255) NOT NULL,
         message     TEXT         NOT NULL,
@@ -1437,17 +1446,17 @@ BEGIN
       )', p_schema_name);
     v_table_count := v_table_count + 1;
 
-    EXECUTE format('CREATE INDEX %I_scheduled_notif_schedule_at_idx ON %I.scheduled_notifications (schedule_at)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_scheduled_notif_status_idx      ON %I.scheduled_notifications (status)',      p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_scheduled_notif_schedule_at_idx ON %I.scheduled_notifications (schedule_at)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_scheduled_notif_status_idx      ON %I.scheduled_notifications (status)',      p_schema_name, p_schema_name);
 
   END IF;
 
-  -- ─── EINVOICING (SRI Ecuador) ────────────────────────────────────────────
+  -- â”€â”€â”€ EINVOICING (SRI Ecuador) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   IF ANY_MATCH(v_modules, 'einvoicing') THEN
 
     -- einvoice_config (sin FK; INT id + CHECK garantiza una sola fila)
     EXECUTE format('
-      CREATE TABLE %I.einvoice_config (
+      CREATE TABLE IF NOT EXISTS einvoice_config (
         id                        INT PRIMARY KEY DEFAULT 1,
         ruc                       VARCHAR(13),
         razon_social              VARCHAR(300),
@@ -1473,9 +1482,9 @@ BEGIN
       p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- einvoices (FKs sueltos — no bloquear si pos/customers no están activos)
+    -- einvoices (FKs sueltos â€” no bloquear si pos/customers no estÃ¡n activos)
     EXECUTE format('
-      CREATE TABLE %I.einvoices (
+      CREATE TABLE IF NOT EXISTS einvoices (
         id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         order_id       UUID,
         invoice_number VARCHAR(20),
@@ -1502,30 +1511,30 @@ BEGIN
       )', p_schema_name);
 
     EXECUTE format(
-      'CREATE INDEX %I_einvoices_order_id_idx ON %I.einvoices (order_id)',
+      'CREATE INDEX IF NOT EXISTS %I_einvoices_order_id_idx ON %I.einvoices (order_id)',
       p_schema_name, p_schema_name);
 
     EXECUTE format(
-      'CREATE INDEX %I_einvoices_status_idx ON %I.einvoices (status)',
+      'CREATE INDEX IF NOT EXISTS %I_einvoices_status_idx ON %I.einvoices (status)',
       p_schema_name, p_schema_name);
 
     EXECUTE format(
-      'CREATE INDEX %I_einvoices_access_key_idx ON %I.einvoices (access_key)',
+      'CREATE INDEX IF NOT EXISTS %I_einvoices_access_key_idx ON %I.einvoices (access_key)',
       p_schema_name, p_schema_name);
 
     EXECUTE format(
-      'CREATE INDEX %I_einvoices_created_at_desc_idx ON %I.einvoices (created_at DESC)',
+      'CREATE INDEX IF NOT EXISTS %I_einvoices_created_at_desc_idx ON %I.einvoices (created_at DESC)',
       p_schema_name, p_schema_name);
 
     EXECUTE format(
-      'CREATE INDEX %I_einvoices_discount_amount_idx ON %I.einvoices (discount_amount)',
+      'CREATE INDEX IF NOT EXISTS %I_einvoices_discount_amount_idx ON %I.einvoices (discount_amount)',
       p_schema_name, p_schema_name);
 
     v_table_count := v_table_count + 1;
 
-    -- Notas de crédito
+    -- Notas de crÃ©dito
     EXECUTE format('
-      CREATE TABLE %I.credit_notes (
+      CREATE TABLE IF NOT EXISTS credit_notes (
         id                SERIAL PRIMARY KEY,
         invoice_id        UUID REFERENCES %I.einvoices(id) ON DELETE SET NULL,
         reference_invoice VARCHAR(50),
@@ -1543,21 +1552,21 @@ BEGIN
       )', p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    EXECUTE format('CREATE INDEX %I_credit_notes_invoice_id_idx ON %I.credit_notes (invoice_id)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX %I_credit_notes_created_at_idx ON %I.credit_notes (created_at DESC)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_credit_notes_invoice_id_idx ON %I.credit_notes (invoice_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_credit_notes_created_at_idx ON %I.credit_notes (created_at DESC)', p_schema_name, p_schema_name);
 
   END IF;
 
 
 
-  -- ─── RETAIL ─────────────────────────────────────────────────────────────
-  -- El módulo retail extiende pos con sesiones de caja y configuración
-  -- específica de tienda (modo escaneo, precios en visor, etc.)
+  -- â”€â”€â”€ RETAIL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  -- El mÃ³dulo retail extiende pos con sesiones de caja y configuraciÃ³n
+  -- especÃ­fica de tienda (modo escaneo, precios en visor, etc.)
   IF ANY_MATCH(v_modules, 'retail') THEN
 
     -- retail_settings (una fila por negocio, extiende settings con opciones retail)
     EXECUTE format('
-      CREATE TABLE %I.retail_settings (
+      CREATE TABLE IF NOT EXISTS retail_settings (
         id                       INT PRIMARY KEY DEFAULT 1,
         barcode_scan_enabled     BOOLEAN       DEFAULT true,
         show_stock_in_pos        BOOLEAN       DEFAULT true,
@@ -1575,9 +1584,9 @@ BEGIN
       p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- retail_sessions (turno de cajero: apertura → cierre, agrupa ventas del turno)
+    -- retail_sessions (turno de cajero: apertura â†’ cierre, agrupa ventas del turno)
     EXECUTE format('
-      CREATE TABLE %I.retail_sessions (
+      CREATE TABLE IF NOT EXISTS retail_sessions (
         id              UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
         cashier_id      UUID          REFERENCES %I.users(id) ON DELETE SET NULL,
         cashier_name    VARCHAR(255),
@@ -1596,19 +1605,19 @@ BEGIN
         notes           TEXT
       )', p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_retail_sessions_status_idx ON %I.retail_sessions (status)',
+      'CREATE INDEX IF NOT EXISTS %I_retail_sessions_status_idx ON %I.retail_sessions (status)',
       p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_retail_sessions_cashier_id_idx ON %I.retail_sessions (cashier_id)',
+      'CREATE INDEX IF NOT EXISTS %I_retail_sessions_cashier_id_idx ON %I.retail_sessions (cashier_id)',
       p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_retail_sessions_opened_at_idx ON %I.retail_sessions (opened_at DESC)',
+      'CREATE INDEX IF NOT EXISTS %I_retail_sessions_opened_at_idx ON %I.retail_sessions (opened_at DESC)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
-    -- retail_session_orders (vincula ventas retail con su sesión de turno)
+    -- retail_session_orders (vincula ventas retail con su sesiÃ³n de turno)
     EXECUTE format('
-      CREATE TABLE %I.retail_session_orders (
+      CREATE TABLE IF NOT EXISTS retail_session_orders (
         id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         session_id UUID NOT NULL REFERENCES %I.retail_sessions(id) ON DELETE CASCADE,
         order_id   UUID NOT NULL REFERENCES %I.pos_orders(id)      ON DELETE CASCADE,
@@ -1616,17 +1625,17 @@ BEGIN
         CONSTRAINT uq_session_order UNIQUE (order_id)
       )', p_schema_name, p_schema_name, p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_retail_session_orders_session_id_idx ON %I.retail_session_orders (session_id)',
+      'CREATE INDEX IF NOT EXISTS %I_retail_session_orders_session_id_idx ON %I.retail_session_orders (session_id)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
   END IF;
 
-  -- ─── REPORTS (sin FK) ───────────────────────────────────────────────────
+  -- â”€â”€â”€ REPORTS (sin FK) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   IF ANY_MATCH(v_modules, 'reports') THEN
 
     EXECUTE format('
-      CREATE TABLE %I.reports_cache (
+      CREATE TABLE IF NOT EXISTS reports_cache (
         id           SERIAL PRIMARY KEY,
         report_type  VARCHAR(100) NOT NULL,
         params       JSONB,
@@ -1635,22 +1644,22 @@ BEGIN
         expires_at   TIMESTAMP
       )', p_schema_name);
     EXECUTE format(
-      'CREATE INDEX %I_reports_cache_report_type_generated_at_idx ON %I.reports_cache (report_type, generated_at DESC)',
+      'CREATE INDEX IF NOT EXISTS %I_reports_cache_report_type_generated_at_idx ON %I.reports_cache (report_type, generated_at DESC)',
       p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
   END IF;
 
-  -- ══════════════════════════════════════════════════════════════════════════
+  -- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
   -- 7. Datos iniciales
-  -- ══════════════════════════════════════════════════════════════════════════
+  -- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
   EXECUTE format(
     'INSERT INTO %I.business_profile (id, legal_name) VALUES (1, %L) ON CONFLICT DO NOTHING',
     p_schema_name, v_request.business_name);
 
-  -- ══════════════════════════════════════════════════════════════════════════
+  -- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
   -- 8. Resultado
-  -- ══════════════════════════════════════════════════════════════════════════
+  -- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
   v_result := v_result || jsonb_build_object(
     'success',         true,
     'schema_name',     p_schema_name,
@@ -1668,3 +1677,6 @@ EXCEPTION WHEN OTHERS THEN
   );
 END;
 $$ LANGUAGE plpgsql;
+
+
+

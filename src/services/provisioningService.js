@@ -50,6 +50,15 @@ export const provisionBusinessFromRequest = async (requestId, adminId) => {
     const businessId = uuidv4();
     const schemaName = `tenant_${req.slug.replace(/-/g, '_')}`;
 
+    // Verificar que no exista ya un negocio con el mismo slug/schema
+    const { rows: existingBiz } = await client.query(
+      `SELECT id FROM public.businesses WHERE slug = $1 OR schema_name = $2 LIMIT 1`,
+      [req.slug, schemaName]
+    );
+    if (existingBiz.length > 0) {
+      throw new Error(`Business with slug '${req.slug}' is already provisioned`);
+    }
+
     await client.query(
       `INSERT INTO public.businesses
          (id, slug, name, business_type_id, schema_name,
