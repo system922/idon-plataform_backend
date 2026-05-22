@@ -162,21 +162,34 @@ export async function emitInvoice(schema, opts) {
       ivaRatePorcentual
     });
 
-    // Detalle de items (usando los valores que ya vienen del frontend con descuento aplicado)
+    // Detalle de items — cada item usa su propia tarifa IVA (0% o la tarifa global)
+    // Si iva_amount == 0, el item es exento de IVA (codigoPorcentaje=0).
+    const ivaGroupsForTotal = {};  // { tasa: { base: 0, valor: 0 } }
+
     const detalleItems = (opts.items || []).map((item) => {
       const qty = parseFloat(item.qty || item.quantity || 1);
       const unitPrice = parseFloat(item.unit_price || 0);
       const subtotalItem = parseFloat(item.subtotal || 0);
       const ivaItem = parseFloat(item.iva_amount || 0);
-      const totalItem = subtotalItem + ivaItem;
-      
-      // Calcular descuento por item (si existe)
-      let descuentoItem = 0;
-      if (totalDescuento > 0 && subtotalConDescuento + ivaAmountTotal > 0) {
-        const proporcion = totalItem / (subtotalConDescuento + ivaAmountTotal + totalDescuento);
-        descuentoItem = totalDescuento * proporcion;
+
+      // Determinar tasa IVA real del item: si no tiene IVA → 0%, sino usar tasa global
+      const itemIvaRate = ivaItem === 0 ? 0 : ivaRatePorcentual;
+
+      // Acumular para totalConImpuestos
+      if (!ivaGroupsForTotal[itemIvaRate]) {
+        ivaGroupsForTotal[itemIvaRate] = { base: 0, valor: 0 };
       }
-      
+      ivaGroupsForTotal[itemIvaRate].base  += subtotalItem;
+      ivaGroupsForTotal[itemIvaRate].valor += ivaItem;
+
+      // Descuento proporcional por item
+      let descuentoItem = 0;
+      const totalGlobal = subtotalConDescuento + ivaAmountTotal + totalDescuento;
+      if (totalDescuento > 0 && totalGlobal > 0) {
+        const totalItem = subtotalItem + ivaItem;
+        descuentoItem = totalDescuento * (totalItem / totalGlobal);
+      }
+
       return {
         codigoPrincipal: item.code || 'PROD',
         codigoAuxiliar: item.aux_code || '',
@@ -188,14 +201,32 @@ export async function emitInvoice(schema, opts) {
         impuestos: {
           impuesto: [{
             codigo: 2,
-            codigoPorcentaje: ivaCode(ivaRatePorcentual),
-            tarifa: ivaRatePorcentual,
+            codigoPorcentaje: ivaCode(itemIvaRate),
+            tarifa: itemIvaRate,
             baseImponible: subtotalItem,
             valor: ivaItem,
           }],
         },
       };
     });
+
+    // totalConImpuestos: un bloque por cada tasa IVA distinta encontrada
+    const totalImpuestoArray = Object.entries(ivaGroupsForTotal).map(([rate, g]) => ({
+      codigo: 2,
+      codigoPorcentaje: ivaCode(Number(rate)),
+      baseImponible: Math.round(g.base  * 100) / 100,
+      valor:         Math.round(g.valor * 100) / 100,
+    }));
+
+    // Si no hay ningún grupo (ej. lista vacía), agregar bloque vacío con tasa global
+    if (totalImpuestoArray.length === 0) {
+      totalImpuestoArray.push({
+        codigo: 2,
+        codigoPorcentaje: ivaCode(ivaRatePorcentual),
+        baseImponible: subtotalConDescuento,
+        valor: ivaAmountTotal,
+      });
+    }
 
     const comprobante = {
       infoTributaria: {
@@ -222,12 +253,7 @@ export async function emitInvoice(schema, opts) {
         importeTotal: totalFactura,
         moneda: 'USD',
         totalConImpuestos: {
-          totalImpuesto: [{
-            codigo: 2,
-            codigoPorcentaje: ivaCode(ivaRatePorcentual),
-            baseImponible: subtotalConDescuento,
-            valor: ivaAmountTotal,
-          }],
+          totalImpuesto: totalImpuestoArray,
         },
         pagos: {
           pago: [{
