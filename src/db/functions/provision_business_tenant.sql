@@ -94,7 +94,7 @@ BEGIN
 
   -- â”€ roles (sin FK) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   EXECUTE format('
-    CREATE TABLE IF NOT EXISTS roles (
+    CREATE TABLE IF NOT EXISTS %I.roles (
       id          SERIAL PRIMARY KEY,
       name        VARCHAR(50)  NOT NULL UNIQUE,
       description TEXT,
@@ -105,7 +105,7 @@ BEGIN
 
   -- â”€ settings (sin FK) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   EXECUTE format('
-    CREATE TABLE IF NOT EXISTS settings (
+    CREATE TABLE IF NOT EXISTS %I.settings (
       key         VARCHAR(100) PRIMARY KEY,
       value       TEXT,
       data_type   VARCHAR(50),
@@ -117,7 +117,7 @@ BEGIN
 
   -- â”€ business_profile (sin FK) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   EXECUTE format('
-    CREATE TABLE IF NOT EXISTS business_profile (
+    CREATE TABLE IF NOT EXISTS %I.business_profile (
       id                  INT PRIMARY KEY DEFAULT 1,
       legal_name          VARCHAR(255) NOT NULL,
       tax_id              VARCHAR(50),
@@ -140,7 +140,7 @@ BEGIN
 
   -- â”€ customers (sin FK) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   EXECUTE format('
-    CREATE TABLE IF NOT EXISTS customers (
+    CREATE TABLE IF NOT EXISTS %I.customers (
       id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       name            VARCHAR(255) NOT NULL,
       email           VARCHAR(255),
@@ -163,7 +163,7 @@ BEGIN
 
   -- â”€ categories (sin FK) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   EXECUTE format('
-    CREATE TABLE IF NOT EXISTS categories (
+    CREATE TABLE IF NOT EXISTS %I.categories (
       id          SERIAL PRIMARY KEY,
       name        VARCHAR(100) NOT NULL UNIQUE,
       description VARCHAR(250),
@@ -178,7 +178,7 @@ BEGIN
 
   -- â”€ users (FK â†’ roles) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   EXECUTE format('
-    CREATE TABLE IF NOT EXISTS users (
+    CREATE TABLE IF NOT EXISTS %I.users (
       id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       email         VARCHAR(255) NOT NULL UNIQUE,
       password_hash VARCHAR(255) NOT NULL,
@@ -194,7 +194,7 @@ BEGIN
 
   -- â”€ products (FK â†’ categories) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   EXECUTE format('
-    CREATE TABLE IF NOT EXISTS products (
+    CREATE TABLE IF NOT EXISTS %I.products (
       id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       code          VARCHAR(50)   NOT NULL UNIQUE,
       name          VARCHAR(255)  NOT NULL,
@@ -231,7 +231,7 @@ BEGIN
 
   -- â”€ audit_logs (user_id sin FK â€” intencional para no bloquear borrado) â”€â”€â”€â”€â”€â”€â”€
   EXECUTE format('
-    CREATE TABLE IF NOT EXISTS audit_logs (
+    CREATE TABLE IF NOT EXISTS %I.audit_logs (
       id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       user_id     UUID,
       table_name  VARCHAR(100),
@@ -326,7 +326,7 @@ BEGIN
 
     -- â”€â”€â”€ pos_discounts (creado ANTES de pos_orders para permitir FK) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS pos_discounts (
+      CREATE TABLE IF NOT EXISTS %I.pos_discounts (
         id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         name                VARCHAR(100) NOT NULL,
         description         TEXT,
@@ -371,7 +371,7 @@ BEGIN
     -- pos_orders (FK â†’ customers, users, pos_discounts)
     -- Los pagos van en pos_payments; pos_orders solo almacena totales y estado.
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS pos_orders (
+      CREATE TABLE IF NOT EXISTS %I.pos_orders (
         id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         order_number    VARCHAR(20)     NOT NULL,
         order_type      VARCHAR(20)     NOT NULL DEFAULT ''dine_in'',
@@ -411,7 +411,7 @@ BEGIN
 
     -- pos_order_items â€” almacena precio al momento de la venta (inmutable)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS pos_order_items (
+      CREATE TABLE IF NOT EXISTS %I.pos_order_items (
         id           UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
         order_id     UUID          NOT NULL REFERENCES %I.pos_orders(id) ON DELETE CASCADE,
         product_id   UUID          NOT NULL REFERENCES %I.products(id)   ON DELETE RESTRICT,
@@ -436,7 +436,7 @@ BEGIN
 
     -- pos_payments (FK â†’ pos_orders)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS pos_payments (
+      CREATE TABLE IF NOT EXISTS %I.pos_payments (
         id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         order_id         UUID NOT NULL REFERENCES %I.pos_orders(id) ON DELETE RESTRICT,
         payment_method   VARCHAR(50)       NOT NULL DEFAULT ''cash'',
@@ -453,7 +453,7 @@ BEGIN
 
     -- pos_receipts (FK â†’ pos_orders)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS pos_receipts (
+      CREATE TABLE IF NOT EXISTS %I.pos_receipts (
         id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         order_id       UUID NOT NULL REFERENCES %I.pos_orders(id) ON DELETE CASCADE,
         receipt_number VARCHAR(50) UNIQUE,
@@ -466,7 +466,7 @@ BEGIN
 
     -- â”€â”€â”€ pos_order_discounts (historial de descuentos aplicados) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS pos_order_discounts (
+      CREATE TABLE IF NOT EXISTS %I.pos_order_discounts (
         id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         order_id            UUID NOT NULL REFERENCES %I.pos_orders(id) ON DELETE CASCADE,
         discount_id         UUID REFERENCES %I.pos_discounts(id) ON DELETE SET NULL,
@@ -488,7 +488,7 @@ BEGIN
 
     -- â”€â”€â”€ coupons (cupones especÃ­ficos) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS coupons (
+      CREATE TABLE IF NOT EXISTS %I.coupons (
         id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         code                VARCHAR(50) UNIQUE NOT NULL,
         discount_id         UUID NOT NULL REFERENCES %I.pos_discounts(id) ON DELETE CASCADE,
@@ -508,7 +508,7 @@ BEGIN
 
     -- cash_register_openings
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS cash_register_openings (
+      CREATE TABLE IF NOT EXISTS %I.cash_register_openings (
         id             SERIAL PRIMARY KEY,
         user_id        VARCHAR(100)  NOT NULL,
         user_name      VARCHAR(255),
@@ -537,7 +537,7 @@ BEGIN
 
     -- cash_register_closing
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS cash_register_closing (
+      CREATE TABLE IF NOT EXISTS %I.cash_register_closing (
         id               SERIAL PRIMARY KEY,
         closing_user_id  VARCHAR(50)   NOT NULL,
         closing_date     DATE          NOT NULL,
@@ -571,7 +571,7 @@ BEGIN
 
     -- incomes_extras (ingresos extras de caja â€” no ventas, sÃ­ afectan cuadre)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS incomes_extras (
+      CREATE TABLE IF NOT EXISTS %I.incomes_extras (
         id             SERIAL PRIMARY KEY,
         date           DATE           NOT NULL,
         amount         NUMERIC(10,2)  NOT NULL,
@@ -591,7 +591,7 @@ BEGIN
 
     -- inventory_physical (sin FK)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS inventory_physical (
+      CREATE TABLE IF NOT EXISTS %I.inventory_physical (
         id            SERIAL PRIMARY KEY,
         name          VARCHAR(150),
         status        VARCHAR(20) NOT NULL DEFAULT ''open'',
@@ -615,7 +615,7 @@ BEGIN
 
     -- inventory_physical_categories (FK â†’ inventory_physical, categories)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS inventory_physical_categories (
+      CREATE TABLE IF NOT EXISTS %I.inventory_physical_categories (
         id           SERIAL PRIMARY KEY,
         inventory_id INT NOT NULL REFERENCES %I.inventory_physical(id) ON DELETE CASCADE,
         category_id  INT NOT NULL REFERENCES %I.categories(id) ON DELETE CASCADE
@@ -627,7 +627,7 @@ BEGIN
 
     -- inventory_physical_items (FK â†’ inventory_physical, products)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS inventory_physical_items (
+      CREATE TABLE IF NOT EXISTS %I.inventory_physical_items (
         id            SERIAL PRIMARY KEY,
         inventory_id  INT  NOT NULL REFERENCES %I.inventory_physical(id) ON DELETE CASCADE,
         product_id    UUID NOT NULL REFERENCES %I.products(id) ON DELETE CASCADE,
@@ -648,7 +648,7 @@ BEGIN
 
     -- inventory_movements (FK â†’ products)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS inventory_movements (
+      CREATE TABLE IF NOT EXISTS %I.inventory_movements (
         id           SERIAL PRIMARY KEY,
         product_id   UUID NOT NULL REFERENCES %I.products(id) ON DELETE CASCADE,
         type         VARCHAR(20) NOT NULL,
@@ -668,7 +668,7 @@ BEGIN
 
     -- recipes (FK â†’ categories)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS recipes (
+      CREATE TABLE IF NOT EXISTS %I.recipes (
         id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         name        VARCHAR(255) NOT NULL,
         description TEXT,
@@ -684,7 +684,7 @@ BEGIN
 
     -- recipe_ingredients (FK â†’ recipes, products)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS recipe_ingredients (
+      CREATE TABLE IF NOT EXISTS %I.recipe_ingredients (
         id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         recipe_id       UUID NOT NULL REFERENCES %I.recipes(id) ON DELETE CASCADE,
         product_id      UUID REFERENCES %I.products(id) ON DELETE SET NULL,
@@ -707,7 +707,7 @@ BEGIN
 
     -- suppliers (sin FK)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS suppliers (
+      CREATE TABLE IF NOT EXISTS %I.suppliers (
         id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         name       VARCHAR(255) NOT NULL,
         tax_id     VARCHAR(50),
@@ -728,7 +728,7 @@ BEGIN
 
     -- purchase_orders (FK â†’ suppliers)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS purchase_orders (
+      CREATE TABLE IF NOT EXISTS %I.purchase_orders (
         id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         order_number VARCHAR(50) UNIQUE,
         supplier_id  UUID REFERENCES %I.suppliers(id) ON DELETE RESTRICT,
@@ -746,7 +746,7 @@ BEGIN
 
     -- purchase_order_items (FK â†’ purchase_orders, products)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS purchase_order_items (
+      CREATE TABLE IF NOT EXISTS %I.purchase_order_items (
         id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         purchase_order_id UUID NOT NULL REFERENCES %I.purchase_orders(id) ON DELETE CASCADE,
         product_id        UUID REFERENCES %I.products(id) ON DELETE RESTRICT,
@@ -766,7 +766,7 @@ BEGIN
 
     -- CategorÃ­as de gastos (SERIAL id para compatibilidad con routes)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS expense_categories (
+      CREATE TABLE IF NOT EXISTS %I.expense_categories (
         id         SERIAL PRIMARY KEY,
         name       VARCHAR(100) NOT NULL UNIQUE,
         color      VARCHAR(7)   DEFAULT ''#95a5a6'',
@@ -790,7 +790,7 @@ BEGIN
 
     -- Gastos operativos
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS expenses (
+      CREATE TABLE IF NOT EXISTS %I.expenses (
         id          SERIAL PRIMARY KEY,
         reference   VARCHAR(100),
         description VARCHAR(500),
@@ -811,7 +811,7 @@ BEGIN
 
     -- CategorÃ­as de ingresos
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS income_categories (
+      CREATE TABLE IF NOT EXISTS %I.income_categories (
         id         SERIAL PRIMARY KEY,
         name       VARCHAR(100) NOT NULL UNIQUE,
         color      VARCHAR(7)   DEFAULT ''#27ae60'',
@@ -829,7 +829,7 @@ BEGIN
 
     -- Ingresos
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS incomes (
+      CREATE TABLE IF NOT EXISTS %I.incomes (
         id          SERIAL PRIMARY KEY,
         date        DATE          NOT NULL DEFAULT CURRENT_DATE,
         category_id INTEGER REFERENCES %I.income_categories(id) ON DELETE SET NULL,
@@ -847,7 +847,7 @@ BEGIN
 
     -- Cuentas por pagar
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS accounts_payable (
+      CREATE TABLE IF NOT EXISTS %I.accounts_payable (
         id             SERIAL PRIMARY KEY,
         invoice_number VARCHAR(50),
         supplier_name  VARCHAR(255) NOT NULL,
@@ -873,7 +873,7 @@ BEGIN
 
     -- Pagos de cuentas por pagar
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS accounts_payable_payments (
+      CREATE TABLE IF NOT EXISTS %I.accounts_payable_payments (
         id               SERIAL PRIMARY KEY,
         payable_id       INTEGER NOT NULL REFERENCES %I.accounts_payable(id) ON DELETE CASCADE,
         payment_date     DATE    DEFAULT CURRENT_DATE,
@@ -888,7 +888,7 @@ BEGIN
 
     -- Cuentas por cobrar
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS accounts_receivable (
+      CREATE TABLE IF NOT EXISTS %I.accounts_receivable (
         id           SERIAL PRIMARY KEY,
         order_number VARCHAR(50),
         invoice_number VARCHAR(50),
@@ -917,7 +917,7 @@ BEGIN
   IF ANY_MATCH(v_modules, 'tables') THEN
 
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS dining_tables (
+      CREATE TABLE IF NOT EXISTS %I.dining_tables (
         id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         table_number     INT NOT NULL UNIQUE,
         seats            INT DEFAULT 4,
@@ -937,7 +937,7 @@ BEGIN
   IF ANY_MATCH(v_modules, 'kitchen') THEN
 
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS kitchen_tasks (
+      CREATE TABLE IF NOT EXISTS %I.kitchen_tasks (
         id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         order_id    UUID NOT NULL REFERENCES %I.pos_orders(id) ON DELETE CASCADE,
         status      VARCHAR(20) NOT NULL DEFAULT ''pending'',
@@ -958,7 +958,7 @@ BEGIN
   IF ANY_MATCH(v_modules, 'reservations') THEN
 
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS reservations (
+      CREATE TABLE IF NOT EXISTS %I.reservations (
         id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         customer_id      UUID REFERENCES %I.customers(id) ON DELETE SET NULL,
         customer_name    VARCHAR(255),
@@ -984,7 +984,7 @@ BEGIN
   IF ANY_MATCH(v_modules, 'delivery') THEN
 
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS delivery_orders (
+      CREATE TABLE IF NOT EXISTS %I.delivery_orders (
         id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         order_id     UUID NOT NULL REFERENCES %I.pos_orders(id) ON DELETE CASCADE,
         customer_id  UUID REFERENCES %I.customers(id) ON DELETE SET NULL,
@@ -1007,7 +1007,7 @@ BEGIN
   IF ANY_MATCH(v_modules, 'routes') THEN
 
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS delivery_routes (
+      CREATE TABLE IF NOT EXISTS %I.delivery_routes (
         id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         driver_id   UUID REFERENCES %I.users(id) ON DELETE SET NULL,
         date        DATE        NOT NULL,
@@ -1025,7 +1025,7 @@ BEGIN
   IF ANY_MATCH(v_modules, 'tracking') THEN
 
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS tracking_gps (
+      CREATE TABLE IF NOT EXISTS %I.tracking_gps (
         id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         driver_id  UUID REFERENCES %I.users(id) ON DELETE CASCADE,
         latitude   NUMERIC(10,7) NOT NULL,
@@ -1045,7 +1045,7 @@ BEGIN
 
     -- services (sin FK)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS services (
+      CREATE TABLE IF NOT EXISTS %I.services (
         id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         name             VARCHAR(255)  NOT NULL,
         description      TEXT,
@@ -1058,7 +1058,7 @@ BEGIN
 
     -- appointments (FK â†’ services, customers)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS appointments (
+      CREATE TABLE IF NOT EXISTS %I.appointments (
         id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         service_id    UUID NOT NULL REFERENCES %I.services(id) ON DELETE RESTRICT,
         customer_id   UUID REFERENCES %I.customers(id) ON DELETE SET NULL,
@@ -1084,7 +1084,7 @@ BEGIN
 
     -- employees (FK â†’ users)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS employees (
+      CREATE TABLE IF NOT EXISTS %I.employees (
         id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         user_id         UUID REFERENCES %I.users(id) ON DELETE SET NULL,
         full_name       VARCHAR(255) NOT NULL,
@@ -1103,7 +1103,7 @@ BEGIN
 
     -- worked_hours (FK â†’ employees)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS worked_hours (
+      CREATE TABLE IF NOT EXISTS %I.worked_hours (
         id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         employee_id UUID NOT NULL REFERENCES %I.employees(id) ON DELETE CASCADE,
         worked_date DATE         NOT NULL,
@@ -1118,7 +1118,7 @@ BEGIN
 
     -- attendance_records (FK â†’ employees)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS attendance_records (
+      CREATE TABLE IF NOT EXISTS %I.attendance_records (
         id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         employee_id UUID NOT NULL REFERENCES %I.employees(id) ON DELETE CASCADE,
         type        VARCHAR(20) NOT NULL,
@@ -1136,7 +1136,7 @@ BEGIN
 
     -- employee_schedules (FK â†’ employees)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS employee_schedules (
+      CREATE TABLE IF NOT EXISTS %I.employee_schedules (
         id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         employee_id   UUID NOT NULL REFERENCES %I.employees(id) ON DELETE CASCADE,
         schedule_date DATE NOT NULL,
@@ -1153,7 +1153,7 @@ BEGIN
 
     -- employee_leaves (FK â†’ employees)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS employee_leaves (
+      CREATE TABLE IF NOT EXISTS %I.employee_leaves (
         id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         employee_id UUID NOT NULL REFERENCES %I.employees(id) ON DELETE CASCADE,
         leave_type  VARCHAR(30) NOT NULL,
@@ -1170,7 +1170,7 @@ BEGIN
 
     -- employee_payrolls (FK â†’ employees)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS employee_payrolls (
+      CREATE TABLE IF NOT EXISTS %I.employee_payrolls (
         id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         employee_id  UUID NOT NULL REFERENCES %I.employees(id) ON DELETE CASCADE,
         period_start DATE NOT NULL,
@@ -1194,7 +1194,7 @@ BEGIN
 
     -- employee_payroll_details (FK â†’ employee_payrolls)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS employee_payroll_details (
+      CREATE TABLE IF NOT EXISTS %I.employee_payroll_details (
         id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         payroll_id UUID NOT NULL REFERENCES %I.employee_payrolls(id) ON DELETE CASCADE,
         concept    VARCHAR(100)  NOT NULL,
@@ -1213,7 +1213,7 @@ BEGIN
   IF ANY_MATCH(v_modules, 'crm') THEN
 
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS crm_interactions (
+      CREATE TABLE IF NOT EXISTS %I.crm_interactions (
         id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         customer_id UUID NOT NULL REFERENCES %I.customers(id) ON DELETE CASCADE,
         type        VARCHAR(50) NOT NULL,
@@ -1229,7 +1229,7 @@ BEGIN
 
     -- Segmentos personalizados de clientes
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS crm_custom_segments (
+      CREATE TABLE IF NOT EXISTS %I.crm_custom_segments (
         id          SERIAL PRIMARY KEY,
         name        VARCHAR(255) NOT NULL,
         description TEXT,
@@ -1242,7 +1242,7 @@ BEGIN
 
     -- CampaÃ±as de email
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS email_campaigns (
+      CREATE TABLE IF NOT EXISTS %I.email_campaigns (
         id         SERIAL PRIMARY KEY,
         title      VARCHAR(255) NOT NULL,
         subject    VARCHAR(500) NOT NULL,
@@ -1264,7 +1264,7 @@ BEGIN
   IF ANY_MATCH(v_modules, 'loyalty') THEN
 
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS loyalty_points (
+      CREATE TABLE IF NOT EXISTS %I.loyalty_points (
         id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         customer_id  UUID NOT NULL REFERENCES %I.customers(id) ON DELETE CASCADE,
         points       INT  NOT NULL DEFAULT 0,
@@ -1284,7 +1284,7 @@ BEGIN
   IF ANY_MATCH(v_modules, 'queue') THEN
 
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS service_queue (
+      CREATE TABLE IF NOT EXISTS %I.service_queue (
         id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         queue_type  VARCHAR(50) NOT NULL DEFAULT ''general'',
         ticket_num  INT         NOT NULL,
@@ -1306,7 +1306,7 @@ BEGIN
 
     -- ecommerce_orders (FK â†’ customers)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS ecommerce_orders (
+      CREATE TABLE IF NOT EXISTS %I.ecommerce_orders (
         id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         order_number     VARCHAR(50)   NOT NULL UNIQUE,
         customer_id      UUID REFERENCES %I.customers(id) ON DELETE SET NULL,
@@ -1326,7 +1326,7 @@ BEGIN
 
     -- ecommerce_order_items (FK â†’ ecommerce_orders, products)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS ecommerce_order_items (
+      CREATE TABLE IF NOT EXISTS %I.ecommerce_order_items (
         id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         order_id     UUID NOT NULL REFERENCES %I.ecommerce_orders(id) ON DELETE CASCADE,
         product_id   UUID REFERENCES %I.products(id) ON DELETE RESTRICT,
@@ -1344,7 +1344,7 @@ BEGIN
   IF ANY_MATCH(v_modules, 'notifications') THEN
 
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS notifications (
+      CREATE TABLE IF NOT EXISTS %I.notifications (
         id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         user_id    UUID REFERENCES %I.users(id) ON DELETE CASCADE,
         type       VARCHAR(50) NOT NULL,
@@ -1361,7 +1361,7 @@ BEGIN
 
     -- Plantillas de email
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS email_templates (
+      CREATE TABLE IF NOT EXISTS %I.email_templates (
         id         SERIAL PRIMARY KEY,
         name       VARCHAR(255) NOT NULL,
         subject    VARCHAR(500) NOT NULL,
@@ -1378,7 +1378,7 @@ BEGIN
 
     -- Registro de emails enviados
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS email_logs (
+      CREATE TABLE IF NOT EXISTS %I.email_logs (
         id               SERIAL PRIMARY KEY,
         template_id      INTEGER,
         recipient        VARCHAR(500),
@@ -1400,7 +1400,7 @@ BEGIN
 
     -- Suscripciones push (WebPush)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS push_subscriptions (
+      CREATE TABLE IF NOT EXISTS %I.push_subscriptions (
         id          SERIAL PRIMARY KEY,
         endpoint    TEXT        NOT NULL UNIQUE,
         p256dh      VARCHAR(500) NOT NULL,
@@ -1415,7 +1415,7 @@ BEGIN
 
     -- Historial de notificaciones push enviadas
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS push_notifications_history (
+      CREATE TABLE IF NOT EXISTS %I.push_notifications_history (
         id           SERIAL PRIMARY KEY,
         title        VARCHAR(255) NOT NULL,
         body         TEXT,
@@ -1432,7 +1432,7 @@ BEGIN
 
     -- Notificaciones programadas
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS scheduled_notifications (
+      CREATE TABLE IF NOT EXISTS %I.scheduled_notifications (
         id          SERIAL PRIMARY KEY,
         title       VARCHAR(255) NOT NULL,
         message     TEXT         NOT NULL,
@@ -1456,7 +1456,7 @@ BEGIN
 
     -- einvoice_config (sin FK; INT id + CHECK garantiza una sola fila)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS einvoice_config (
+      CREATE TABLE IF NOT EXISTS %I.einvoice_config (
         id                        INT PRIMARY KEY DEFAULT 1,
         ruc                       VARCHAR(13),
         razon_social              VARCHAR(300),
@@ -1484,7 +1484,7 @@ BEGIN
 
     -- einvoices (FKs sueltos â€” no bloquear si pos/customers no estÃ¡n activos)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS einvoices (
+      CREATE TABLE IF NOT EXISTS %I.einvoices (
         id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         order_id       UUID,
         invoice_number VARCHAR(20),
@@ -1534,7 +1534,7 @@ BEGIN
 
     -- Notas de crÃ©dito
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS credit_notes (
+      CREATE TABLE IF NOT EXISTS %I.credit_notes (
         id                SERIAL PRIMARY KEY,
         invoice_id        UUID REFERENCES %I.einvoices(id) ON DELETE SET NULL,
         reference_invoice VARCHAR(50),
@@ -1566,7 +1566,7 @@ BEGIN
 
     -- retail_settings (una fila por negocio, extiende settings con opciones retail)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS retail_settings (
+      CREATE TABLE IF NOT EXISTS %I.retail_settings (
         id                       INT PRIMARY KEY DEFAULT 1,
         barcode_scan_enabled     BOOLEAN       DEFAULT true,
         show_stock_in_pos        BOOLEAN       DEFAULT true,
@@ -1586,7 +1586,7 @@ BEGIN
 
     -- retail_sessions (turno de cajero: apertura â†’ cierre, agrupa ventas del turno)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS retail_sessions (
+      CREATE TABLE IF NOT EXISTS %I.retail_sessions (
         id              UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
         cashier_id      UUID          REFERENCES %I.users(id) ON DELETE SET NULL,
         cashier_name    VARCHAR(255),
@@ -1617,7 +1617,7 @@ BEGIN
 
     -- retail_session_orders (vincula ventas retail con su sesiÃ³n de turno)
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS retail_session_orders (
+      CREATE TABLE IF NOT EXISTS %I.retail_session_orders (
         id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         session_id UUID NOT NULL REFERENCES %I.retail_sessions(id) ON DELETE CASCADE,
         order_id   UUID NOT NULL REFERENCES %I.pos_orders(id)      ON DELETE CASCADE,
@@ -1635,7 +1635,7 @@ BEGIN
   IF ANY_MATCH(v_modules, 'reports') THEN
 
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS reports_cache (
+      CREATE TABLE IF NOT EXISTS %I.reports_cache (
         id           SERIAL PRIMARY KEY,
         report_type  VARCHAR(100) NOT NULL,
         params       JSONB,
