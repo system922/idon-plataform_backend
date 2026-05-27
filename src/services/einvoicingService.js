@@ -495,10 +495,41 @@ async function parseFacturaFromXml(xmlText) {
   let rawDetalles = factura?.detalles?.detalle ?? [];
   if (!Array.isArray(rawDetalles)) rawDetalles = [rawDetalles];
 
+  // 🔥 CORREGIDO: Extraer correctamente la tasa IVA de cada ítem
   const items = rawDetalles.map(d => {
     let rawImp = d?.impuestos?.impuesto ?? [];
     if (!Array.isArray(rawImp)) rawImp = [rawImp];
+    
+    // Buscar el impuesto con código 2 (IVA)
     const ivaImp = rawImp.find(i => str(i?.codigo) === '2') || rawImp[0] || {};
+    
+    // Obtener la tarifa (tasa porcentual) - puede venir como "15.00" o "15"
+    let tarifa = num(ivaImp?.tarifa);
+    
+    // Si la tarifa es > 1, asumir que es porcentaje (15.00)
+    // Si es <= 1, asumir que es decimal (0.15)
+    if (tarifa > 0 && tarifa <= 1) {
+      tarifa = Math.round(tarifa * 100);
+    } else if (tarifa > 1 && tarifa <= 100) {
+      tarifa = Math.round(tarifa);
+    }
+    
+    // Si no hay tarifa, intentar obtener del códigoPorcentaje
+    if (tarifa === 0) {
+      const codigoPorcentaje = str(ivaImp?.codigoPorcentaje);
+      // Mapear códigos SRI a tasas
+      const codigoMap = {
+        '0': 0,
+        '2': 12,
+        '4': 15,
+        '5': 5,
+        '8': 8
+      };
+      tarifa = codigoMap[codigoPorcentaje] || 15;
+    }
+    
+    console.log(`📊 Ítem: ${str(d?.codigoPrincipal)} - Tarifa IVA detectada: ${tarifa}%`);
+    
     return {
       codigoPrincipal: str(d?.codigoPrincipal),
       codigoAuxiliar: str(d?.codigoAuxiliar),
@@ -507,9 +538,37 @@ async function parseFacturaFromXml(xmlText) {
       unitPrice: num(d?.precioUnitario),
       descuento: num(d?.descuento),
       lineTotal: num(d?.precioTotalSinImpuesto),
-      ivaRate: num(ivaImp?.tarifa) || 15,
+      ivaRate: tarifa,  // ← Ahora usa la tasa real
       ivaValue: num(ivaImp?.valor),
     };
+  });
+
+  // 🔥 CORREGIDO: Calcular subtotales por tasa desde los items reales
+  const subtotalByRate = {};
+  for (const item of items) {
+    const rate = item.ivaRate;
+    subtotalByRate[rate] = (subtotalByRate[rate] || 0) + item.lineTotal;
+  }
+
+  // Obtener totales del XML o calcular desde items
+  const totalSinImpuestos = num(inf?.totalSinImpuestos);
+  const totalDescuento = num(inf?.totalDescuento || 0);
+  
+  // Calcular IVA total desde los items si no viene en el XML
+  let ivaTotal = num(inf?.totalConImpuestos?.totalImpuesto?.valor
+                  ?? inf?.totalConImpuestos?.totalImpuesto?.[0]?.valor);
+  if (ivaTotal === 0 && items.length > 0) {
+    ivaTotal = items.reduce((sum, item) => sum + item.ivaValue, 0);
+  }
+  
+  const importeTotal = num(inf?.importeTotal);
+
+  console.log('💰 Totales parseados:', {
+    subtotalByRate,
+    totalSinImpuestos,
+    totalDescuento,
+    ivaTotal,
+    importeTotal
   });
 
   return {
@@ -527,13 +586,13 @@ async function parseFacturaFromXml(xmlText) {
     tipoIdComprador: str(inf?.tipoIdentificacionComprador),
     razonComprador: str(inf?.razonSocialComprador),
     idComprador: str(inf?.identificacionComprador),
-    subtotal: num(inf?.totalSinImpuestos),
-    totalDescuento: num(inf?.totalDescuento || 0),
-    iva: num(inf?.totalConImpuestos?.totalImpuesto?.valor
-           ?? inf?.totalConImpuestos?.totalImpuesto?.[0]?.valor),
-    total: num(inf?.importeTotal),
+    subtotal: totalSinImpuestos,
+    totalDescuento: totalDescuento,
+    iva: ivaTotal,
+    total: importeTotal,
     formaPago: str(inf?.pagos?.pago?.formaPago ?? inf?.pagos?.pago?.[0]?.formaPago),
     items,
+    subtotalByRate,  // ← Añadir para uso en PDF
   };
 }
 
@@ -546,221 +605,6 @@ async function generateBarcode(text) {
 }
 
 // ------------------- PDF NOTA DE CRÉDITO -------------------
-export async function generateCreditNotePdf(schema, cnId) {
-  const { rows } = await query(`SELECT * FROM "${schema}".credit_notes WHERE id = $1`, [cnId]);
-  const cn = rows[0];
-  if (!cn) throw new Error('Nota de crédito no encontrada');
-
-  const cfg = await getConfig(schema);
-
-  let logoBuf = null;
-  if (cfg?.logo_url) {
-    try {
-      const r = await fetch(cfg.logo_url);
-      if (r.ok) logoBuf = Buffer.from(await r.arrayBuffer());
-    } catch { }
-  }
-
-  const razonSocial   = cfg?.razon_social       || 'EMISOR';
-  const ruc           = cfg?.ruc                || '-';
-  const dirMatriz     = cfg?.direccion_matriz    || '';
-  const serieEstab    = cfg?.serie_estab         || '001';
-  const seriePto      = cfg?.serie_pto_emision   || '001';
-  const cnNumber      = `${serieEstab}-${seriePto}-${String(cn.id).padStart(9,'0')}`;
-  const rawItems      = typeof cn.items === 'string' ? JSON.parse(cn.items) : (cn.items || []);
-  const subtotal      = parseFloat(cn.subtotal)    || 0;
-  const ivaAmount     = parseFloat(cn.iva_amount)  || 0;
-  const total         = parseFloat(cn.total)       || 0;
-  const emDate        = cn.created_at
-    ? new Date(cn.created_at).toLocaleDateString('es-EC', { day:'2-digit', month:'2-digit', year:'numeric' })
-    : '-';
-
-  return new Promise((resolve, reject) => {
-    const doc    = new PDFDocument({ size: 'A4', margin: 0 });
-    const chunks = [];
-    doc.on('data', c => chunks.push(c));
-    doc.on('end',  () => resolve(Buffer.concat(chunks)));
-    doc.on('error', reject);
-
-    const M    = 30;
-    const PW   = doc.page.width;
-    const W    = PW - M * 2;
-    const BK   = '#000000';
-    const GR   = '#666666';
-    const LGR  = '#eeeeee';
-    const VLGR = '#f9f9f9';
-    const WHT  = '#ffffff';
-    const RED  = '#c0392b';
-    const BDR  = '#999999';
-
-    const bord = (x, y2, w, h, lw = 0.5) => doc.rect(x, y2, w, h).lineWidth(lw).stroke(BDR);
-    const fill = (x, y2, w, h, color)    => doc.rect(x, y2, w, h).fill(color);
-
-    let y = M;
-
-    // ── HEADER ───────────────────────────────────────────────────────────────
-    const leftW  = Math.round(W * 0.52);
-    const rightW = W - leftW - 4;
-    const rightX = M + leftW + 4;
-    const hH     = 160;
-
-    bord(rightX, y, rightW, hH, 0.8);
-
-    const LOGO_FIT = 90;
-    if (logoBuf) {
-      try { doc.image(logoBuf, M, y, { fit: [LOGO_FIT, LOGO_FIT] }); } catch { }
-    }
-    let ly = logoBuf ? y + LOGO_FIT + 4 : y + 2;
-
-    doc.fillColor(BK).fontSize(8.5).font('Helvetica')
-       .text('R.U.C.:   ' + ruc, M, ly, { width: leftW - 2 });
-    ly += 12;
-    doc.fontSize(9).font('Helvetica-Bold')
-       .text(razonSocial, M, ly, { width: leftW - 2 });
-    ly += 13;
-    if (cfg?.nombre_comercial && cfg.nombre_comercial !== razonSocial) {
-      doc.fontSize(8).font('Helvetica').text(cfg.nombre_comercial, M, ly, { width: leftW - 2 });
-      ly += 11;
-    }
-    if (dirMatriz) {
-      doc.fontSize(8).font('Helvetica').text('Dir. Matriz:  ' + dirMatriz, M, ly, { width: leftW - 2 });
-      ly += 11;
-    }
-    if (cfg?.contribuyente_especial) {
-      doc.fontSize(8).font('Helvetica')
-         .text('Contribuyente Especial  ' + cfg.contribuyente_especial, M, ly, { width: leftW - 2 });
-      ly += 11;
-    }
-    doc.fontSize(8).font('Helvetica')
-       .text('OBLIGADO A LLEVAR CONTABILIDAD:   ' + (cfg?.obligado_contabilidad ? 'SI' : 'NO'), M, ly, { width: leftW - 2 });
-
-    let ry = y + 10;
-    doc.fillColor(RED).fontSize(12).font('Helvetica-Bold')
-       .text('NOTA DE CRÉDITO', rightX, ry, { width: rightW, align: 'center' });
-    ry += 18;
-    doc.fillColor(BK).fontSize(10).font('Helvetica-Bold')
-       .text('No.  ' + cnNumber, rightX, ry, { width: rightW, align: 'center' });
-    ry += 16;
-    doc.moveTo(rightX + 6, ry).lineTo(rightX + rightW - 6, ry).lineWidth(0.4).stroke(BDR);
-    ry += 8;
-    doc.fillColor(BK).fontSize(7.5).font('Helvetica')
-       .text('Factura de referencia:', rightX + 4, ry, { width: rightW - 8 });
-    ry += 11;
-    doc.fontSize(8.5).font('Helvetica-Bold').fillColor(RED)
-       .text(cn.reference_invoice || '-', rightX + 4, ry, { width: rightW - 8 });
-    ry += 13;
-    doc.fillColor(BK).fontSize(7).font('Helvetica')
-       .text('Fecha de emisión:  ' + emDate, rightX + 4, ry, { width: rightW - 8 });
-    ry += 10;
-    doc.text('Ambiente:  ' + (cfg?.ambiente === '2' ? 'PRODUCCIÓN' : 'PRUEBAS'), rightX + 4, ry, { width: rightW - 8 });
-
-    y = M + hH + 4;
-
-    // ── CLIENTE ───────────────────────────────────────────────────────────────
-    const cliH = 30;
-    bord(M, y, W, cliH);
-    const cW1 = W * 0.18, cW2 = W * 0.445, cW3 = W * 0.11, cW4 = W * 0.215;
-    const cX1 = M + 4, cX2 = cX1 + cW1 + 2, cX3 = cX2 + cW2 + 2, cX4 = cX3 + cW3 + 2;
-
-    doc.fontSize(7.5).font('Helvetica').fillColor(BK)
-       .text('Razón Social / Nombres', cX1, y + 4, { width: cW1 })
-       .text('Fecha Emisión:', cX1, y + 17, { width: cW1 });
-    doc.fontSize(8).font('Helvetica-Bold')
-       .text(cn.customer_name || 'CONSUMIDOR FINAL', cX2, y + 4, { width: cW2 })
-       .text(emDate, cX2, y + 17, { width: cW2 });
-    doc.fontSize(7.5).font('Helvetica')
-       .text('RUC / CI:', cX3, y + 4, { width: cW3 });
-    doc.fontSize(8).font('Helvetica-Bold')
-       .text(cn.customer_ruc || '-', cX4, y + 4, { width: cW4 });
-    y += cliH + 2;
-
-    // ── MOTIVO ────────────────────────────────────────────────────────────────
-    const motH = 22;
-    bord(M, y, W, motH);
-    doc.fontSize(7.5).font('Helvetica').fillColor(BK)
-       .text('Motivo:', M + 4, y + 4, { width: W * 0.12 });
-    doc.fontSize(8).font('Helvetica-Bold')
-       .text(cn.reason || '-', M + 4 + W * 0.12 + 2, y + 4, { width: W * 0.86 });
-    y += motH + 4;
-
-    // ── TABLA ÍTEMS ───────────────────────────────────────────────────────────
-    const COLS = [
-      { h: 'Cant',         w: 0.07,  a: 'right' },
-      { h: 'Descripción',  w: 0.55,  a: 'left'  },
-      { h: 'P. Unitario',  w: 0.12,  a: 'right' },
-      { h: 'Total',        w: 0.10,  a: 'right' },
-    ];
-
-    const thH = 18;
-    fill(M, y, W, thH, LGR);
-    bord(M, y, W, thH, 0.5);
-    let cx = M;
-    for (const col of COLS) {
-      const cw = W * col.w;
-      doc.fillColor(BK).fontSize(7).font('Helvetica-Bold')
-         .text(col.h, cx + 2, y + 5, { width: cw - 4, align: 'center' });
-      if (cx > M) doc.moveTo(cx, y).lineTo(cx, y + thH).lineWidth(0.3).stroke(BDR);
-      cx += cw;
-    }
-    y += thH;
-
-    let alt = false;
-    for (const item of rawItems) {
-      const qty   = parseFloat(item.quantity ?? item.qty ?? 0);
-      const price = parseFloat(item.unit_price ?? 0);
-      const sub   = parseFloat(item.subtotal   ?? qty * price);
-      const rH    = 14;
-      fill(M, y, W, rH, alt ? VLGR : WHT);
-      bord(M, y, W, rH, 0.25);
-      cx = M;
-      const vals = [qty.toFixed(2), item.description || '-', price.toFixed(4), sub.toFixed(2)];
-      for (let i = 0; i < COLS.length; i++) {
-        const cw = W * COLS[i].w;
-        doc.fillColor(BK).fontSize(7.5).font('Helvetica')
-           .text(vals[i], cx + 2, y + 3, { width: cw - 4, align: COLS[i].a, lineBreak: false });
-        cx += cw;
-      }
-      y += rH;
-      alt = !alt;
-      if (y > doc.page.height - 160) { doc.addPage(); y = M; }
-    }
-    if (rawItems.length === 0) {
-      fill(M, y, W, 14, WHT);
-      doc.fillColor(GR).fontSize(7).text('(anulación total — sin detalle de ítems)', M + 6, y + 3);
-      y += 14;
-    }
-    y += 6;
-
-    // ── TOTALES ───────────────────────────────────────────────────────────────
-    const totW = W * 0.38;
-    const totX = M + W - totW;
-    const totRows = [
-      ['SUBTOTAL SIN IVA', subtotal.toFixed(2)],
-      ['IVA 15%',          ivaAmount.toFixed(2)],
-    ];
-    const totRowH = 13;
-    for (const [label, val] of totRows) {
-      fill(totX, y, totW, totRowH, VLGR);
-      bord(totX, y, totW, totRowH, 0.3);
-      doc.fillColor(BK).fontSize(7).font('Helvetica')
-         .text(label, totX + 4, y + 3, { width: totW * 0.65 })
-         .text(val, totX + 4, y + 3, { width: totW - 8, align: 'right' });
-      y += totRowH;
-    }
-    fill(totX, y, totW, 16, RED);
-    doc.fillColor(WHT).fontSize(8.5).font('Helvetica-Bold')
-       .text('VALOR TOTAL A ACREDITAR', totX + 4, y + 4, { width: totW * 0.65 })
-       .text(total.toFixed(2), totX + 4, y + 4, { width: totW - 8, align: 'right' });
-    y += 30;
-
-    // ── PIE ───────────────────────────────────────────────────────────────────
-    doc.fillColor(GR).fontSize(7).font('Helvetica')
-       .text('Documento generado por sistema interno · No sustituye comprobante electrónico autorizado por el SRI', M, y, { width: W, align: 'center' });
-
-    doc.end();
-  });
-}
-
 // ------------------- GENERACIÓN PDF (CON DESCUENTO) -------------------
 export async function generateInvoicePdf(schema, invoiceId) {
   const { rows: invRows } = await query(
@@ -789,7 +633,6 @@ export async function generateInvoicePdf(schema, invoiceId) {
 
   const subtotal = d.subtotal || parseFloat(inv.subtotal || 0);
   const totalDescuento = d.totalDescuento || parseFloat(inv.discount_amount || 0);
-  const iva = d.iva || parseFloat(inv.iva_amount || 0);
   const total = d.total || parseFloat(inv.total || 0);
 
   const FORMA_PAGO_LABELS = {
@@ -807,13 +650,16 @@ export async function generateInvoicePdf(schema, invoiceId) {
   const claveAcceso = d.claveAcceso || inv.access_key || '';
   const barcodeBuf = await generateBarcode(claveAcceso);
 
+  // Calcular subtotales por tasa correctamente
   const subtotalByRate = {};
+  const ivaByRate = {};
   for (const item of d.items) {
-    const r = item.ivaRate;
-    subtotalByRate[r] = (subtotalByRate[r] || 0) + item.lineTotal;
+    const rate = item.ivaRate;
+    subtotalByRate[rate] = (subtotalByRate[rate] || 0) + item.lineTotal;
+    ivaByRate[rate] = (ivaByRate[rate] || 0) + item.ivaValue;
   }
+  
   const ivaRates = Object.keys(subtotalByRate).map(Number).sort((a, b) => b - a);
-  const mainRate = ivaRates[0] ?? 15;
 
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'A4', margin: 0 });
@@ -959,16 +805,14 @@ export async function generateInvoicePdf(schema, invoiceId) {
 
     y += cliH + 2;
 
-    // TABLA ITEMS
+    // 🔥 TABLA ITEMS CON COLUMNAS CORREGIDAS
     const COLS = [
-      { h: 'Cod. Principal', w: 0.090, a: 'left' },
-      { h: 'Cod. Auxiliar', w: 0.090, a: 'left' },
-      { h: 'Cant', w: 0.055, a: 'right' },
-      { h: 'Descripción', w: 0.400, a: 'left' },
-      { h: 'Detalles Adicionales', w: 0.120, a: 'left' },
-      { h: 'Precio\nUnitario', w: 0.090, a: 'right' },
-      { h: 'Descuento', w: 0.075, a: 'right' },
-      { h: 'Precio Total', w: 0.080, a: 'right' },
+      { h: 'Cod. Principal', w: 0.12, a: 'left' },
+      { h: 'Cant', w: 0.08, a: 'right' },
+      { h: 'Descripción', w: 0.38, a: 'left' },
+      { h: 'P. Unitario', w: 0.12, a: 'right' },
+      { h: 'Descuento', w: 0.10, a: 'right' },
+      { h: 'P. Total', w: 0.12, a: 'right' },
     ];
 
     const thH = 20;
@@ -977,8 +821,8 @@ export async function generateInvoicePdf(schema, invoiceId) {
     let cx = M;
     for (const col of COLS) {
       const cw = W * col.w;
-      doc.fillColor(BK).fontSize(7).font('Helvetica-Bold')
-         .text(col.h, cx + 2, y + 4, { width: cw - 4, align: 'center', lineGap: 0 });
+      doc.fillColor(BK).fontSize(7.5).font('Helvetica-Bold')
+         .text(col.h, cx + 2, y + 5, { width: cw - 4, align: col.a === 'right' ? 'right' : 'center' });
       if (cx > M) doc.moveTo(cx, y).lineTo(cx, y + thH).lineWidth(0.3).stroke(BDR);
       cx += cw;
     }
@@ -986,30 +830,41 @@ export async function generateInvoicePdf(schema, invoiceId) {
 
     let alt = false;
     for (const item of d.items) {
-      const rH = 13;
+      const rH = 16;
       fill(M, y, W, rH, alt ? VLGR : WHT);
       bord(M, y, W, rH, 0.25);
       cx = M;
+      
+      // Calcular descuento del item si existe
+      const descuentoItem = item.descuento || 0;
+      const precioUnitario = item.unitPrice;
+      const precioTotal = item.lineTotal;
+      
       const rv = [
         item.codigoPrincipal || '',
-        item.codigoAuxiliar || '',
-        item.cantidad.toFixed(4),
+        item.cantidad.toFixed(2),
         item.descripcion || '-',
-        '',
-        item.unitPrice.toFixed(4),
-        item.descuento > 0 ? item.descuento.toFixed(2) : '0.00',
-        item.lineTotal.toFixed(2),
+        precioUnitario.toFixed(2),
+        descuentoItem > 0 ? descuentoItem.toFixed(2) : '0.00',
+        precioTotal.toFixed(2),
       ];
+      
       for (let i = 0; i < COLS.length; i++) {
         const cw = W * COLS[i].w;
-        doc.fillColor(BK).fontSize(7).font('Helvetica')
-           .text(rv[i], cx + 2, y + 3, { width: cw - 4, align: COLS[i].a, lineBreak: false });
+        const align = COLS[i].a;
+        doc.fillColor(BK).fontSize(7.5).font('Helvetica')
+           .text(rv[i], cx + 2, y + 4, { 
+             width: cw - 4, 
+             align: align,
+             lineBreak: i === 2 // Solo la descripción puede tener saltos de línea
+           });
         cx += cw;
       }
       y += rH;
       alt = !alt;
       if (y > doc.page.height - 180) { doc.addPage(); y = M; }
     }
+    
     if (d.items.length === 0) {
       fill(M, y, W, 14, WHT);
       doc.fillColor(GR).fontSize(7).text('(sin ítems registrados)', M + 6, y + 3);
@@ -1023,14 +878,18 @@ export async function generateInvoicePdf(schema, invoiceId) {
     const totX = M + infoW + 4;
 
     const totRows = [];
+    
+    // Subtotales por cada tasa
     for (const rate of ivaRates) {
-      totRows.push(['SUBTOTAL ' + rate + '%', (subtotalByRate[rate] || 0).toFixed(2)]);
+      const subtotalRate = subtotalByRate[rate] || 0;
+      if (subtotalRate > 0 || rate === 0) {
+        totRows.push([`SUBTOTAL ${rate}%`, subtotalRate.toFixed(2)]);
+      }
     }
-    if (!subtotalByRate[0]) totRows.push(['SUBTOTAL 0%', '0.00']);
-    totRows.push(['SUBTOTAL Exento de IVA', '0.00']);
+    
     totRows.push(['SUBTOTAL SIN IMPUESTOS', subtotal.toFixed(2)]);
     
-    // 🔥 MOSTRAR DESCUENTO SI APLICA
+    // Descuento
     if (totalDescuento > 0) {
       totRows.push(['TOTAL DESCUENTO', `-${totalDescuento.toFixed(2)}`]);
     } else {
@@ -1038,7 +897,21 @@ export async function generateInvoicePdf(schema, invoiceId) {
     }
     
     totRows.push(['ICE', '0.00']);
-    totRows.push(['IVA ' + mainRate + '%', iva.toFixed(2)]);
+    
+    // IVA por cada tasa
+    let hasIva = false;
+    for (const rate of ivaRates) {
+      const ivaAmount = ivaByRate[rate] || 0;
+      if (ivaAmount > 0) {
+        totRows.push([`IVA ${rate}%`, ivaAmount.toFixed(2)]);
+        hasIva = true;
+      }
+    }
+    
+    if (!hasIva) {
+      totRows.push(['IVA 0%', '0.00']);
+    }
+    
     totRows.push(['PROPINA', '0.00']);
 
     const totRowH = 13;
