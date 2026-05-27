@@ -166,7 +166,9 @@ export const update = async (schema, id, body) => {
   });
   
   // 4. Recalcular selling_price (sin IVA) y tax_rate (monto IVA)
-  const { taxValue, priceWithoutTax } = calcIvaConTasaSeleccionada(pvp, taxRateSelected);
+  const calculoIva = calcIvaConTasaSeleccionada(pvp, taxRateSelected);
+  const taxValue = calculoIva.taxValue;
+  const priceWithoutTax = calculoIva.priceWithoutTax;
   
   // 5. Actualizar categoría si es necesario
   let category_id = currentProduct.category_id;
