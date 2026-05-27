@@ -90,7 +90,6 @@ export const create = async (schema, body) => {
     taxValue,
     taxRateSelected
   });
-  const { taxValue, priceWithoutTax } = calcIvaConTasaSeleccionada(pvp, taxRateSelected);
   
   // 4. Obtener o crear categoría
   let category_id = null;
