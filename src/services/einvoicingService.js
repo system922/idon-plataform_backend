@@ -650,6 +650,7 @@ async function generateBarcode(text) {
 
 // ------------------- PDF NOTA DE CRÉDITO -------------------
 // ------------------- GENERACIÓN PDF (CON DESCUENTO) -------------------
+// ------------------- GENERACIÓN PDF (CON DESCUENTO) -------------------
 export async function generateInvoicePdf(schema, invoiceId) {
   const { rows: invRows } = await query(
     `SELECT * FROM "${schema}".einvoices WHERE id = $1`, [invoiceId]
@@ -728,14 +729,16 @@ export async function generateInvoicePdf(schema, invoiceId) {
 
     let y = M;
 
-    // HEADER
+    // ==================== HEADER CON RECUADRO ====================
     const leftW = Math.round(W * 0.52);
     const rightW = W - leftW - 4;
     const rightX = M + leftW + 4;
     const hH = 178;
 
+    // Recuadro derecho (información de factura)
     bord(rightX, y, rightW, hH, 0.8);
 
+    // Logo e información de la empresa (recuadro izquierdo)
     const LOGO_FIT = 100;
     if (logoBuf) {
       try { doc.image(logoBuf, M, y, { fit: [LOGO_FIT, LOGO_FIT] }); } catch { }
@@ -760,7 +763,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
     }
     if (d.dirEstab && d.dirEstab !== dirMatriz) {
       doc.fontSize(8).font('Helvetica')
-         .text('Dir  ' + d.dirEstab, M, ly, { width: leftW - 2 });
+         .text('Dir. Establecimiento:  ' + d.dirEstab, M, ly, { width: leftW - 2 });
       ly += 11;
     }
     ly += 5;
@@ -772,6 +775,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
     doc.fontSize(8).font('Helvetica')
        .text('OBLIGADO A LLEVAR CONTABILIDAD:   ' + (cfg?.obligado_contabilidad ? 'SI' : 'NO'), M, ly, { width: leftW - 2 });
 
+    // Información de Factura (lado derecho)
     let ry = y + 10;
     doc.fillColor(BK).fontSize(13).font('Helvetica-Bold')
        .text('F  A  C  T  U  R  A', rightX, ry, { width: rightW, align: 'center' });
@@ -820,7 +824,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
 
     y = M + hH + 4;
 
-    // CLIENTE
+    // ==================== CLIENTE (CON INFORMACIÓN COMPLETA) ====================
     const razonComp = d.razonComprador || inv.customer_name || 'CONSUMIDOR FINAL';
     const idComp = d.idComprador || inv.customer_ruc || '-';
     const fechaEmDisplay = d.fechaEmision
@@ -828,31 +832,55 @@ export async function generateInvoicePdf(schema, invoiceId) {
           ? new Date(inv.emission_date).toLocaleDateString('es-EC',
               { day: '2-digit', month: '2-digit', year: 'numeric' })
           : '-');
+    const customerEmail = inv.customer_email || '';
+    const customerPhone = inv.customer_phone || '';
 
-    const cliH = 30;
+    const cliH = 55; // Altura aumentada para incluir email y teléfono
     bord(M, y, W, cliH);
 
-    const cW1 = W * 0.18, cW2 = W * 0.445, cW3 = W * 0.11, cW4 = W * 0.215;
+    const cW1 = W * 0.18, cW2 = W * 0.32, cW3 = W * 0.18, cW4 = W * 0.27;
     const cX1 = M + 4, cX2 = cX1 + cW1 + 2, cX3 = cX2 + cW2 + 2, cX4 = cX3 + cW3 + 2;
 
+    // Fila 1: Razón Social
     doc.fontSize(7.5).font('Helvetica').fillColor(BK)
-       .text('Razón Social / Nombres y', cX1, y + 4, { width: cW1 })
-       .text('Fecha Emisión:', cX1, y + 17, { width: cW1 });
+       .text('Razón Social / Nombres', cX1, y + 4, { width: cW1 });
     doc.fontSize(8).font('Helvetica-Bold')
-       .text(razonComp, cX2, y + 4, { width: cW2 })
-       .text(fechaEmDisplay, cX2, y + 17, { width: cW2 });
+       .text(razonComp, cX2, y + 4, { width: cW2 });
+    
+    // Fila 2: RUC / CI
     doc.fontSize(7.5).font('Helvetica')
-       .text('RUC / CI:', cX3, y + 4, { width: cW3 })
-       .text('Guía Remisión:', cX3, y + 17, { width: cW3 });
+       .text('RUC / CI:', cX3, y + 4, { width: cW3 });
     doc.fontSize(8).font('Helvetica-Bold')
        .text(idComp, cX4, y + 4, { width: cW4 });
 
+    // Fila 3: Fecha Emisión
+    doc.fontSize(7.5).font('Helvetica')
+       .text('Fecha Emisión:', cX1, y + 20, { width: cW1 });
+    doc.fontSize(8).font('Helvetica-Bold')
+       .text(fechaEmDisplay, cX2, y + 20, { width: cW2 });
+
+    // Fila 4: Correo Electrónico
+    if (customerEmail) {
+      doc.fontSize(7.5).font('Helvetica')
+         .text('Correo Electrónico:', cX3, y + 20, { width: cW3 });
+      doc.fontSize(8).font('Helvetica')
+         .text(customerEmail, cX4, y + 20, { width: cW4 });
+    }
+
+    // Fila 5: Teléfono
+    if (customerPhone) {
+      doc.fontSize(7.5).font('Helvetica')
+         .text('Teléfono:', cX1, y + 36, { width: cW1 });
+      doc.fontSize(8).font('Helvetica')
+         .text(customerPhone, cX2, y + 36, { width: cW2 });
+    }
+
     y += cliH + 2;
 
-    // 🔥 TABLA ITEMS CON COLUMNAS CORREGIDAS
+    // ==================== TABLA DE ITEMS ====================
     const COLS = [
       { h: 'Cod. Principal', w: 0.12, a: 'left' },
-      { h: 'Cant', w: 0.08, a: 'right' },
+      { h: 'Cant', w: 0.07, a: 'right' },
       { h: 'Descripción', w: 0.38, a: 'left' },
       { h: 'P. Unitario', w: 0.12, a: 'right' },
       { h: 'Descuento', w: 0.10, a: 'right' },
@@ -879,7 +907,6 @@ export async function generateInvoicePdf(schema, invoiceId) {
       bord(M, y, W, rH, 0.25);
       cx = M;
       
-      // Calcular descuento del item si existe
       const descuentoItem = item.descuento || 0;
       const precioUnitario = item.unitPrice;
       const precioTotal = item.lineTotal;
@@ -900,7 +927,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
            .text(rv[i], cx + 2, y + 4, { 
              width: cw - 4, 
              align: align,
-             lineBreak: i === 2 // Solo la descripción puede tener saltos de línea
+             lineBreak: i === 2
            });
         cx += cw;
       }
@@ -916,7 +943,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
     }
     y += 4;
 
-    // TOTALES CON DESCUENTO
+    // ==================== TOTALES ====================
     const infoW = W * 0.55;
     const totW = W - infoW - 4;
     const totX = M + infoW + 4;
@@ -933,7 +960,6 @@ export async function generateInvoicePdf(schema, invoiceId) {
     
     totRows.push(['SUBTOTAL SIN IMPUESTOS', subtotal.toFixed(2)]);
     
-    // Descuento
     if (totalDescuento > 0) {
       totRows.push(['TOTAL DESCUENTO', `-${totalDescuento.toFixed(2)}`]);
     } else {
@@ -960,15 +986,20 @@ export async function generateInvoicePdf(schema, invoiceId) {
 
     const totRowH = 13;
 
-    // Info Adicional
+    // Información Adicional
     let iy = y;
     doc.fillColor(BK).fontSize(7.5).font('Helvetica-Bold')
        .text('Información Adicional', M, iy);
     iy += 13;
-    const emailVal = inv.customer_email || '';
-    if (emailVal) {
+    
+    if (customerEmail) {
       doc.fontSize(7).font('Helvetica')
-         .text('Correo 1   ' + emailVal, M, iy, { width: infoW - 4 });
+         .text('Correo 1   ' + customerEmail, M, iy, { width: infoW - 4 });
+      iy += 11;
+    }
+    if (customerPhone) {
+      doc.fontSize(7).font('Helvetica')
+         .text('Teléfono   ' + customerPhone, M, iy, { width: infoW - 4 });
       iy += 11;
     }
     if (cfg?.contribuyente_especial) {
@@ -995,7 +1026,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
 
     y = Math.max(iy, ty) + 10;
 
-    // FORMA DE PAGO
+    // ==================== FORMA DE PAGO ====================
     fill(M, y, W, 14, LGR);
     bord(M, y, W, 14);
     doc.fillColor(BK).fontSize(7).font('Helvetica-Bold')
