@@ -87,50 +87,41 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
     }
 
     const date = req.query.date || ecuadorToday();
+    const TZ = 'America/Guayaquil';
+    
+    console.log(`📊 SUMMARY REQUEST: date=${date}, schema=${schema}`);
 
     // ===============================
-    // 💰 VENTAS POR MÉTODO - DIRECTAMENTE DESDE pos_orders (SIN INNER JOIN)
+    // 💰 VENTAS POR MÉTODO - USANDO LA MISMA LÓGICA QUE EL DASHBOARD
     // ===============================
     const ventasRes = await query(
       `
-      WITH ordenes_pagadas AS (
-        SELECT
-          CASE
-            WHEN LOWER(payment_method) IN ('cash','efectivo') THEN 'cash'
-            WHEN LOWER(payment_method) IN ('transfer','transferencia') THEN 'transfer'
-            WHEN LOWER(payment_method) IN ('card','tarjeta') THEN 'card'
-            ELSE LOWER(payment_method)
-          END AS payment_method,
-          total AS amount,
-          id
-        FROM "${schema}".pos_orders
-        WHERE
-          DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Guayaquil') = $1
-          AND status IN ('paid','completed')
-      ),
-      metodos AS (
-        SELECT 'cash' AS payment_method
-        UNION ALL SELECT 'transfer'
-        UNION ALL SELECT 'card'
-      ),
-      totales AS (
-        SELECT
-          payment_method,
-          SUM(amount) AS total_cobrado,
-          COUNT(id) AS cantidad_pagos
-        FROM ordenes_pagadas
-        WHERE payment_method IN ('cash', 'transfer', 'card')
-        GROUP BY payment_method
-      )
       SELECT
-        m.payment_method,
-        COALESCE(t.total_cobrado, 0) AS total_cobrado,
-        COALESCE(t.cantidad_pagos, 0) AS cantidad_pagos
-      FROM metodos m
-      LEFT JOIN totales t ON t.payment_method = m.payment_method
+        CASE
+          WHEN LOWER(COALESCE(payment_method, 'cash')) IN ('cash','efectivo') THEN 'cash'
+          WHEN LOWER(COALESCE(payment_method, 'cash')) IN ('transfer','transferencia') THEN 'transfer'
+          WHEN LOWER(COALESCE(payment_method, 'cash')) IN ('card','tarjeta') THEN 'card'
+          ELSE 'cash'
+        END AS payment_method,
+        COALESCE(SUM(total), 0)::FLOAT AS total_cobrado,
+        COUNT(*)::INT AS cantidad_pagos
+      FROM "${schema}".pos_orders
+      WHERE
+        DATE(created_at AT TIME ZONE '${TZ}') = $1
+        AND status = 'paid'
+      GROUP BY 
+        CASE
+          WHEN LOWER(COALESCE(payment_method, 'cash')) IN ('cash','efectivo') THEN 'cash'
+          WHEN LOWER(COALESCE(payment_method, 'cash')) IN ('transfer','transferencia') THEN 'transfer'
+          WHEN LOWER(COALESCE(payment_method, 'cash')) IN ('card','tarjeta') THEN 'card'
+          ELSE 'cash'
+        END
+      ORDER BY payment_method
       `,
       [date]
     );
+
+    console.log(`💰 VENTAS RESULT:`, ventasRes.rows);
 
     // ===============================
     // 💸 GASTOS
@@ -148,10 +139,20 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
       [date]
     );
 
-    res.json({
-      metodos: ventasRes.rows || [],
+    console.log(`💸 GASTOS RESULT:`, gastosRes.rows);
+
+    // 🔥 ASEGURAR QUE DEVOLVEMOS TODOS LOS MÉTODOS, INCLUSO SI NO TIENEN VENTAS
+    const result = {
+      metodos: [
+        ventasRes.rows.find(r => r.payment_method === 'cash') || { payment_method: 'cash', total_cobrado: 0, cantidad_pagos: 0 },
+        ventasRes.rows.find(r => r.payment_method === 'transfer') || { payment_method: 'transfer', total_cobrado: 0, cantidad_pagos: 0 },
+        ventasRes.rows.find(r => r.payment_method === 'card') || { payment_method: 'card', total_cobrado: 0, cantidad_pagos: 0 }
+      ],
       gastos: gastosRes.rows || []
-    });
+    };
+
+    console.log(`📊 SUMMARY FINAL RESPONSE:`, result);
+    res.json(result);
 
   } catch (err) {
     console.error("❌ SUMMARY ERROR:", err);
