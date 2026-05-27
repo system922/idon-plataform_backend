@@ -79,6 +79,11 @@ router.get('/full-closing', authMiddleware, businessContextMiddleware, async (re
 // ===============================
 // 📊 SUMMARY
 // ===============================
+// Reemplazar la consulta del endpoint /summary
+
+// ===============================
+// 📊 SUMMARY - VERSIÓN CORREGIDA USANDO pos_payments
+// ===============================
 router.get('/summary', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -91,41 +96,55 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
     
     console.log(`📊 SUMMARY REQUEST: date=${date}, schema=${schema}`);
 
-    // ===============================
-    // 💰 VENTAS POR MÉTODO - AGRUPANDO CORRECTAMENTE POR MÉTODO DE PAGO
-    // ===============================
+    // 🔥 CORRECCIÓN: Usar pos_payments en lugar de pos_orders.payment_method
     const ventasRes = await query(
       `
       SELECT
         CASE
-          WHEN LOWER(COALESCE(payment_method, '')) IN ('cash','efectivo','') THEN 'cash'
-          WHEN LOWER(payment_method) IN ('transfer','transferencia','banco','banca') THEN 'transfer'
-          WHEN LOWER(payment_method) IN ('card','tarjeta','credit','debit','credito','debito') THEN 'card'
-          ELSE LOWER(payment_method)
+          WHEN LOWER(COALESCE(p.payment_method, '')) IN ('cash','efectivo','') THEN 'cash'
+          WHEN LOWER(p.payment_method) IN ('transfer','transferencia','banco','banca','transferencia bancaria','transferencia electronica') THEN 'transfer'
+          WHEN LOWER(p.payment_method) IN ('card','tarjeta','credit','debit','credito','debito','tarjeta de credito','tarjeta de debito') THEN 'card'
+          ELSE LOWER(p.payment_method)
         END AS payment_method,
-        COALESCE(SUM(total), 0)::FLOAT AS total_cobrado,
-        COUNT(*)::INT AS cantidad_pagos
-      FROM "${schema}".pos_orders
+        COALESCE(SUM(p.amount), 0)::FLOAT AS total_cobrado,
+        COUNT(DISTINCT p.id)::INT AS cantidad_pagos,
+        COUNT(DISTINCT o.id)::INT AS ordenes_afectadas
+      FROM "${schema}".pos_orders o
+      INNER JOIN "${schema}".pos_payments p ON p.order_id = o.id
       WHERE
-        DATE(created_at AT TIME ZONE '${TZ}') = $1
-        AND status = 'paid'
+        DATE(p.paid_at AT TIME ZONE '${TZ}') = $1
+        AND p.status = 'completed'
+        AND o.status IN ('paid', 'completed', 'partially_paid')
       GROUP BY 
         CASE
-          WHEN LOWER(COALESCE(payment_method, '')) IN ('cash','efectivo','') THEN 'cash'
-          WHEN LOWER(payment_method) IN ('transfer','transferencia','banco','banca') THEN 'transfer'
-          WHEN LOWER(payment_method) IN ('card','tarjeta','credit','debit','credito','debito') THEN 'card'
-          ELSE LOWER(payment_method)
+          WHEN LOWER(COALESCE(p.payment_method, '')) IN ('cash','efectivo','') THEN 'cash'
+          WHEN LOWER(p.payment_method) IN ('transfer','transferencia','banco','banca','transferencia bancaria','transferencia electronica') THEN 'transfer'
+          WHEN LOWER(p.payment_method) IN ('card','tarjeta','credit','debit','credito','debito','tarjeta de credito','tarjeta de debito') THEN 'card'
+          ELSE LOWER(p.payment_method)
         END
       ORDER BY payment_method
       `,
       [date]
     );
 
-    console.log(`💰 VENTAS RESULT:`, ventasRes.rows);
+    console.log(`💰 VENTAS RESULT (desde pos_payments):`, ventasRes.rows);
 
-    // ===============================
+    // 🔥 También obtener un resumen de órdenes por si acaso (para debugging)
+    const ordersSummary = await query(
+      `
+      SELECT 
+        status,
+        COUNT(*) as total_orders,
+        COALESCE(SUM(total), 0) as total_amount
+      FROM "${schema}".pos_orders
+      WHERE DATE(created_at AT TIME ZONE '${TZ}') = $1
+      GROUP BY status
+      `,
+      [date]
+    );
+    console.log(`📋 ORDERS SUMMARY:`, ordersSummary.rows);
+
     // 💸 GASTOS
-    // ===============================
     const gastosRes = await query(
       `
       SELECT
@@ -139,20 +158,16 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
       [date]
     );
 
-    console.log(`💸 GASTOS RESULT:`, gastosRes.rows);
-
-    // 🔥 ASEGURAR QUE DEVOLVEMOS TODOS LOS MÉTODOS ESTÁNDAR, INCLUSO SI NO TIENEN VENTAS
-    // + cualquier método no estándar que se encuentre
-    const metodos = [];
-    
     // Agregar métodos estándar
     const standardMethods = ['cash', 'transfer', 'card'];
+    const metodos = [];
+    
     for (const method of standardMethods) {
       const found = ventasRes.rows.find(r => r.payment_method === method);
-      metodos.push(found || { payment_method: method, total_cobrado: 0, cantidad_pagos: 0 });
+      metodos.push(found || { payment_method: method, total_cobrado: 0, cantidad_pagos: 0, ordenes_afectadas: 0 });
     }
     
-    // Agregar métodos no estándar que se encuentren
+    // Agregar métodos no estándar
     for (const row of ventasRes.rows) {
       if (!standardMethods.includes(row.payment_method)) {
         metodos.push(row);
@@ -161,11 +176,14 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 
     const result = {
       metodos: metodos,
-      gastos: gastosRes.rows || []
+      gastos: gastosRes.rows || [],
+      debug: {
+        orders_summary: ordersSummary.rows,
+        raw_payments: ventasRes.rows
+      }
     };
 
-    console.log(`📊 METODOS ENCONTRADOS:`, metodos.map(m => `${m.payment_method}=${m.total_cobrado}`).join(', '));
-    console.log(`📊 SUMMARY FINAL RESPONSE:`, result);
+    console.log(`📊 FINAL RESPONSE:`, JSON.stringify(result, null, 2));
     res.json(result);
 
   } catch (err) {
@@ -173,7 +191,6 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
     res.status(500).json({ error: err.message });
   }
 });
-
 
 // ===============================
 // 💾 CLOSING (ÚNICO Y CORRECTO)
@@ -205,23 +222,25 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
       `
       SELECT
         COALESCE(SUM(CASE
-          WHEN LOWER(payment_method) IN ('cash','efectivo')
-        THEN total END), 0) AS cash_system,
+          WHEN LOWER(p.payment_method) IN ('cash','efectivo')
+        THEN p.amount END), 0) AS cash_system,
 
         COALESCE(SUM(CASE
-          WHEN LOWER(payment_method) IN ('transfer','transferencia')
-        THEN total END), 0) AS transfer_system,
+          WHEN LOWER(p.payment_method) IN ('transfer','transferencia','banco','banca')
+        THEN p.amount END), 0) AS transfer_system,
 
         COALESCE(SUM(CASE
-          WHEN LOWER(payment_method) IN ('card','tarjeta')
-        THEN total END), 0) AS card_system,
+          WHEN LOWER(p.payment_method) IN ('card','tarjeta','credit','debit')
+        THEN p.amount END), 0) AS card_system,
 
-        COUNT(DISTINCT id) AS orders_system
+        COUNT(DISTINCT o.id) AS orders_system
 
-      FROM "${schema}".pos_orders
+      FROM "${schema}".pos_orders o
+      INNER JOIN "${schema}".pos_payments p ON p.order_id = o.id
 
-      WHERE DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Guayaquil') = $1
-        AND status IN ('paid','completed')
+      WHERE DATE(p.paid_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Guayaquil') = $1
+        AND p.status = 'completed'
+        AND o.status IN ('paid','completed','partially_paid')
       `,
       [date]
     );
