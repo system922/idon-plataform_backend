@@ -172,18 +172,42 @@ router.post('/', authMiddleware, async (req, res) => {
 /**
  * GET /api/ordenes
  * Lista órdenes con sus items (todo desde products mediante JOIN)
+ * Parámetros: status, date (YYYY-MM-DD), limit
  */
 router.get('/', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
 
-    const { status, limit = 50 } = req.query;
+    const { status, date, limit = 50 } = req.query;
 
     let conditions = '';
     let params = [];
 
-    if (status) {
+    // 🔥 NUEVO: Agregar soporte para filtro por fecha
+    if (date) {
+      conditions = `WHERE DATE(o.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Guayaquil') = $1`;
+      params.push(date);
+      let nextParam = 2;
+
+      if (status) {
+        if (status === 'kitchen') {
+          conditions += ` AND (o.status IN ('pending', 'sent', 'completed') OR o.status IS NULL)`;
+        } else if (status === 'active') {
+          conditions += ` AND (o.status NOT IN ('paid', 'draft') OR o.status IS NULL)`;
+        } else if (status === 'pending') {
+          conditions += ` AND o.status = $${nextParam}`;
+          params.push(status);
+          nextParam++;
+        } else {
+          const statuses = status.split(',').map(s => s.trim()).filter(Boolean);
+          const placeholders = statuses.map((_, i) => `$${nextParam + i}`).join(', ');
+          conditions += ` AND o.status IN (${placeholders})`;
+          params.push(...statuses);
+          nextParam += statuses.length;
+        }
+      }
+    } else if (status) {
       if (status === 'kitchen') {
         conditions = `WHERE (o.status IN ('pending', 'sent', 'completed') OR o.status IS NULL)`;
         params = [];

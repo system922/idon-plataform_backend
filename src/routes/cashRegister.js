@@ -89,28 +89,24 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
     const date = req.query.date || ecuadorToday();
 
     // ===============================
-    // 💰 VENTAS POR MÉTODO
+    // 💰 VENTAS POR MÉTODO - DIRECTAMENTE DESDE pos_orders (SIN INNER JOIN)
     // ===============================
     const ventasRes = await query(
       `
-      WITH pagos_normalizados AS (
+      WITH ordenes_pagadas AS (
         SELECT
           CASE
-            WHEN LOWER(pp.payment_method) IN ('cash','efectivo') THEN 'cash'
-            WHEN LOWER(pp.payment_method) IN ('transfer','transferencia') THEN 'transfer'
-            WHEN LOWER(pp.payment_method) IN ('card','tarjeta') THEN 'card'
-            ELSE LOWER(pp.payment_method)
+            WHEN LOWER(payment_method) IN ('cash','efectivo') THEN 'cash'
+            WHEN LOWER(payment_method) IN ('transfer','transferencia') THEN 'transfer'
+            WHEN LOWER(payment_method) IN ('card','tarjeta') THEN 'card'
+            ELSE LOWER(payment_method)
           END AS payment_method,
-          pp.amount,
-          pp.id
-        FROM "${schema}".pos_orders po
-        INNER JOIN "${schema}".pos_payments pp 
-          ON pp.order_id = po.id
+          total AS amount,
+          id
+        FROM "${schema}".pos_orders
         WHERE
-          DATE(po.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Guayaquil') = $1
-          AND po.status IN ('paid','completed')
-          AND pp.status = 'completed'
-          AND pp.amount::text != 'NaN'
+          DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Guayaquil') = $1
+          AND status IN ('paid','completed')
       ),
       metodos AS (
         SELECT 'cash' AS payment_method
@@ -122,7 +118,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
           payment_method,
           SUM(amount) AS total_cobrado,
           COUNT(id) AS cantidad_pagos
-        FROM pagos_normalizados
+        FROM ordenes_pagadas
         WHERE payment_method IN ('cash', 'transfer', 'card')
         GROUP BY payment_method
       )
@@ -188,37 +184,29 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
     const remarks = req.body.remarks || '';
 
     // ===============================
-    // 📊 SYSTEM
+    // 📊 SYSTEM - DIRECTAMENTE DESDE pos_orders (SIN pos_payments)
     // ===============================
     const summary = await query(
       `
       SELECT
         COALESCE(SUM(CASE
-          WHEN LOWER(pp.payment_method) IN ('cash','efectivo')
-          AND pp.status = 'completed'
-          AND pp.amount::text != 'NaN'
-        THEN pp.amount END), 0) AS cash_system,
+          WHEN LOWER(payment_method) IN ('cash','efectivo')
+        THEN total END), 0) AS cash_system,
 
         COALESCE(SUM(CASE
-          WHEN LOWER(pp.payment_method) IN ('transfer','transferencia')
-          AND pp.status = 'completed'
-          AND pp.amount::text != 'NaN'
-        THEN pp.amount END), 0) AS transfer_system,
+          WHEN LOWER(payment_method) IN ('transfer','transferencia')
+        THEN total END), 0) AS transfer_system,
 
         COALESCE(SUM(CASE
-          WHEN LOWER(pp.payment_method) IN ('card','tarjeta')
-          AND pp.status = 'completed'
-          AND pp.amount::text != 'NaN'
-        THEN pp.amount END), 0) AS card_system,
+          WHEN LOWER(payment_method) IN ('card','tarjeta')
+        THEN total END), 0) AS card_system,
 
-        COUNT(DISTINCT po.id) AS orders_system
+        COUNT(DISTINCT id) AS orders_system
 
-      FROM "${schema}".pos_orders po
-      LEFT JOIN "${schema}".pos_payments pp
-        ON pp.order_id = po.id
+      FROM "${schema}".pos_orders
 
-      WHERE DATE(po.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Guayaquil') = $1
-        AND po.status IN ('paid','completed')
+      WHERE DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Guayaquil') = $1
+        AND status IN ('paid','completed')
       `,
       [date]
     );
