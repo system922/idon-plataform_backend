@@ -79,11 +79,6 @@ router.get('/full-closing', authMiddleware, businessContextMiddleware, async (re
 // ===============================
 // 📊 SUMMARY
 // ===============================
-// Reemplazar la consulta del endpoint /summary
-
-// ===============================
-// 📊 SUMMARY - VERSIÓN CORREGIDA USANDO pos_payments
-// ===============================
 router.get('/summary', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -96,7 +91,6 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
     
     console.log(`📊 SUMMARY REQUEST: date=${date}, schema=${schema}`);
 
-    // 🔥 CORRECCIÓN: Usar pos_payments en lugar de pos_orders.payment_method
     const ventasRes = await query(
       `
       SELECT
@@ -114,7 +108,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
       WHERE
         DATE(p.paid_at AT TIME ZONE '${TZ}') = $1
         AND p.status = 'completed'
-        AND o.status IN ('paid', 'completed', 'partially_paid')
+        AND o.status IN ('paid', 'completed')
       GROUP BY 
         CASE
           WHEN LOWER(COALESCE(p.payment_method, '')) IN ('cash','efectivo','') THEN 'cash'
@@ -127,22 +121,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
       [date]
     );
 
-    console.log(`💰 VENTAS RESULT (desde pos_payments):`, ventasRes.rows);
-
-    // 🔥 También obtener un resumen de órdenes por si acaso (para debugging)
-    const ordersSummary = await query(
-      `
-      SELECT 
-        status,
-        COUNT(*) as total_orders,
-        COALESCE(SUM(total), 0) as total_amount
-      FROM "${schema}".pos_orders
-      WHERE DATE(created_at AT TIME ZONE '${TZ}') = $1
-      GROUP BY status
-      `,
-      [date]
-    );
-    console.log(`📋 ORDERS SUMMARY:`, ordersSummary.rows);
+    console.log(`💰 VENTAS RESULT:`, ventasRes.rows);
 
     // 💸 GASTOS
     const gastosRes = await query(
@@ -158,7 +137,6 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
       [date]
     );
 
-    // Agregar métodos estándar
     const standardMethods = ['cash', 'transfer', 'card'];
     const metodos = [];
     
@@ -167,7 +145,6 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
       metodos.push(found || { payment_method: method, total_cobrado: 0, cantidad_pagos: 0, ordenes_afectadas: 0 });
     }
     
-    // Agregar métodos no estándar
     for (const row of ventasRes.rows) {
       if (!standardMethods.includes(row.payment_method)) {
         metodos.push(row);
@@ -176,11 +153,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 
     const result = {
       metodos: metodos,
-      gastos: gastosRes.rows || [],
-      debug: {
-        orders_summary: ordersSummary.rows,
-        raw_payments: ventasRes.rows
-      }
+      gastos: gastosRes.rows || []
     };
 
     console.log(`📊 FINAL RESPONSE:`, JSON.stringify(result, null, 2));
@@ -193,7 +166,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 });
 
 // ===============================
-// 💾 CLOSING (ÚNICO Y CORRECTO)
+// 💾 CLOSING (VERSIÓN CORREGIDA - SIN partially_paid)
 // ===============================
 router.post('/closing', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
@@ -216,7 +189,7 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
     const remarks = req.body.remarks || '';
 
     // ===============================
-    // 📊 SYSTEM - DIRECTAMENTE DESDE pos_orders (SIN pos_payments)
+    // 📊 SYSTEM - CORREGIDO (sin partially_paid)
     // ===============================
     const summary = await query(
       `
@@ -240,7 +213,7 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
 
       WHERE DATE(p.paid_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Guayaquil') = $1
         AND p.status = 'completed'
-        AND o.status IN ('paid','completed','partially_paid')
+        AND o.status IN ('paid', 'completed')
       `,
       [date]
     );
@@ -291,6 +264,9 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
     // 🔍 DEBUG
     // ===============================
     console.log("💰 CLOSING:", {
+      cashSystem,
+      transferSystem,
+      cardSystem,
       totalCounted,
       totalSystem,
       diffTotal
