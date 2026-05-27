@@ -19,14 +19,21 @@ export const getAll = async (req, res) => {
     const includeInactive = all === '1';
     const products = await productService.getAll(schema, includeInactive, category_id);
 
-    console.log('📦 getAll - Primeros productos devueltos:', 
-      products.slice(0, 2).map(p => ({
+    console.log('📦 getAll - LISTA COMPLETA devuelta al frontend:', 
+      products.slice(0, 3).map(p => ({
         id: p.id,
         name: p.name,
         is_taxable: p.is_taxable,
-        tipo: typeof p.is_taxable
+        tax_rate: p.tax_rate,
+        selling_price: p.selling_price,
+        todos_campos: Object.keys(p).sort()
       }))
     );
+
+    console.log('📤 RESPUESTA JSON que se envia al frontend:', {
+      cantidad: products.length,
+      primer_producto_completo: products[0] ? JSON.stringify(products[0], null, 2) : null
+    });
 
     res.json(products);
   } catch (err) {
@@ -43,14 +50,17 @@ export const getById = async (req, res) => {
     const product = await productService.getById(schema, req.params.id);
     if (!product) return res.status(404).json({ error: 'Producto no encontrado' });
 
-    console.log('✅ getById - Producto devuelto:', {
+    console.log('✅ getById - PRODUCTO COMPLETO devuelto:', {
       id: product.id,
       name: product.name,
       is_taxable: product.is_taxable,
+      tipo_is_taxable: typeof product.is_taxable,
       tax_rate: product.tax_rate,
       selling_price: product.selling_price,
-      tipo_is_taxable: typeof product.is_taxable
+      todos_campos: Object.keys(product).sort()
     });
+
+    console.log('📤 JSON que se envia al frontend:', JSON.stringify(product, null, 2));
 
     res.json(product);
   } catch (err) {
