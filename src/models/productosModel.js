@@ -13,6 +13,16 @@ const SELECT = `
 const normalizeProduct = (row) => {
   if (!row) return null;
   
+  // LOG RAW - ANTES de cualquier conversión
+  console.log('🔍 normalizeProduct RAW:', {
+    name: row.name,
+    is_taxable_raw: row.is_taxable,
+    is_taxable_type: typeof row.is_taxable,
+    is_taxable_json: JSON.stringify(row.is_taxable),
+    tax_rate_raw: row.tax_rate,
+    selling_price_raw: row.selling_price
+  });
+  
   // Convertir is_taxable: detectar si es booleano o número
   let isTaxableValue = 0;
   if (typeof row.is_taxable === 'boolean') {

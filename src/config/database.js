@@ -26,7 +26,23 @@ export const query = async (text, params) => {
   try {
     const result = await pool.query(text, params);
     const duration = Date.now() - start;
-    console.log('Executed query', { text, duration, rows: result.rowCount });
+    
+    // LOG detallado para is_taxable
+    if (text.includes('is_taxable')) {
+      console.log('📋 QUERY CON is_taxable:', {
+        sql: text.substring(0, 200),
+        params,
+        rowCount: result.rowCount,
+        primerRow: result.rows[0] ? {
+          name: result.rows[0].name,
+          is_taxable: result.rows[0].is_taxable,
+          is_taxable_type: typeof result.rows[0].is_taxable,
+          is_taxable_json: JSON.stringify(result.rows[0].is_taxable)
+        } : null
+      });
+    }
+    
+    console.log('Executed query', { text: text.substring(0, 100), duration, rows: result.rowCount });
     return result;
   } catch (error) {
     console.error('Database error', { text, error });
