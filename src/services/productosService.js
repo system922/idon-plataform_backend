@@ -6,41 +6,34 @@ const toText = (v) => (v === '' || v == null ? null : String(v).trim());
 const toBool = (v, def = true) => (v == null ? def : v === true || v === 'true' || v === 1 || v === '1');
 
 /**
- * Calcula el IVA usando la tasa vigente de la base de datos
- * @param {number} precioConIva - PVP (precio con IVA)
- * @param {boolean} tieneIva - Si el producto tiene IVA
+ * Calcula el IVA usando la tasa seleccionada (0, 5, 8, 12, 15)
+ * @param {number} precioConIva - PVP (precio con IVA que ingresa el usuario)
+ * @param {number} taxRate - Tasa IVA seleccionada (0, 5, 8, 12, 15)
  * @returns {Object} { taxValue, priceWithoutTax }
  */
-const calcIvaConTasaVigente = async (precioConIva, tieneIva) => {
-  // Si no tiene IVA, todo es precio sin IVA
-  if (!tieneIva || !precioConIva || precioConIva <= 0) {
+const calcIvaConTasaSeleccionada = (precioConIva, taxRate) => {
+  // Si no hay tasa IVA (0%), el precio es el mismo que ingresó
+  if (!taxRate || taxRate <= 0 || !precioConIva || precioConIva <= 0) {
     return { 
       taxValue: 0, 
       priceWithoutTax: precioConIva || 0 
     };
   }
   
-  const rates = await productModel.getFiscalRates();
-  let tasa = rates.iva_rate;
+  // Convertir tasa porcentual a decimal (15 → 0.15)
+  const tasaDecimal = taxRate / 100;
   
-  // ✅ Si la tasa es > 1, es porcentaje (15 → 0.15)
-  if (tasa > 1) {
-    tasa = tasa / 100;
-  }
+  console.log('💰 Calculando IVA con tasa:', { precioConIva, taxRate, tasaDecimal });
   
-  // ✅ Si por algún motivo sigue siendo 0, usar 0.15 por defecto
-  if (tasa === 0) {
-    tasa = 0.15;
-  }
-  
-  console.log('💰 Calculando IVA:', { precioConIva, tasa });
-  
-  const priceWithoutTax = precioConIva / (1 + tasa);
+  // Calcular precio sin IVA: pvp / (1 + tasa)
+  const priceWithoutTax = precioConIva / (1 + tasaDecimal);
+  // Calcular monto IVA: pvp - precio_sin_iva
   const taxValue = precioConIva - priceWithoutTax;
   
-  console.log('✅ Resultado cálculo:', { 
+  console.log('✅ Resultado cálculo IVA:', { 
     priceWithoutTax: priceWithoutTax.toFixed(2), 
-    taxValue: taxValue.toFixed(2) 
+    taxValue: taxValue.toFixed(2),
+    taxRate
   });
   
   return {
@@ -67,12 +60,13 @@ export const getNextCode = async (schema, categoria) => {
 };
 
 export const create = async (schema, body) => {
-  // 1. Determinar si el producto tiene IVA
-  const isTaxable = toBool(
+  // 1. Obtener la tasa IVA seleccionada (0, 5, 8, 12, 15)
+  // is_taxable ahora contiene la tasa IVA, no un booleano
+  const taxRateSelected = toNum(
     body.is_taxable !== undefined ? body.is_taxable :
-    body.has_iva !== undefined ? body.has_iva :
-    body.iva !== undefined ? body.iva : false,
-    false
+    body.tax_rate !== undefined ? body.tax_rate :
+    body.taxRate !== undefined ? body.taxRate : 0,
+    0
   );
   
   // 2. Obtener el PVP (precio con IVA) que envía el frontend
@@ -81,10 +75,10 @@ export const create = async (schema, body) => {
     throw new Error('El precio de venta es requerido y debe ser mayor a 0');
   }
   
-  console.log('📦 Creando producto:', { name: body.name, pvp, isTaxable });
+  console.log('📦 Creando producto:', { name: body.name, pvp, taxRateSelected });
   
-  // 3. Calcular selling_price (precio sin IVA) y tax_rate (valor del IVA)
-  const { taxValue, priceWithoutTax } = await calcIvaConTasaVigente(pvp, isTaxable);
+  // 3. Calcular selling_price (precio sin IVA) y tax_rate (monto del IVA)
+  const { taxValue, priceWithoutTax } = calcIvaConTasaSeleccionada(pvp, taxRateSelected);
   
   // 4. Obtener o crear categoría
   let category_id = null;
@@ -108,7 +102,7 @@ export const create = async (schema, body) => {
     sellingPrice: priceWithoutTax,
     unitCost: toNum(body.unit_cost !== undefined ? body.unit_cost : body.costo, 0),
     taxRate: taxValue,
-    isTaxable,
+    isTaxable: taxRateSelected,  // Guardar la tasa IVA (0, 5, 8, 12, 15) en is_taxable
     isActive: toBool(body.active !== undefined ? body.active : body.estado, true),
     sku: toText(body.sku),
     barcode: toText(body.barcode || body.codigoBarras),
@@ -119,6 +113,7 @@ export const create = async (schema, body) => {
   console.log('💾 Producto guardado:', {
     selling_price: result.selling_price,
     tax_rate: result.tax_rate,
+    is_taxable: result.is_taxable,
     unit_cost: result.unit_cost
   });
   
@@ -129,23 +124,28 @@ export const update = async (schema, id, body) => {
   const currentProduct = await productModel.findById(schema, id);
   if (!currentProduct) throw new Error('Producto no encontrado');
   
-  let isTaxable = currentProduct.is_taxable;
-  if (body.is_taxable !== undefined) isTaxable = toBool(body.is_taxable);
-  else if (body.has_iva !== undefined) isTaxable = toBool(body.has_iva);
-  else if (body.iva !== undefined) isTaxable = toBool(body.iva);
+  // 1. Obtener la tasa IVA (puede venir del body o mantener la actual)
+  let taxRateSelected = currentProduct.is_taxable;
+  if (body.is_taxable !== undefined) taxRateSelected = toNum(body.is_taxable, taxRateSelected);
+  else if (body.tax_rate !== undefined) taxRateSelected = toNum(body.tax_rate, taxRateSelected);
+  else if (body.taxRate !== undefined) taxRateSelected = toNum(body.taxRate, taxRateSelected);
   
+  // 2. Obtener el PVP (puede venir del body o recalcularse del precio actual)
   let pvp = currentProduct.selling_price + currentProduct.tax_rate;
   if (body.price !== undefined) pvp = toNum(body.price);
   else if (body.precioVenta !== undefined) pvp = toNum(body.precioVenta);
+  else if (body.selling_price !== undefined) pvp = toNum(body.selling_price);
   
+  // 3. Inicializar con valores actuales
   let taxValue = currentProduct.tax_rate;
   let priceWithoutTax = currentProduct.selling_price;
   
-  const precioCambio = (body.price !== undefined || body.precioVenta !== undefined);
-  const ivaCambio = (body.is_taxable !== undefined || body.has_iva !== undefined || body.iva !== undefined);
+  // 4. Recalcular si cambió el precio o la tasa IVA
+  const precioCambio = (body.price !== undefined || body.precioVenta !== undefined || body.selling_price !== undefined);
+  const ivaCambio = (body.is_taxable !== undefined || body.tax_rate !== undefined || body.taxRate !== undefined);
   
   if (precioCambio || ivaCambio) {
-    const calculo = await calcIvaConTasaVigente(pvp, isTaxable);
+    const calculo = calcIvaConTasaSeleccionada(pvp, taxRateSelected);
     taxValue = calculo.taxValue;
     priceWithoutTax = calculo.priceWithoutTax;
   }
@@ -173,7 +173,7 @@ export const update = async (schema, id, body) => {
     sellingPrice: priceWithoutTax,
     unit_cost: toNum(body.unit_cost !== undefined ? body.unit_cost : body.costo, currentProduct.unit_cost),
     taxRate: taxValue,
-    isTaxable,
+    isTaxable: taxRateSelected,  // Guardar la tasa IVA (0, 5, 8, 12, 15)
     isActive: toBool(body.active !== undefined ? body.active : body.estado, currentProduct.is_active),
     stock: toNum(body.stock, currentProduct.stock),
     category_id,

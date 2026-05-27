@@ -172,8 +172,13 @@ export async function emitInvoice(schema, opts) {
       const subtotalItem = parseFloat(item.subtotal || 0);
       const ivaItem = parseFloat(item.iva_amount || 0);
 
-      // Determinar tasa IVA real del item: si no tiene IVA → 0%, sino usar tasa global
-      const itemIvaRate = ivaItem === 0 ? 0 : ivaRatePorcentual;
+      // ✅ LEER TASA DE CADA ITEM: si viene iva_rate_pct, usarla; si no, inferir de iva_amount
+      let itemIvaRate = parseFloat(item.iva_rate_pct || 0);
+      
+      // Si no viene tasa explícita, inferir: si ivaItem === 0 → 0%, sino usar global
+      if (itemIvaRate === 0 && ivaItem > 0) {
+        itemIvaRate = ivaRatePorcentual;
+      }
 
       // Acumular para totalConImpuestos
       if (!ivaGroupsForTotal[itemIvaRate]) {
@@ -458,7 +463,8 @@ export async function listInvoices(schema, { limit = 50, status } = {}) {
             subtotal, iva_amount, total, discount_amount, items,
             COALESCE(credited_amount, 0) AS credited_amount,
             status, sri_message, sri_json,
-            emission_date, auth_date, created_at
+            emission_date, auth_date, created_at,
+            (signed_xml IS NOT NULL AND signed_xml <> '') AS has_signed_xml
        FROM "${schema}".einvoices
        ${where}
        ORDER BY created_at DESC
