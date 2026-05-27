@@ -12,12 +12,22 @@ const SELECT = `
 // Función para normalizar los datos del producto
 const normalizeProduct = (row) => {
   if (!row) return null;
+  
+  // Convertir is_taxable: detectar si es booleano o número
+  let isTaxableValue = 0;
+  if (typeof row.is_taxable === 'boolean') {
+    // Si es booleano: true → 15%, false → 0%
+    isTaxableValue = row.is_taxable ? 15 : 0;
+    console.log('🔄 normalizeProduct: is_taxable es BOOLEANO', row.is_taxable, '→', isTaxableValue);
+  } else if (row.is_taxable !== null && row.is_taxable !== undefined) {
+    // Si es número, usarlo como está
+    isTaxableValue = Number(Math.round(row.is_taxable));
+    console.log('🔄 normalizeProduct: is_taxable es NÚMERO', row.is_taxable, '→', isTaxableValue);
+  }
+  
   return {
     ...row,
-    // Convertir is_taxable a número entero (0, 5, 8, 12, 15)
-    is_taxable: row.is_taxable !== null && row.is_taxable !== undefined && row.is_taxable !== false 
-      ? Number(Math.round(row.is_taxable))
-      : 0,
+    is_taxable: isTaxableValue,
     // Convertir tax_rate a número decimal
     tax_rate: row.tax_rate ? Number(row.tax_rate) : 0,
     // Convertir otros números
@@ -147,7 +157,7 @@ export const insert = async (schema, d) => {
       d.isActive !== false, d.sku, d.barcode || genEAN13(), d.stock || 0, d.minStock || 0,
     ]
   );
-  return rows[0];
+  return normalizeProduct(rows[0]);
 };
 
 export const updateById = async (schema, id, d) => {
@@ -209,7 +219,7 @@ export const updateById = async (schema, id, d) => {
       `SELECT * FROM "${schema}".products WHERE id = $1`,
       [id]
     );
-    return rows[0];
+    return normalizeProduct(rows[0]);
   }
 
   updates.push(`updated_at = NOW()`);
@@ -219,7 +229,7 @@ export const updateById = async (schema, id, d) => {
     `UPDATE "${schema}".products SET ${updates.join(', ')} WHERE id = $${idx} RETURNING *`,
     values
   );
-  return rows[0];
+  return normalizeProduct(rows[0]);
 };
 
 export const softDelete = async (schema, id) => {
