@@ -4,7 +4,9 @@ const SELECT = `
   p.id, p.code, p.name, p.description,
   p.category_id, c.name AS category_name,
   p.selling_price, p.unit_cost,
-  p.tax_rate, p.is_taxable, p.is_active,
+  p.tax_rate, 
+  CAST(p.is_taxable AS NUMERIC(5,2)) as is_taxable,
+  p.is_active,
   p.sku, p.barcode, p.stock, p.min_stock,
   p.created_at, p.updated_at
 `;
@@ -28,11 +30,21 @@ const normalizeProduct = (row) => {
   if (typeof row.is_taxable === 'boolean') {
     // Si es booleano: true → 15%, false → 0%
     isTaxableValue = row.is_taxable ? 15 : 0;
-    console.log('🔄 normalizeProduct: is_taxable es BOOLEANO', row.is_taxable, '→', isTaxableValue);
+    console.log('⚠️ normalizeProduct: is_taxable es BOOLEANO', row.is_taxable, '→', isTaxableValue);
   } else if (row.is_taxable !== null && row.is_taxable !== undefined) {
     // Si es número, usarlo como está
     isTaxableValue = Number(Math.round(row.is_taxable));
-    console.log('🔄 normalizeProduct: is_taxable es NÚMERO', row.is_taxable, '→', isTaxableValue);
+    console.log('✅ normalizeProduct: is_taxable es NÚMERO', row.is_taxable, '→', isTaxableValue);
+  } else {
+    console.log('⚠️ normalizeProduct: is_taxable es NULL/UNDEFINED');
+    isTaxableValue = 0;
+  }
+  
+  // VALIDAR QUE SEA UNO DE LOS VALORES PERMITIDOS
+  const tasasPermitidas = [0, 5, 8, 12, 15];
+  if (!tasasPermitidas.includes(isTaxableValue)) {
+    console.warn(`❌ TASA INVÁLIDA: ${isTaxableValue}, usando 0`);
+    isTaxableValue = 0;
   }
   
   return {
