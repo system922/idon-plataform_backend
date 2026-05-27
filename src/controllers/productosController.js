@@ -19,6 +19,15 @@ export const getAll = async (req, res) => {
     const includeInactive = all === '1';
     const products = await productService.getAll(schema, includeInactive, category_id);
 
+    console.log('📦 getAll - Primeros productos devueltos:', 
+      products.slice(0, 2).map(p => ({
+        id: p.id,
+        name: p.name,
+        is_taxable: p.is_taxable,
+        tipo: typeof p.is_taxable
+      }))
+    );
+
     res.json(products);
   } catch (err) {
     console.error('Error en getAll:', err);
@@ -33,6 +42,15 @@ export const getById = async (req, res) => {
 
     const product = await productService.getById(schema, req.params.id);
     if (!product) return res.status(404).json({ error: 'Producto no encontrado' });
+
+    console.log('✅ getById - Producto devuelto:', {
+      id: product.id,
+      name: product.name,
+      is_taxable: product.is_taxable,
+      tax_rate: product.tax_rate,
+      selling_price: product.selling_price,
+      tipo_is_taxable: typeof product.is_taxable
+    });
 
     res.json(product);
   } catch (err) {

@@ -9,6 +9,25 @@ const SELECT = `
   p.created_at, p.updated_at
 `;
 
+// Función para normalizar los datos del producto
+const normalizeProduct = (row) => {
+  if (!row) return null;
+  return {
+    ...row,
+    // Convertir is_taxable a número entero (0, 5, 8, 12, 15)
+    is_taxable: row.is_taxable !== null && row.is_taxable !== undefined && row.is_taxable !== false 
+      ? Number(Math.round(row.is_taxable))
+      : 0,
+    // Convertir tax_rate a número decimal
+    tax_rate: row.tax_rate ? Number(row.tax_rate) : 0,
+    // Convertir otros números
+    selling_price: Number(row.selling_price) || 0,
+    unit_cost: Number(row.unit_cost) || 0,
+    stock: Number(row.stock) || 0,
+    min_stock: Number(row.min_stock) || 0,
+  };
+};
+
 function genEAN13() {
   const base = String(Math.floor(1e10 + Math.random() * 9e11)).slice(0, 12);
   let sum = 0;
@@ -23,7 +42,7 @@ export const findAll = async (schema, includeInactive = false) => {
      LEFT JOIN "${schema}".categories c ON p.category_id = c.id
      ${where} ORDER BY p.name ASC`
   );
-  return rows;
+  return rows.map(normalizeProduct);
 };
 
 export const findByCategory = async (schema, category_id, includeInactive = false) => {
@@ -34,7 +53,7 @@ export const findByCategory = async (schema, category_id, includeInactive = fals
      ${where} ORDER BY p.name ASC`,
     [category_id]
   );
-  return rows;
+  return rows.map(normalizeProduct);
 };
 
 export const findById = async (schema, id) => {
@@ -44,7 +63,7 @@ export const findById = async (schema, id) => {
      WHERE p.id = $1`,
     [id]
   );
-  return rows[0] ?? null;
+  return normalizeProduct(rows[0] ?? null);
 };
 
 export const countByCategory = async (schema, cat) => {
