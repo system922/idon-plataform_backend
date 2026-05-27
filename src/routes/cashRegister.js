@@ -92,16 +92,16 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
     console.log(`📊 SUMMARY REQUEST: date=${date}, schema=${schema}`);
 
     // ===============================
-    // 💰 VENTAS POR MÉTODO - USANDO LA MISMA LÓGICA QUE EL DASHBOARD
+    // 💰 VENTAS POR MÉTODO - AGRUPANDO CORRECTAMENTE POR MÉTODO DE PAGO
     // ===============================
     const ventasRes = await query(
       `
       SELECT
         CASE
-          WHEN LOWER(COALESCE(payment_method, 'cash')) IN ('cash','efectivo') THEN 'cash'
-          WHEN LOWER(COALESCE(payment_method, 'cash')) IN ('transfer','transferencia') THEN 'transfer'
-          WHEN LOWER(COALESCE(payment_method, 'cash')) IN ('card','tarjeta') THEN 'card'
-          ELSE 'cash'
+          WHEN LOWER(COALESCE(payment_method, '')) IN ('cash','efectivo','') THEN 'cash'
+          WHEN LOWER(payment_method) IN ('transfer','transferencia','banco','banca') THEN 'transfer'
+          WHEN LOWER(payment_method) IN ('card','tarjeta','credit','debit','credito','debito') THEN 'card'
+          ELSE LOWER(payment_method)
         END AS payment_method,
         COALESCE(SUM(total), 0)::FLOAT AS total_cobrado,
         COUNT(*)::INT AS cantidad_pagos
@@ -111,10 +111,10 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
         AND status = 'paid'
       GROUP BY 
         CASE
-          WHEN LOWER(COALESCE(payment_method, 'cash')) IN ('cash','efectivo') THEN 'cash'
-          WHEN LOWER(COALESCE(payment_method, 'cash')) IN ('transfer','transferencia') THEN 'transfer'
-          WHEN LOWER(COALESCE(payment_method, 'cash')) IN ('card','tarjeta') THEN 'card'
-          ELSE 'cash'
+          WHEN LOWER(COALESCE(payment_method, '')) IN ('cash','efectivo','') THEN 'cash'
+          WHEN LOWER(payment_method) IN ('transfer','transferencia','banco','banca') THEN 'transfer'
+          WHEN LOWER(payment_method) IN ('card','tarjeta','credit','debit','credito','debito') THEN 'card'
+          ELSE LOWER(payment_method)
         END
       ORDER BY payment_method
       `,
@@ -141,16 +141,30 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 
     console.log(`💸 GASTOS RESULT:`, gastosRes.rows);
 
-    // 🔥 ASEGURAR QUE DEVOLVEMOS TODOS LOS MÉTODOS, INCLUSO SI NO TIENEN VENTAS
+    // 🔥 ASEGURAR QUE DEVOLVEMOS TODOS LOS MÉTODOS ESTÁNDAR, INCLUSO SI NO TIENEN VENTAS
+    // + cualquier método no estándar que se encuentre
+    const metodos = [];
+    
+    // Agregar métodos estándar
+    const standardMethods = ['cash', 'transfer', 'card'];
+    for (const method of standardMethods) {
+      const found = ventasRes.rows.find(r => r.payment_method === method);
+      metodos.push(found || { payment_method: method, total_cobrado: 0, cantidad_pagos: 0 });
+    }
+    
+    // Agregar métodos no estándar que se encuentren
+    for (const row of ventasRes.rows) {
+      if (!standardMethods.includes(row.payment_method)) {
+        metodos.push(row);
+      }
+    }
+
     const result = {
-      metodos: [
-        ventasRes.rows.find(r => r.payment_method === 'cash') || { payment_method: 'cash', total_cobrado: 0, cantidad_pagos: 0 },
-        ventasRes.rows.find(r => r.payment_method === 'transfer') || { payment_method: 'transfer', total_cobrado: 0, cantidad_pagos: 0 },
-        ventasRes.rows.find(r => r.payment_method === 'card') || { payment_method: 'card', total_cobrado: 0, cantidad_pagos: 0 }
-      ],
+      metodos: metodos,
       gastos: gastosRes.rows || []
     };
 
+    console.log(`📊 METODOS ENCONTRADOS:`, metodos.map(m => `${m.payment_method}=${m.total_cobrado}`).join(', '));
     console.log(`📊 SUMMARY FINAL RESPONSE:`, result);
     res.json(result);
 
