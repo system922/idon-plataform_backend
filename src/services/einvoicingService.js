@@ -28,12 +28,15 @@ function pad(n, len) {
   return String(n).padStart(len, '0');
 }
 
+
 function ivaCode(rate) {
-  if (rate === 0) return 0;
-  if (rate === 5) return 5;
-  if (rate === 8) return 8;
-  if (rate === 12) return 2;
-  return 4; // 15%
+  const rateNum = Number(rate);
+  if (rateNum === 0) return 0;
+  if (rateNum === 5) return 5;
+  if (rateNum === 8) return 8;
+  if (rateNum === 12) return 2;
+  if (rateNum === 15) return 4;
+  return 4; // default 15%
 }
 
 // ------------------- CONFIG Y SIGNATURE -------------------
@@ -152,18 +155,16 @@ export async function emitInvoice(schema, opts) {
     const subtotalConDescuento = parseFloat(opts.subtotal || 0);
     const ivaAmountTotal = parseFloat(opts.iva_amount || 0);
     const totalFactura = parseFloat(opts.total || 0);
-    const ivaRatePorcentual = parseFloat(opts.iva_rate || 15);
 
     console.log('💰💰💰 VALORES RECIBIDOS DEL FRONTEND:', {
       subtotalConDescuento,
       ivaAmountTotal,
       totalFactura,
       totalDescuento,
-      ivaRatePorcentual
+      itemsCount: opts.items?.length
     });
 
-    // Detalle de items — cada item usa su propia tarifa IVA (0% o la tarifa global)
-    // Si iva_amount == 0, el item es exento de IVA (codigoPorcentaje=0).
+    // 🔥 Agrupar por tasa IVA para totales
     const ivaGroupsForTotal = {};  // { tasa: { base: 0, valor: 0 } }
 
     const detalleItems = (opts.items || []).map((item) => {
@@ -171,16 +172,29 @@ export async function emitInvoice(schema, opts) {
       const unitPrice = parseFloat(item.unit_price || 0);
       const subtotalItem = parseFloat(item.subtotal || 0);
       const ivaItem = parseFloat(item.iva_amount || 0);
-
-      // ✅ LEER TASA DE CADA ITEM: si viene iva_rate_pct, usarla; si no, inferir de iva_amount
+      
+      // 🔥 OBTENER LA TASA IVA DEL ITEM (puede ser 0, 5, 8, 12, 15)
       let itemIvaRate = parseFloat(item.iva_rate_pct || 0);
       
-      // Si no viene tasa explícita, inferir: si ivaItem === 0 → 0%, sino usar global
-      if (itemIvaRate === 0 && ivaItem > 0) {
-        itemIvaRate = ivaRatePorcentual;
+      // Si no viene tasa explícita pero tiene IVA > 0, usar la tasa que corresponda
+      if (itemIvaRate === 0 && ivaItem > 0 && subtotalItem > 0) {
+        // Inferir la tasa del monto de IVA y la base
+        const inferredRate = Math.round((ivaItem / subtotalItem) * 100);
+        if ([0, 5, 8, 12, 15].includes(inferredRate)) {
+          itemIvaRate = inferredRate;
+        } else if (ivaItem > 0) {
+          itemIvaRate = 15; // default
+        }
       }
+      
+      // 🔥 Para items con IVA 0, asegurar que la tasa sea 0
+      if (ivaItem === 0 && itemIvaRate !== 0) {
+        itemIvaRate = 0;
+      }
+      
+      console.log(`📦 Item: ${item.description || item.name}, tasa: ${itemIvaRate}%, IVA: ${ivaItem}, subtotal: ${subtotalItem}`);
 
-      // Acumular para totalConImpuestos
+      // 🔥 Acumular para totalConImpuestos por tasa
       if (!ivaGroupsForTotal[itemIvaRate]) {
         ivaGroupsForTotal[itemIvaRate] = { base: 0, valor: 0 };
       }
@@ -196,7 +210,7 @@ export async function emitInvoice(schema, opts) {
       }
 
       return {
-        codigoPrincipal: item.code || 'PROD',
+        codigoPrincipal: item.code || item.codigo || 'PROD',
         codigoAuxiliar: item.aux_code || '',
         descripcion: item.description || item.name || 'Producto',
         cantidad: qty,
@@ -215,21 +229,29 @@ export async function emitInvoice(schema, opts) {
       };
     });
 
-    // totalConImpuestos: un bloque por cada tasa IVA distinta encontrada
-    const totalImpuestoArray = Object.entries(ivaGroupsForTotal).map(([rate, g]) => ({
-      codigo: 2,
-      codigoPorcentaje: ivaCode(Number(rate)),
-      baseImponible: Math.round(g.base  * 100) / 100,
-      valor:         Math.round(g.valor * 100) / 100,
-    }));
+    // 🔥 Construir totalConImpuestos con todas las tasas encontradas
+    const totalImpuestoArray = Object.entries(ivaGroupsForTotal)
+      .filter(([_, g]) => g.base > 0 || g.valor > 0)  // Solo tasas con valores
+      .map(([rate, g]) => ({
+        codigo: 2,
+        codigoPorcentaje: ivaCode(Number(rate)),
+        baseImponible: Math.round(g.base * 100) / 100,
+        valor: Math.round(g.valor * 100) / 100,
+      }));
 
-    // Si no hay ningún grupo (ej. lista vacía), agregar bloque vacío con tasa global
+    // 🔥 Ordenar por tasa descendente para mejor legibilidad
+    totalImpuestoArray.sort((a, b) => b.codigoPorcentaje - a.codigoPorcentaje);
+
+    console.log('📊 TOTALES POR TASA IVA:', totalImpuestoArray);
+    console.log('📊 IVA GROUPS:', ivaGroupsForTotal);
+
+    // Si no hay ningún grupo, agregar bloque con tasa 0
     if (totalImpuestoArray.length === 0) {
       totalImpuestoArray.push({
         codigo: 2,
-        codigoPorcentaje: ivaCode(ivaRatePorcentual),
+        codigoPorcentaje: 0,
         baseImponible: subtotalConDescuento,
-        valor: ivaAmountTotal,
+        valor: 0,
       });
     }
 
@@ -272,7 +294,7 @@ export async function emitInvoice(schema, opts) {
       },
     };
 
-    // El resto del código sigue igual...
+    // Generar XML
     const { generatedXml } = await generateXmlInvoice(comprobante);
     const claveMatch = generatedXml.match(/<claveAcceso>([^<]+)<\/claveAcceso>/);
     const claveAcceso = claveMatch?.[1] || '';
@@ -328,11 +350,15 @@ export async function emitInvoice(schema, opts) {
     await client.query('COMMIT');
     const savedInvoice = rows[0];
 
-    _authorizeSriBackground(schema, savedInvoice, signedXml, claveAcceso, envStr).catch(() => {});
+    // Enviar a autorización SRI en segundo plano
+    _authorizeSriBackground(schema, savedInvoice, signedXml, claveAcceso, envStr).catch((err) => {
+      console.error('Error en autorización SRI background:', err);
+    });
 
     return savedInvoice;
   } catch (err) {
     await client.query('ROLLBACK');
+    console.error('Error en emitInvoice:', err);
     throw err;
   } finally {
     client.release();
@@ -495,7 +521,16 @@ async function parseFacturaFromXml(xmlText) {
   let rawDetalles = factura?.detalles?.detalle ?? [];
   if (!Array.isArray(rawDetalles)) rawDetalles = [rawDetalles];
 
-  // 🔥 CORREGIDO: Extraer correctamente la tasa IVA de cada ítem
+  // Mapeo de códigos de porcentaje SRI a tasas
+  const codigoPorcentajeMap = {
+    '0': 0,   // IVA 0%
+    '2': 12,  // IVA 12%
+    '4': 15,  // IVA 15%
+    '5': 5,   // IVA 5%
+    '6': 8,   // IVA 8%
+    '7': 0,   // No objeto de IVA
+  };
+
   const items = rawDetalles.map(d => {
     let rawImp = d?.impuestos?.impuesto ?? [];
     if (!Array.isArray(rawImp)) rawImp = [rawImp];
@@ -503,32 +538,40 @@ async function parseFacturaFromXml(xmlText) {
     // Buscar el impuesto con código 2 (IVA)
     const ivaImp = rawImp.find(i => str(i?.codigo) === '2') || rawImp[0] || {};
     
-    // Obtener la tarifa (tasa porcentual) - puede venir como "15.00" o "15"
-    let tarifa = num(ivaImp?.tarifa);
+    let tarifa = 0;
     
-    // Si la tarifa es > 1, asumir que es porcentaje (15.00)
-    // Si es <= 1, asumir que es decimal (0.15)
-    if (tarifa > 0 && tarifa <= 1) {
-      tarifa = Math.round(tarifa * 100);
-    } else if (tarifa > 1 && tarifa <= 100) {
-      tarifa = Math.round(tarifa);
+    // 1. Intentar obtener la tarifa directamente
+    const tarifaRaw = num(ivaImp?.tarifa);
+    if (tarifaRaw > 0) {
+      if (tarifaRaw <= 1) {
+        tarifa = Math.round(tarifaRaw * 100);
+      } else if (tarifaRaw <= 100) {
+        tarifa = Math.round(tarifaRaw);
+      } else {
+        tarifa = 15;
+      }
     }
     
-    // Si no hay tarifa, intentar obtener del códigoPorcentaje
+    // 2. Si no hay tarifa, usar el códigoPorcentaje
     if (tarifa === 0) {
       const codigoPorcentaje = str(ivaImp?.codigoPorcentaje);
-      // Mapear códigos SRI a tasas
-      const codigoMap = {
-        '0': 0,
-        '2': 12,
-        '4': 15,
-        '5': 5,
-        '8': 8
-      };
-      tarifa = codigoMap[codigoPorcentaje] || 15;
+      tarifa = codigoPorcentajeMap[codigoPorcentaje] ?? 0;
     }
     
-    console.log(`📊 Ítem: ${str(d?.codigoPrincipal)} - Tarifa IVA detectada: ${tarifa}%`);
+    // 3. Si sigue siendo 0, verificar si el item tiene IVA
+    const valorIVA = num(ivaImp?.valor);
+    if (tarifa === 0 && valorIVA > 0) {
+      // Inferir tarifa del valor del IVA y la base imponible
+      const baseImponible = num(d?.precioTotalSinImpuesto);
+      if (baseImponible > 0) {
+        const tarifaInferida = Math.round((valorIVA / baseImponible) * 100);
+        if ([0, 5, 8, 12, 15].includes(tarifaInferida)) {
+          tarifa = tarifaInferida;
+        }
+      }
+    }
+    
+    console.log(`📊 Ítem: ${str(d?.codigoPrincipal)} - Tarifa IVA: ${tarifa}%, Valor IVA: ${valorIVA}`);
     
     return {
       codigoPrincipal: str(d?.codigoPrincipal),
@@ -538,37 +581,37 @@ async function parseFacturaFromXml(xmlText) {
       unitPrice: num(d?.precioUnitario),
       descuento: num(d?.descuento),
       lineTotal: num(d?.precioTotalSinImpuesto),
-      ivaRate: tarifa,  // ← Ahora usa la tasa real
-      ivaValue: num(ivaImp?.valor),
+      ivaRate: tarifa,
+      ivaValue: valorIVA,
     };
   });
 
-  // 🔥 CORREGIDO: Calcular subtotales por tasa desde los items reales
+  // Calcular subtotales por tasa
   const subtotalByRate = {};
+  const ivaByRate = {};
   for (const item of items) {
     const rate = item.ivaRate;
     subtotalByRate[rate] = (subtotalByRate[rate] || 0) + item.lineTotal;
+    ivaByRate[rate] = (ivaByRate[rate] || 0) + item.ivaValue;
   }
-
+  
   // Obtener totales del XML o calcular desde items
   const totalSinImpuestos = num(inf?.totalSinImpuestos);
   const totalDescuento = num(inf?.totalDescuento || 0);
   
-  // Calcular IVA total desde los items si no viene en el XML
-  let ivaTotal = num(inf?.totalConImpuestos?.totalImpuesto?.valor
-                  ?? inf?.totalConImpuestos?.totalImpuesto?.[0]?.valor);
-  if (ivaTotal === 0 && items.length > 0) {
-    ivaTotal = items.reduce((sum, item) => sum + item.ivaValue, 0);
-  }
+  // Calcular IVA total desde los items
+  const ivaTotal = items.reduce((sum, item) => sum + item.ivaValue, 0);
   
   const importeTotal = num(inf?.importeTotal);
 
   console.log('💰 Totales parseados:', {
     subtotalByRate,
+    ivaByRate,
     totalSinImpuestos,
     totalDescuento,
     ivaTotal,
-    importeTotal
+    importeTotal,
+    itemsCount: items.length
   });
 
   return {
@@ -592,7 +635,8 @@ async function parseFacturaFromXml(xmlText) {
     total: importeTotal,
     formaPago: str(inf?.pagos?.pago?.formaPago ?? inf?.pagos?.pago?.[0]?.formaPago),
     items,
-    subtotalByRate,  // ← Añadir para uso en PDF
+    subtotalByRate,
+    ivaByRate,
   };
 }
 
