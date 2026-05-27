@@ -75,9 +75,21 @@ export const create = async (schema, body) => {
     throw new Error('El precio de venta es requerido y debe ser mayor a 0');
   }
   
-  console.log('📦 Creando producto:', { name: body.name, pvp, taxRateSelected });
+  console.log('📦 CREAR PRODUCTO - DEBUG:', { 
+    name: body.name, 
+    pvp_recibido: pvp, 
+    tasa_iva_recibida: taxRateSelected,
+    campos_del_body: Object.keys(body)
+  });
   
   // 3. Calcular selling_price (precio sin IVA) y tax_rate (monto del IVA)
+  const { taxValue, priceWithoutTax } = calcIvaConTasaSeleccionada(pvp, taxRateSelected);
+  
+  console.log('✅ CREAR PRODUCTO - CALCULADO:', { 
+    priceWithoutTax,
+    taxValue,
+    taxRateSelected
+  });
   const { taxValue, priceWithoutTax } = calcIvaConTasaSeleccionada(pvp, taxRateSelected);
   
   // 4. Obtener o crear categoría
