@@ -735,10 +735,8 @@ export async function generateInvoicePdf(schema, invoiceId) {
     const rightX = M + leftW + 4;
     const hH = 178;
 
-    // Recuadro derecho (información de factura)
     bord(rightX, y, rightW, hH, 0.8);
 
-    // Logo e información de la empresa (recuadro izquierdo)
     const LOGO_FIT = 100;
     if (logoBuf) {
       try { doc.image(logoBuf, M, y, { fit: [LOGO_FIT, LOGO_FIT] }); } catch { }
@@ -775,7 +773,6 @@ export async function generateInvoicePdf(schema, invoiceId) {
     doc.fontSize(8).font('Helvetica')
        .text('OBLIGADO A LLEVAR CONTABILIDAD:   ' + (cfg?.obligado_contabilidad ? 'SI' : 'NO'), M, ly, { width: leftW - 2 });
 
-    // Información de Factura (lado derecho)
     let ry = y + 10;
     doc.fillColor(BK).fontSize(13).font('Helvetica-Bold')
        .text('F  A  C  T  U  R  A', rightX, ry, { width: rightW, align: 'center' });
@@ -833,33 +830,28 @@ export async function generateInvoicePdf(schema, invoiceId) {
               { day: '2-digit', month: '2-digit', year: 'numeric' })
           : '-');
     const customerEmail = inv.customer_email || '';
-    const customerPhone = inv.customer_phone || '';
 
-    const cliH = 55; // Altura aumentada para incluir email y teléfono
+    const cliH = 35;
     bord(M, y, W, cliH);
 
     const cW1 = W * 0.18, cW2 = W * 0.32, cW3 = W * 0.18, cW4 = W * 0.27;
     const cX1 = M + 4, cX2 = cX1 + cW1 + 2, cX3 = cX2 + cW2 + 2, cX4 = cX3 + cW3 + 2;
 
-    // Fila 1: Razón Social
     doc.fontSize(7.5).font('Helvetica').fillColor(BK)
        .text('Razón Social / Nombres', cX1, y + 4, { width: cW1 });
     doc.fontSize(8).font('Helvetica-Bold')
        .text(razonComp, cX2, y + 4, { width: cW2 });
     
-    // Fila 2: RUC / CI
     doc.fontSize(7.5).font('Helvetica')
        .text('RUC / CI:', cX3, y + 4, { width: cW3 });
     doc.fontSize(8).font('Helvetica-Bold')
        .text(idComp, cX4, y + 4, { width: cW4 });
 
-    // Fila 3: Fecha Emisión
     doc.fontSize(7.5).font('Helvetica')
        .text('Fecha Emisión:', cX1, y + 20, { width: cW1 });
     doc.fontSize(8).font('Helvetica-Bold')
        .text(fechaEmDisplay, cX2, y + 20, { width: cW2 });
 
-    // Fila 4: Correo Electrónico
     if (customerEmail) {
       doc.fontSize(7.5).font('Helvetica')
          .text('Correo Electrónico:', cX3, y + 20, { width: cW3 });
@@ -867,33 +859,26 @@ export async function generateInvoicePdf(schema, invoiceId) {
          .text(customerEmail, cX4, y + 20, { width: cW4 });
     }
 
-    // Fila 5: Teléfono
-    if (customerPhone) {
-      doc.fontSize(7.5).font('Helvetica')
-         .text('Teléfono:', cX1, y + 36, { width: cW1 });
-      doc.fontSize(8).font('Helvetica')
-         .text(customerPhone, cX2, y + 36, { width: cW2 });
-    }
-
     y += cliH + 2;
 
     // ==================== TABLA DE ITEMS ====================
+    // 🔥 COLUMNAS AJUSTADAS: más ancho para código, menos para descripción
     const COLS = [
-      { h: 'Cod. Principal', w: 0.12, a: 'left' },
-      { h: 'Cant', w: 0.07, a: 'right' },
-      { h: 'Descripción', w: 0.38, a: 'left' },
-      { h: 'P. Unitario', w: 0.12, a: 'right' },
-      { h: 'Descuento', w: 0.10, a: 'right' },
-      { h: 'P. Total', w: 0.12, a: 'right' },
+      { h: 'Código', w: 0.14, a: 'left' },
+      { h: 'Cant', w: 0.06, a: 'right' },
+      { h: 'Descripción', w: 0.32, a: 'left' },
+      { h: 'P.Unitario', w: 0.11, a: 'right' },
+      { h: 'Dcto', w: 0.08, a: 'right' },
+      { h: 'Total', w: 0.11, a: 'right' },
     ];
 
-    const thH = 20;
+    const thH = 18;
     fill(M, y, W, thH, LGR);
     bord(M, y, W, thH, 0.5);
     let cx = M;
     for (const col of COLS) {
       const cw = W * col.w;
-      doc.fillColor(BK).fontSize(7.5).font('Helvetica-Bold')
+      doc.fillColor(BK).fontSize(7).font('Helvetica-Bold')
          .text(col.h, cx + 2, y + 5, { width: cw - 4, align: col.a === 'right' ? 'right' : 'center' });
       if (cx > M) doc.moveTo(cx, y).lineTo(cx, y + thH).lineWidth(0.3).stroke(BDR);
       cx += cw;
@@ -902,7 +887,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
 
     let alt = false;
     for (const item of d.items) {
-      const rH = 16;
+      const rH = 14;
       fill(M, y, W, rH, alt ? VLGR : WHT);
       bord(M, y, W, rH, 0.25);
       cx = M;
@@ -911,10 +896,14 @@ export async function generateInvoicePdf(schema, invoiceId) {
       const precioUnitario = item.unitPrice;
       const precioTotal = item.lineTotal;
       
+      // Limpiar código: eliminar "PROD-" si es solo eso
+      let codigo = item.codigoPrincipal || '';
+      if (codigo === 'PROD-' || codigo === 'PROD') codigo = '';
+      
       const rv = [
-        item.codigoPrincipal || '',
+        codigo.length > 15 ? codigo.substring(0, 12) + '...' : codigo,
         item.cantidad.toFixed(2),
-        item.descripcion || '-',
+        item.descripcion.length > 30 ? item.descripcion.substring(0, 27) + '...' : item.descripcion,
         precioUnitario.toFixed(2),
         descuentoItem > 0 ? descuentoItem.toFixed(2) : '0.00',
         precioTotal.toFixed(2),
@@ -923,8 +912,8 @@ export async function generateInvoicePdf(schema, invoiceId) {
       for (let i = 0; i < COLS.length; i++) {
         const cw = W * COLS[i].w;
         const align = COLS[i].a;
-        doc.fillColor(BK).fontSize(7.5).font('Helvetica')
-           .text(rv[i], cx + 2, y + 4, { 
+        doc.fillColor(BK).fontSize(7).font('Helvetica')
+           .text(rv[i], cx + 2, y + 3, { 
              width: cw - 4, 
              align: align,
              lineBreak: i === 2
@@ -933,7 +922,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
       }
       y += rH;
       alt = !alt;
-      if (y > doc.page.height - 180) { doc.addPage(); y = M; }
+      if (y > doc.page.height - 160) { doc.addPage(); y = M; }
     }
     
     if (d.items.length === 0) {
@@ -941,7 +930,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
       doc.fillColor(GR).fontSize(7).text('(sin ítems registrados)', M + 6, y + 3);
       y += 14;
     }
-    y += 4;
+    y += 3;
 
     // ==================== TOTALES ====================
     const infoW = W * 0.55;
@@ -950,10 +939,9 @@ export async function generateInvoicePdf(schema, invoiceId) {
 
     const totRows = [];
     
-    // Subtotales por cada tasa
     for (const rate of ivaRates) {
       const subtotalRate = subtotalByRate[rate] || 0;
-      if (subtotalRate > 0 || rate === 0) {
+      if (subtotalRate > 0) {
         totRows.push([`SUBTOTAL ${rate}%`, subtotalRate.toFixed(2)]);
       }
     }
@@ -968,82 +956,52 @@ export async function generateInvoicePdf(schema, invoiceId) {
     
     totRows.push(['ICE', '0.00']);
     
-    // IVA por cada tasa
-    let hasIva = false;
     for (const rate of ivaRates) {
       const ivaAmount = ivaByRate[rate] || 0;
       if (ivaAmount > 0) {
         totRows.push([`IVA ${rate}%`, ivaAmount.toFixed(2)]);
-        hasIva = true;
       }
-    }
-    
-    if (!hasIva) {
-      totRows.push(['IVA 0%', '0.00']);
     }
     
     totRows.push(['PROPINA', '0.00']);
 
-    const totRowH = 13;
+    const totRowH = 12;
 
-    // Información Adicional
-    let iy = y;
-    doc.fillColor(BK).fontSize(7.5).font('Helvetica-Bold')
-       .text('Información Adicional', M, iy);
-    iy += 13;
-    
-    if (customerEmail) {
-      doc.fontSize(7).font('Helvetica')
-         .text('Correo 1   ' + customerEmail, M, iy, { width: infoW - 4 });
-      iy += 11;
-    }
-    if (customerPhone) {
-      doc.fontSize(7).font('Helvetica')
-         .text('Teléfono   ' + customerPhone, M, iy, { width: infoW - 4 });
-      iy += 11;
-    }
-    if (cfg?.contribuyente_especial) {
-      doc.fontSize(7).font('Helvetica')
-         .text('Gran Contribuyente   Gran Contribuyente Resolucion No ' + cfg.contribuyente_especial, M, iy, { width: infoW - 4 });
-      iy += 11;
-    }
-
-    // Totales
     let ty = y;
     for (const [label, val] of totRows) {
-      fill(totX, ty, totW, totRowH, ty % 26 < 13 ? VLGR : WHT);
+      fill(totX, ty, totW, totRowH, ty % 24 < 12 ? VLGR : WHT);
       bord(totX, ty, totW, totRowH, 0.3);
       doc.fillColor(BK).fontSize(7).font('Helvetica')
-         .text(label, totX + 4, ty + 3, { width: totW * 0.65 })
-         .text(val, totX + 4, ty + 3, { width: totW - 8, align: 'right' });
+         .text(label, totX + 4, ty + 2, { width: totW * 0.65 })
+         .text(val, totX + 4, ty + 2, { width: totW - 8, align: 'right' });
       ty += totRowH;
     }
-    fill(totX, ty, totW, 15, BK);
+    fill(totX, ty, totW, 14, BK);
     doc.fillColor(WHT).fontSize(8).font('Helvetica-Bold')
        .text('VALOR TOTAL', totX + 4, ty + 3, { width: totW * 0.65 })
        .text(total.toFixed(2), totX + 4, ty + 3, { width: totW - 8, align: 'right' });
-    ty += 15;
+    ty += 14;
 
-    y = Math.max(iy, ty) + 10;
+    y = Math.max(ty, y) + 10;
 
     // ==================== FORMA DE PAGO ====================
-    fill(M, y, W, 14, LGR);
-    bord(M, y, W, 14);
+    fill(M, y, W, 12, LGR);
+    bord(M, y, W, 12);
     doc.fillColor(BK).fontSize(7).font('Helvetica-Bold')
-       .text('Forma de Pago', M + 6, y + 4, { width: W * 0.55 })
-       .text('Valor', M + W * 0.57, y + 4, { width: W * 0.14, align: 'right' })
-       .text('Plazo', M + W * 0.73, y + 4, { width: W * 0.12, align: 'right' })
-       .text('Tiempo', M + W * 0.87, y + 4, { width: W * 0.11, align: 'right' });
-    y += 14;
+       .text('Forma de Pago', M + 6, y + 3, { width: W * 0.55 })
+       .text('Valor', M + W * 0.57, y + 3, { width: W * 0.14, align: 'right' })
+       .text('Plazo', M + W * 0.73, y + 3, { width: W * 0.12, align: 'right' })
+       .text('Tiempo', M + W * 0.87, y + 3, { width: W * 0.11, align: 'right' });
+    y += 12;
 
-    fill(M, y, W, 14, WHT);
-    bord(M, y, W, 14, 0.3);
+    fill(M, y, W, 12, WHT);
+    bord(M, y, W, 12, 0.3);
     doc.fillColor(BK).fontSize(7.5).font('Helvetica')
        .text(formaPagoLabel, M + 6, y + 3, { width: W * 0.55 })
        .text(total.toFixed(2), M + W * 0.57, y + 3, { width: W * 0.14, align: 'right' })
        .text('0', M + W * 0.73, y + 3, { width: W * 0.12, align: 'right' })
        .text('Dias', M + W * 0.87, y + 3, { width: W * 0.11, align: 'right' });
-    y += 14 + 8;
+    y += 12 + 8;
 
     doc.fillColor(GR).fontSize(7).font('Helvetica')
        .text('Página 1 de 1', M, y, { width: W, align: 'center' });
