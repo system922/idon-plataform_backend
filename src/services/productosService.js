@@ -124,32 +124,39 @@ export const update = async (schema, id, body) => {
   const currentProduct = await productModel.findById(schema, id);
   if (!currentProduct) throw new Error('Producto no encontrado');
   
-  // 1. Obtener la tasa IVA (puede venir del body o mantener la actual)
-  let taxRateSelected = currentProduct.is_taxable;
+  // 1. Obtener la tasa IVA seleccionada (del body o mantener la actual)
+  let taxRateSelected = currentProduct.is_taxable; // Esto ya es la tasa (15)
+  
+  // Buscar en el body la nueva tasa
   if (body.is_taxable !== undefined) taxRateSelected = toNum(body.is_taxable, taxRateSelected);
   else if (body.tax_rate !== undefined) taxRateSelected = toNum(body.tax_rate, taxRateSelected);
   else if (body.taxRate !== undefined) taxRateSelected = toNum(body.taxRate, taxRateSelected);
   
-  // 2. Obtener el PVP (puede venir del body o recalcularse del precio actual)
-  let pvp = currentProduct.selling_price + currentProduct.tax_rate;
+  // 2. Obtener el PRECIO CON IVA que viene del frontend
+  let pvp = null; // Precio con IVA
   if (body.price !== undefined) pvp = toNum(body.price);
   else if (body.precioVenta !== undefined) pvp = toNum(body.precioVenta);
-  else if (body.selling_price !== undefined) pvp = toNum(body.selling_price);
   
-  // 3. Inicializar con valores actuales
-  let taxValue = currentProduct.tax_rate;
-  let priceWithoutTax = currentProduct.selling_price;
-  
-  // 4. Recalcular si cambió el precio o la tasa IVA
-  const precioCambio = (body.price !== undefined || body.precioVenta !== undefined || body.selling_price !== undefined);
-  const ivaCambio = (body.is_taxable !== undefined || body.tax_rate !== undefined || body.taxRate !== undefined);
-  
-  if (precioCambio || ivaCambio) {
-    const calculo = calcIvaConTasaSeleccionada(pvp, taxRateSelected);
-    taxValue = calculo.taxValue;
-    priceWithoutTax = calculo.priceWithoutTax;
+  // 3. Si no viene precio en el body, calcularlo desde los datos actuales
+  if (pvp === null || pvp === undefined) {
+    // Reconstruir precio con IVA desde selling_price y la tasa actual
+    const tasaActual = taxRateSelected / 100;
+    pvp = currentProduct.selling_price * (1 + tasaActual);
   }
   
+  console.log('🔄 Actualizando producto:', {
+    id,
+    pvp_enviado: pvp,
+    taxRateSelected,
+    current_selling_price: currentProduct.selling_price,
+    current_tax_rate: currentProduct.tax_rate,
+    current_is_taxable: currentProduct.is_taxable
+  });
+  
+  // 4. Recalcular selling_price (sin IVA) y tax_rate (monto IVA)
+  const { taxValue, priceWithoutTax } = calcIvaConTasaSeleccionada(pvp, taxRateSelected);
+  
+  // 5. Actualizar categoría si es necesario
   let category_id = currentProduct.category_id;
   if (body.category_name !== undefined) {
     if (body.category_name === '' || body.category_name === null) {
@@ -167,13 +174,14 @@ export const update = async (schema, id, body) => {
     category_id = body.category_id === '' ? null : body.category_id;
   }
   
-  return productModel.updateById(schema, id, {
+  // 6. Actualizar en BD
+  const result = await productModel.updateById(schema, id, {
     name: toText(body.name || body.nombre) || currentProduct.name,
     description: toText(body.description || body.descripcion) || currentProduct.description,
     sellingPrice: priceWithoutTax,
     unit_cost: toNum(body.unit_cost !== undefined ? body.unit_cost : body.costo, currentProduct.unit_cost),
     taxRate: taxValue,
-    isTaxable: taxRateSelected,  // Guardar la tasa IVA (0, 5, 8, 12, 15)
+    isTaxable: taxRateSelected,  // Guardar la tasa IVA (15, no el monto)
     isActive: toBool(body.active !== undefined ? body.active : body.estado, currentProduct.is_active),
     stock: toNum(body.stock, currentProduct.stock),
     category_id,
@@ -181,6 +189,14 @@ export const update = async (schema, id, body) => {
     barcode: toText(body.barcode || body.codigoBarras) || currentProduct.barcode,
     min_stock: toNum(body.min_stock !== undefined ? body.min_stock : body.minStock, currentProduct.min_stock),
   });
+  
+  console.log('✅ Producto actualizado:', {
+    selling_price: result.selling_price,
+    tax_rate: result.tax_rate,
+    is_taxable: result.is_taxable
+  });
+  
+  return result;
 };
 
 export const remove = (schema, id) => productModel.softDelete(schema, id);
