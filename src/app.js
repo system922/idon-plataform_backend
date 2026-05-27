@@ -125,6 +125,7 @@ app.use('/api/navigation',          ...authBusiness, navigationRoutes);
 app.use('/api/subscriptions',       ...authBusiness, subscriptionRoutes);
 app.use('/api/customers',           ...authBusiness, CustomersRoutes);
 app.use('/api/products',            ...authBusiness, productosRoutes);
+app.use('/api/productos',           ...authBusiness, productosRoutes);  // Alias para compatibilidad
 app.use('/api/categories',          ...authBusiness, categoriesRoutes);
 
 app.use('/api/graphs',              ...authBusiness, graphRoutes);
