@@ -7,6 +7,7 @@ import logger from '../utils/logger.js';
 
 
 const router = express.Router();
+
 // ── POST /api/auth/register ─────────────────────────────────────
 router.post('/register', async (req, res, next) => {
   try {
@@ -30,6 +31,7 @@ router.post('/register', async (req, res, next) => {
   }
 });
 
+// ── POST /api/auth/register-business ──────────────────────────
 router.post('/register-business', async (req, res, next) => {
   try {
     const {
@@ -81,6 +83,7 @@ router.post('/register-business', async (req, res, next) => {
   }
 });
 
+// ── POST /api/auth/login ──────────────────────────────────────
 router.post('/login', async (req, res, next) => {
   try {
     const { email, password } = req.body;
@@ -92,13 +95,32 @@ router.post('/login', async (req, res, next) => {
     const result = await authService.login(email, password);
     res.json(successResponse(result, 'Login successful'));
   } catch (error) {
+    console.error('❌ Error en login:', error.message);
+    
+    // Error de credenciales
     if (error.message === 'Invalid credentials' || error.message === 'User is inactive') {
       return res.status(401).json(errorResponse(error.message, 401));
     }
+    
+    // 🔥 Error de negocio suspendido o con pagos pendientes (statusCode 403)
+    if (error.statusCode === 403) {
+      return res.status(403).json(errorResponse(error.message, 403));
+    }
+    
+    // 🔥 También capturar por mensaje si no tiene statusCode
+    if (error.message && (
+      error.message.includes('suspendido') || 
+      error.message.includes('pagos pendientes') ||
+      error.message.includes('no_subscription')
+    )) {
+      return res.status(403).json(errorResponse(error.message, 403));
+    }
+    
     next(error);
   }
 });
 
+// ── POST /api/auth/login-business ─────────────────────────────
 router.post('/login-business', async (req, res, next) => {
   try {
     const { email, password, businessSlug } = req.body;
@@ -110,19 +132,22 @@ router.post('/login-business', async (req, res, next) => {
     const result = await authService.loginBusiness(email, password, businessSlug);
     res.json(successResponse(result, 'Business login successful'));
   } catch (error) {
+    console.error('❌ Error en login-business:', error.message);
+    
     if (error.message.includes('Invalid credentials')) {
       return res.status(401).json(errorResponse(error.message, 401));
     }
+    
+    // 🔥 Error de negocio suspendido
+    if (error.statusCode === 403 || error.message.includes('suspendido')) {
+      return res.status(403).json(errorResponse(error.message, 403));
+    }
+    
     next(error);
   }
 });
 
-/**
- * POST /api/auth/select-business
- * After a multi-business login, exchange a plain token for one with a specific businessId.
- * Body: { businessId }
- * Headers: Authorization: Bearer <token>
- */
+// ── POST /api/auth/select-business ────────────────────────────
 router.post('/select-business', async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization || '';
@@ -142,13 +167,22 @@ router.post('/select-business', async (req, res, next) => {
     const result = await authService.selectBusiness(decoded.userId, businessId);
     res.json(successResponse(result, 'Business selected'));
   } catch (error) {
+    console.error('❌ Error en select-business:', error.message);
+    
     if (error.message.includes('not found') || error.message.includes('denied')) {
       return res.status(403).json(errorResponse(error.message, 403));
     }
+    
+    // 🔥 Error de negocio suspendido
+    if (error.statusCode === 403 || error.message.includes('suspendido')) {
+      return res.status(403).json(errorResponse(error.message, 403));
+    }
+    
     next(error);
   }
 });
 
+// ── POST /api/auth/refresh ────────────────────────────────────
 router.post('/refresh', async (req, res, next) => {
   try {
     const { token } = req.body;
@@ -167,7 +201,7 @@ router.post('/refresh', async (req, res, next) => {
   }
 });
 
-// ── GET /api/auth/me ─────────────────────────────────────────
+// ── GET /api/auth/me ──────────────────────────────────────────
 router.get('/me', async (req, res, next) => {
   const authHeader = req.headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
@@ -304,6 +338,7 @@ router.put('/change-password', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ── POST /api/auth/validate-jefe-caja ────────────────────────
 router.post('/validate-jefe-caja', async (req, res) => {
   const { password, schema } = req.body;
   if (!password || !schema) {

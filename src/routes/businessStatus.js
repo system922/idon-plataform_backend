@@ -9,7 +9,7 @@ import { query } from '../config/database.js';
 const router = express.Router();
 
 // =====================================================
-// 🔥 NUEVO ENDPOINT: Verificar si un negocio específico está suspendido
+// Verificar si un negocio específico está suspendido
 // GET /api/business-status/check/:businessId
 // =====================================================
 router.get('/check/:businessId', async (req, res, next) => {
@@ -49,7 +49,7 @@ router.get('/check/:businessId', async (req, res, next) => {
 });
 
 // =====================================================
-// 🔥 NUEVO ENDPOINT: Verificar estado del negocio del usuario autenticado
+// Verificar estado del negocio del usuario autenticado
 // GET /api/business-status/my-status
 // =====================================================
 router.get('/my-status', async (req, res, next) => {
