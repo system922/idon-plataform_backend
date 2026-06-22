@@ -97,22 +97,21 @@ router.post('/login', async (req, res, next) => {
   } catch (error) {
     console.error('❌ Error en login:', error.message);
     
-    // Error de credenciales
+    // Error de credenciales - siempre 401
     if (error.message === 'Invalid credentials' || error.message === 'User is inactive') {
       return res.status(401).json(errorResponse(error.message, 401));
     }
     
-    // 🔥 Error de negocio suspendido o con pagos pendientes (statusCode 403)
-    if (error.statusCode === 403) {
-      return res.status(403).json(errorResponse(error.message, 403));
-    }
-    
-    // 🔥 También capturar por mensaje si no tiene statusCode
-    if (error.message && (
-      error.message.includes('suspendido') || 
-      error.message.includes('pagos pendientes') ||
-      error.message.includes('no_subscription')
-    )) {
+    // 🔥 NUEVO: Si es error de negocio suspendido, devolvemos 200 con el token de todos modos
+    // Pero el frontend debe saber que está suspendido por el campo businessStatus
+    if (error.statusCode === 403 || 
+        error.message.includes('suspendido') || 
+        error.message.includes('pagos pendientes')) {
+      
+      // Aquí deberías llamar a una función que devuelva el token aunque esté suspendido
+      // Pero como authService.login ya no lanza error, este bloque no se ejecutará
+      // Si authService.login sigue lanzando error, modifícalo para que no lo haga
+      
       return res.status(403).json(errorResponse(error.message, 403));
     }
     

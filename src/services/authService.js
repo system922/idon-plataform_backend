@@ -458,19 +458,139 @@ export const login = async (email, password) => {
       })))}`);
       
       if (allSuspended) {
-        // ✅ Este es el caso de tu negocio: SUSPENDIDO
-        const error = new Error('Todos tus negocios están suspendidos. Contacta a soporte.');
-        error.statusCode = 403;
-        throw error;
+        // ✅ EN LUGAR DE LANZAR ERROR, DEVOLVER TOKEN CON ESTADO SUSPENDIDO
+        const biz = suspendedBusinesses[0]; // Tomar el primer negocio suspendido
+        const token = jwt.sign(
+          {
+            userId: user.id,
+            email: user.email,
+            firstName: user.first_name,
+            lastName: user.last_name,
+            userType: 'owner',
+            businessId: biz.id,
+            businessSlug: biz.slug,
+            schemaName: biz.schema_name,
+            roleCode: biz.role_code || 'owner',
+            businessStatus: 'suspended',
+            subscriptionStatus: biz.subscriptionStatus || 'suspended'
+          },
+          env.jwt.secret,
+          { expiresIn: env.jwt.expiresIn }
+        );
+
+        logger.info(`[LOGIN] Login exitoso pero negocio suspendido: ${biz.name}`);
+
+        return {
+          token,
+          type: 'owner',
+          user: {
+            id: user.id,
+            email: user.email,
+            firstName: user.first_name,
+            lastName: user.last_name,
+            userType: 'owner',
+            businessId: biz.id,
+            businessSlug: biz.slug,
+            schemaName: biz.schema_name,
+            roleCode: biz.role_code || 'owner',
+            businessStatus: 'suspended',
+            subscriptionStatus: biz.subscriptionStatus || 'suspended'
+          },
+          businesses: [],
+          allBusinesses: allBusinesses,
+          suspendedBusinesses: suspendedBusinesses,
+          requiresBusinessSelection: false,
+          hasSuspendedBusinesses: true,
+          businessStatus: 'suspended'
+        };
       } else if (allPaymentPending) {
-        const error = new Error('Tienes pagos pendientes en todos tus negocios. Por favor realiza el pago.');
-        error.statusCode = 403;
-        throw error;
+        // Similar para payment_pending
+        const biz = suspendedBusinesses[0];
+        const token = jwt.sign(
+          {
+            userId: user.id,
+            email: user.email,
+            firstName: user.first_name,
+            lastName: user.last_name,
+            userType: 'owner',
+            businessId: biz.id,
+            businessSlug: biz.slug,
+            schemaName: biz.schema_name,
+            roleCode: biz.role_code || 'owner',
+            businessStatus: 'payment_pending',
+            subscriptionStatus: biz.subscriptionStatus || 'payment_pending'
+          },
+          env.jwt.secret,
+          { expiresIn: env.jwt.expiresIn }
+        );
+
+        return {
+          token,
+          type: 'owner',
+          user: {
+            id: user.id,
+            email: user.email,
+            firstName: user.first_name,
+            lastName: user.last_name,
+            userType: 'owner',
+            businessId: biz.id,
+            businessSlug: biz.slug,
+            schemaName: biz.schema_name,
+            roleCode: biz.role_code || 'owner',
+            businessStatus: 'payment_pending',
+            subscriptionStatus: biz.subscriptionStatus || 'payment_pending'
+          },
+          businesses: [],
+          allBusinesses: allBusinesses,
+          suspendedBusinesses: suspendedBusinesses,
+          requiresBusinessSelection: false,
+          hasSuspendedBusinesses: true,
+          businessStatus: 'payment_pending'
+        };
       } else {
-        // Mezcla de estados o no_subscription
-        const error = new Error('Tienes negocios suspendidos o con pagos pendientes. Contacta a soporte.');
-        error.statusCode = 403;
-        throw error;
+        // Mezcla de estados
+        const biz = suspendedBusinesses[0];
+        const token = jwt.sign(
+          {
+            userId: user.id,
+            email: user.email,
+            firstName: user.first_name,
+            lastName: user.last_name,
+            userType: 'owner',
+            businessId: biz.id,
+            businessSlug: biz.slug,
+            schemaName: biz.schema_name,
+            roleCode: biz.role_code || 'owner',
+            businessStatus: 'suspended',
+            subscriptionStatus: biz.subscriptionStatus || 'suspended'
+          },
+          env.jwt.secret,
+          { expiresIn: env.jwt.expiresIn }
+        );
+
+        return {
+          token,
+          type: 'owner',
+          user: {
+            id: user.id,
+            email: user.email,
+            firstName: user.first_name,
+            lastName: user.last_name,
+            userType: 'owner',
+            businessId: biz.id,
+            businessSlug: biz.slug,
+            schemaName: biz.schema_name,
+            roleCode: biz.role_code || 'owner',
+            businessStatus: 'suspended',
+            subscriptionStatus: biz.subscriptionStatus || 'suspended'
+          },
+          businesses: [],
+          allBusinesses: allBusinesses,
+          suspendedBusinesses: suspendedBusinesses,
+          requiresBusinessSelection: false,
+          hasSuspendedBusinesses: true,
+          businessStatus: 'suspended'
+        };
       }
     }
 
