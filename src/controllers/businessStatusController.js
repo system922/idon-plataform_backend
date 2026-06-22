@@ -3,13 +3,132 @@ import { query } from '../config/database.js';
 import logger from '../utils/logger.js';
 
 /**
- * GET /api/business/status
- * Obtiene el estado del negocio del usuario autenticado
+ * GET /api/business-status/my-status
+ * Obtiene el estado del negocio del usuario autenticado con TODOS los datos de suscripción
+ */
+export const getMyStatus = async (req, res) => {
+  try {
+    const userId = req.user?.userId || req.user?.id;
+    const businessId = req.user?.businessId || req.user?.business_id;
+
+    if (!businessId) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Business context required'
+      });
+    }
+
+    // 🔥 CONSULTA COMPLETA CON TODOS LOS CAMPOS DE SUSCRIPCIÓN
+    const result = await query(
+      `SELECT 
+        b.id, 
+        b.slug, 
+        b.name, 
+        b.is_active, 
+        b.is_verified,
+        bt.name as type,
+        s.id as subscription_id,
+        s.status as subscription_status,
+        s.suspended_at,
+        s.next_billing_at,
+        s.activated_at,
+        s.billing_period,
+        s.total_amount,
+        s.amount_monthly,
+        s.amount_annual,
+        s.discount_percentage,
+        s.billing_day,
+        (SELECT COUNT(*) FROM public.billing_history bh
+         WHERE bh.subscription_id = s.id
+           AND bh.status = 'pending'
+           AND bh.billing_date <= NOW()) as pending_payments_count
+       FROM public.businesses b
+       LEFT JOIN public.business_types bt ON b.business_type_id = bt.id
+       LEFT JOIN public.subscriptions s ON b.id = s.business_id
+       WHERE b.id = $1
+       ORDER BY s.created_at DESC
+       LIMIT 1`,
+      [businessId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        ok: false,
+        error: 'Business not found'
+      });
+    }
+
+    const business = result.rows[0];
+    const hasPendingPayment = parseInt(business.pending_payments_count || '0') > 0;
+    const subStatus = business.subscription_status || 'pending_activation';
+    
+    let status = 'active';
+    let isSuspended = false;
+    
+    if (subStatus === 'suspended' || subStatus === 'inactive' || !business.is_active) {
+      status = 'suspended';
+      isSuspended = true;
+    } else if (hasPendingPayment) {
+      status = 'payment_pending';
+    } else if (subStatus === 'pending_activation' || !business.is_verified) {
+      status = 'pending';
+    }
+
+    // 🔥 CONSTRUIR RESPUESTA CON TODOS LOS DATOS
+    const response = {
+      ok: true,
+      status: status,
+      isActive: business.is_active,
+      isVerified: business.is_verified,
+      isSuspended: isSuspended,
+      hasPendingPayment: hasPendingPayment,
+      business: {
+        id: business.id,
+        name: business.name,
+        slug: business.slug,
+        type: business.type
+      },
+      subscription: {
+        id: business.subscription_id,
+        status: business.subscription_status,
+        billingPeriod: business.billing_period,
+        billingDay: business.billing_day,
+        nextBillingAt: business.next_billing_at,
+        activatedAt: business.activated_at,
+        suspendedAt: business.suspended_at,
+        // 🔥 CAMPOS DE MONTO (CON AMBOS NOMBRES PARA COMPATIBILIDAD)
+        totalAmount: parseFloat(business.total_amount || 0),
+        total_amount: parseFloat(business.total_amount || 0),
+        amountMonthly: parseFloat(business.amount_monthly || 0),
+        amount_monthly: parseFloat(business.amount_monthly || 0),
+        amountAnnual: parseFloat(business.amount_annual || 0),
+        amount_annual: parseFloat(business.amount_annual || 0),
+        discountPercentage: parseFloat(business.discount_percentage || 0),
+        discount_percentage: parseFloat(business.discount_percentage || 0)
+      },
+      message: getStatusMessage(status)
+    };
+
+    logger.info(`[BUSINESS-STATUS] Business ${business.id} - Status: ${status}`);
+    res.json(response);
+
+  } catch (error) {
+    logger.error('Error getting business status:', error);
+    res.status(500).json({
+      ok: false,
+      error: 'Error al obtener el estado del negocio',
+      detail: error.message
+    });
+  }
+};
+
+/**
+ * GET /api/business/status - Versión legacy (mantener por compatibilidad)
  */
 export const getBusinessStatus = async (req, res) => {
   try {
-    const userId = req.user?.userId;
-    const businessId = req.user?.businessId;
+    const userId = req.user?.userId || req.user?.id;
+    const businessId = req.user?.businessId || req.user?.business_id;
 
     if (!businessId) {
       return res.status(400).json({
@@ -117,6 +236,7 @@ export const getBusinessStatus = async (req, res) => {
 
     // 8. Construir respuesta
     const response = {
+      ok: true,
       status: status,
       isActive: business.is_active,
       isVerified: business.is_verified,
@@ -137,8 +257,14 @@ export const getBusinessStatus = async (req, res) => {
         billingPeriod: subscription.billing_period,
         nextBillingAt: subscription.next_billing_at,
         activatedAt: subscription.activated_at,
-        totalAmount: subscription.total_amount,
-        discountPercentage: subscription.discount_percentage
+        totalAmount: parseFloat(subscription.total_amount || 0),
+        total_amount: parseFloat(subscription.total_amount || 0),
+        amountMonthly: parseFloat(subscription.amount_monthly || 0),
+        amount_monthly: parseFloat(subscription.amount_monthly || 0),
+        amountAnnual: parseFloat(subscription.amount_annual || 0),
+        amount_annual: parseFloat(subscription.amount_annual || 0),
+        discountPercentage: parseFloat(subscription.discount_percentage || 0),
+        discount_percentage: parseFloat(subscription.discount_percentage || 0)
       } : null,
       plan: plan,
       pendingPayments: pendingPaymentsResult.rows.map(p => ({
@@ -249,7 +375,7 @@ export const updateBusinessStatus = async (req, res) => {
 function getStatusMessage(status) {
   const messages = {
     'active': 'Tu negocio está activo y funcionando correctamente.',
-    'suspended': 'Tu negocio ha sido suspendido. Contacta a soporte para más información.',
+    'suspended': 'Tu negocio está suspendido. Por favor realiza el pago para reactivarlo.',
     'inactive': 'Tu negocio está inactivo. Contacta a soporte para reactivarlo.',
     'pending': 'Tu negocio está pendiente de verificación. Pronto recibirás noticias.',
     'payment_pending': 'Tienes pagos pendientes. Realiza el pago para continuar usando el servicio.'
