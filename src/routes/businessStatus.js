@@ -5,8 +5,39 @@
 
 import express from 'express';
 import { query } from '../config/database.js';
+import jwt from 'jsonwebtoken';
+import env from '../config/env.js';
 
 const router = express.Router();
+
+// =====================================================
+// Helper para decodificar token y obtener datos del usuario
+// =====================================================
+const getUserFromToken = (req) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return null;
+
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    if (!token) return null;
+
+    const decoded = jwt.verify(token, env.jwt.secret || process.env.JWT_SECRET);
+    return {
+      userId: decoded.userId || decoded.id,
+      businessId: decoded.businessId || decoded.business_id,
+      email: decoded.email,
+      firstName: decoded.firstName,
+      lastName: decoded.lastName,
+      userType: decoded.userType,
+      roleCode: decoded.roleCode,
+      schemaName: decoded.schemaName,
+      ...decoded
+    };
+  } catch (error) {
+    console.error('Error decodificando token:', error);
+    return null;
+  }
+};
 
 // =====================================================
 // Verificar si un negocio específico está suspendido
@@ -17,7 +48,7 @@ router.get('/check/:businessId', async (req, res, next) => {
     const { businessId } = req.params;
     
     const { rows } = await query(`
-      SELECT s.status, s.suspended_at, b.is_active
+      SELECT s.status, s.suspended_at, b.is_active, s.total_amount, s.discount_percentage
       FROM public.subscriptions s
       JOIN public.businesses b ON s.business_id = b.id
       WHERE s.business_id = $1
@@ -41,7 +72,9 @@ router.get('/check/:businessId', async (req, res, next) => {
       isSuspended: isSuspended,
       status: rows[0].status,
       suspendedAt: rows[0].suspended_at,
-      isActive: rows[0].is_active
+      isActive: rows[0].is_active,
+      totalAmount: parseFloat(rows[0].total_amount || 0),
+      discountPercentage: parseFloat(rows[0].discount_percentage || 0)
     });
   } catch (error) {
     next(error);
@@ -52,10 +85,21 @@ router.get('/check/:businessId', async (req, res, next) => {
 // Verificar estado del negocio del usuario autenticado
 // GET /api/business-status/my-status
 // =====================================================
-router.get('/my-status', authMiddleware, async (req, res, next) => {
+router.get('/my-status', async (req, res, next) => {
   try {
-    const userId = req.user?.userId || req.user?.id;
-    const businessId = req.user?.businessId || req.user?.business_id;
+    // 🔥 OBTENER EL USUARIO DEL TOKEN MANUALMENTE
+    const user = getUserFromToken(req);
+    if (!user) {
+      return res.status(401).json({
+        ok: false,
+        error: 'No autenticado'
+      });
+    }
+
+    const userId = user.userId;
+    const businessId = user.businessId;
+
+    console.log('🔑 Usuario autenticado:', { userId, businessId });
 
     if (!businessId) {
       return res.status(400).json({
@@ -67,7 +111,12 @@ router.get('/my-status', authMiddleware, async (req, res, next) => {
     // 🔥 CONSULTA COMPLETA CON TODOS LOS CAMPOS DE SUSCRIPCIÓN
     const result = await query(
       `SELECT 
-        b.id, b.slug, b.name, b.is_active, b.is_verified,
+        b.id, 
+        b.slug, 
+        b.name, 
+        b.is_active, 
+        b.is_verified,
+        bt.name as type,
         s.id as subscription_id,
         s.status as subscription_status,
         s.suspended_at,
@@ -84,6 +133,7 @@ router.get('/my-status', authMiddleware, async (req, res, next) => {
            AND bh.status = 'pending'
            AND bh.billing_date <= NOW()) as pending_payments_count
        FROM public.businesses b
+       LEFT JOIN public.business_types bt ON b.business_type_id = bt.id
        LEFT JOIN public.subscriptions s ON b.id = s.business_id
        WHERE b.id = $1
        ORDER BY s.created_at DESC
@@ -114,7 +164,7 @@ router.get('/my-status', authMiddleware, async (req, res, next) => {
       status = 'pending';
     }
 
-    // 🔥 RESPONDER CON TODOS LOS DATOS
+    // 🔥 CONSTRUIR RESPUESTA CON TODOS LOS DATOS
     const response = {
       ok: true,
       status: status,
@@ -126,6 +176,7 @@ router.get('/my-status', authMiddleware, async (req, res, next) => {
         id: business.id,
         name: business.name,
         slug: business.slug,
+        type: business.type
       },
       subscription: {
         id: business.subscription_id,
@@ -135,15 +186,17 @@ router.get('/my-status', authMiddleware, async (req, res, next) => {
         nextBillingAt: business.next_billing_at,
         activatedAt: business.activated_at,
         suspendedAt: business.suspended_at,
+        // 🔥 TODOS LOS CAMPOS DE MONTO
         totalAmount: parseFloat(business.total_amount || 0),
-        total_amount: parseFloat(business.total_amount || 0), // 🔥 AMBOS NOMBRES
+        total_amount: parseFloat(business.total_amount || 0),
         amountMonthly: parseFloat(business.amount_monthly || 0),
-        amount_monthly: parseFloat(business.amount_monthly || 0), // 🔥 AMBOS NOMBRES
+        amount_monthly: parseFloat(business.amount_monthly || 0),
         amountAnnual: parseFloat(business.amount_annual || 0),
-        amount_annual: parseFloat(business.amount_annual || 0), // 🔥 AMBOS NOMBRES
+        amount_annual: parseFloat(business.amount_annual || 0),
         discountPercentage: parseFloat(business.discount_percentage || 0),
-        discount_percentage: parseFloat(business.discount_percentage || 0), // 🔥 AMBOS NOMBRES
-      }
+        discount_percentage: parseFloat(business.discount_percentage || 0)
+      },
+      message: getStatusMessage(status)
     };
 
     console.log('📊 Respuesta my-status:', JSON.stringify(response, null, 2));
@@ -164,10 +217,12 @@ router.get('/my-status', authMiddleware, async (req, res, next) => {
 // =====================================================
 router.get('/', async (req, res, next) => {
   try {
-    const userId = req.user?.id || req.user?.userId;
-    if (!userId) {
+    const user = getUserFromToken(req);
+    if (!user) {
       return res.status(401).json({ ok: false, message: 'No autenticado' });
     }
+
+    const userId = user.userId;
 
     const { rows: bizRows } = await query(`
       SELECT
@@ -178,6 +233,8 @@ router.get('/', async (req, res, next) => {
         bt.name      AS business_type,
         s.status     AS subscription_status,
         s.next_billing_at,
+        s.total_amount,
+        s.discount_percentage,
         bu.role_id,
         r.code       AS role_code
       FROM public.business_users bu
@@ -203,6 +260,10 @@ router.get('/', async (req, res, next) => {
             slug:  biz.slug,
             type:  biz.business_type,
           },
+          subscription: {
+            totalAmount: parseFloat(biz.total_amount || 0),
+            discountPercentage: parseFloat(biz.discount_percentage || 0)
+          }
         });
       }
 
@@ -218,6 +279,10 @@ router.get('/', async (req, res, next) => {
           next_billing_at:     biz.next_billing_at,
           role:                biz.role_code,
         },
+        subscription: {
+          totalAmount: parseFloat(biz.total_amount || 0),
+          discountPercentage: parseFloat(biz.discount_percentage || 0)
+        }
       });
     }
 
@@ -252,6 +317,7 @@ router.get('/', async (req, res, next) => {
     });
 
   } catch (error) {
+    console.error('Error en /:', error);
     next(error);
   }
 });
@@ -261,8 +327,12 @@ router.get('/', async (req, res, next) => {
 // =====================================================
 router.get('/my-businesses', async (req, res, next) => {
   try {
-    const userId = req.user?.id || req.user?.userId;
-    if (!userId) return res.status(401).json({ ok: false, message: 'No autenticado' });
+    const user = getUserFromToken(req);
+    if (!user) {
+      return res.status(401).json({ ok: false, message: 'No autenticado' });
+    }
+
+    const userId = user.userId;
 
     if (req.user?.userType === 'schema_employee') {
       const { businessId, schemaName } = req.user;
@@ -303,6 +373,7 @@ router.get('/my-businesses', async (req, res, next) => {
 
     res.json({ ok: true, businesses: rows });
   } catch (e) {
+    console.error('Error en /my-businesses:', e);
     next(e);
   }
 });
@@ -312,8 +383,12 @@ router.get('/my-businesses', async (req, res, next) => {
 // =====================================================
 router.get('/navigation', async (req, res, next) => {
   try {
-    const userId = req.user?.id || req.user?.userId;
-    if (!userId) return res.status(401).json({ ok: false, message: 'No autenticado' });
+    const user = getUserFromToken(req);
+    if (!user) {
+      return res.status(401).json({ ok: false, message: 'No autenticado' });
+    }
+
+    const userId = user.userId;
 
     const MODULE_DEFAULTS = {
       core: '/app/core', pos: '/app/pos', inventory: '/app/inventory',
@@ -495,8 +570,23 @@ router.get('/navigation', async (req, res, next) => {
       },
     });
   } catch (e) {
+    console.error('Error en /navigation:', e);
     next(e);
   }
 });
+
+/**
+ * Helper para obtener mensaje según estado
+ */
+function getStatusMessage(status) {
+  const messages = {
+    'active': 'Tu negocio está activo y funcionando correctamente.',
+    'suspended': 'Tu negocio está suspendido. Por favor realiza el pago para reactivarlo.',
+    'inactive': 'Tu negocio está inactivo. Contacta a soporte para reactivarlo.',
+    'pending': 'Tu negocio está pendiente de verificación. Pronto recibirás noticias.',
+    'payment_pending': 'Tienes pagos pendientes. Realiza el pago para continuar usando el servicio.'
+  };
+  return messages[status] || 'Estado desconocido';
+}
 
 export default router;
