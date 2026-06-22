@@ -40,146 +40,43 @@ export const register = async (data) => {
   return result.rows[0];
 };
 
-
 // ═══════════════════════════════════════════════════════════
-// Verificar estado de MÚLTIPLES negocios
-// ═══════════════════════════════════════════════════════════
-// ═══════════════════════════════════════════════════════════
-// Verificar estado de MÚLTIPLES negocios (basado en subscriptions)
-// ═══════════════════════════════════════════════════════════
-export const checkMultipleBusinessStatus = async (businessIds) => {
-  if (!businessIds || businessIds.length === 0) {
-    return [];
-  }
-
-  try {
-    const result = await query(
-      `SELECT DISTINCT ON (s.business_id)
-              s.id as subscription_id,
-              s.business_id,
-              s.status as subscription_status,
-              s.suspended_at,
-              s.next_billing_at,
-              s.activated_at,
-              s.billing_period,
-              s.total_amount,
-              b.id, b.slug, b.name, b.is_active, b.is_verified,
-              (SELECT COUNT(*) FROM public.billing_history bh
-               WHERE bh.subscription_id = s.id
-                 AND bh.status = 'pending'
-                 AND bh.billing_date <= NOW()) as pending_payments_count
-       FROM public.subscriptions s
-       RIGHT JOIN public.businesses b ON s.business_id = b.id
-       WHERE b.id = ANY($1)
-       ORDER BY s.business_id, s.created_at DESC`,
-      [businessIds]
-    );
-
-    if (result.rows.length === 0) {
-      // Si no tienen suscripción, retornar como inactivos
-      return businessIds.map(id => ({
-        id: id,
-        status: 'no_subscription',
-        subscriptionStatus: 'no_subscription',
-        isActive: false,
-        isVerified: false,
-        hasPendingPayment: false,
-        pendingPaymentsCount: 0
-      }));
-    }
-
-    return result.rows.map(business => {
-      const hasPendingPayment = parseInt(business.pending_payments_count || '0') > 0;
-      const subStatus = business.subscription_status || 'no_subscription';
-      
-      let status = 'active';
-      if (subStatus === 'suspended' || subStatus === 'inactive' || !business.is_active) {
-        status = 'suspended';
-      } else if (hasPendingPayment) {
-        status = 'payment_pending';
-      } else if (subStatus === 'pending_activation' || !business.is_verified) {
-        status = 'pending';
-      } else if (subStatus === 'no_subscription') {
-        status = 'no_subscription';
-      }
-
-      return {
-        id: business.id,
-        slug: business.slug,
-        name: business.name,
-        status: status,
-        subscriptionStatus: subStatus,
-        subscriptionId: business.subscription_id,
-        isActive: business.is_active,
-        isVerified: business.is_verified,
-        suspendedAt: business.suspended_at,
-        hasPendingPayment: hasPendingPayment,
-        pendingPaymentsCount: parseInt(business.pending_payments_count || '0'),
-        activatedAt: business.activated_at,
-        nextBillingAt: business.next_billing_at
-      };
-    });
-  } catch (error) {
-    logger.error('Error checking multiple business status:', error);
-    return [];
-  }
-};
-
-// ═══════════════════════════════════════════════════════════
-// Verificar estado de UN negocio (basado en subscriptions)
+// Verificar estado del negocio
 // ═══════════════════════════════════════════════════════════
 export const checkBusinessStatus = async (businessId) => {
   try {
     const result = await query(
-      `SELECT s.id, s.business_id, s.status, s.suspended_at, s.next_billing_at, 
-              s.activated_at, s.billing_period, s.total_amount,
-              s.amount_monthly, s.amount_annual, s.discount_percentage,
-              b.is_active, b.is_verified, b.slug, b.name
-       FROM public.subscriptions s
-       JOIN public.businesses b ON s.business_id = b.id
-       WHERE s.business_id = $1
-       ORDER BY s.created_at DESC
-       LIMIT 1`,
+      `SELECT id, status, is_active, is_verified, suspended_at, suspension_reason
+       FROM public.businesses
+       WHERE id = $1`,
       [businessId]
     );
 
     if (result.rows.length === 0) {
-      return { 
-        status: 'no_subscription', 
-        message: 'Business has no subscription',
-        isActive: false
-      };
+      return { status: 'not_found', message: 'Business not found' };
     }
 
-    const sub = result.rows[0];
-    const subscriptionStatus = sub.status || 'pending_activation';
-    
-    if (subscriptionStatus === 'suspended') {
+    const business = result.rows[0];
+
+    // Verificar si está suspendido
+    if (business.status === 'suspended' || business.status === 'inactive' || !business.is_active) {
       return {
         status: 'suspended',
         message: 'Business is suspended',
-        suspendedAt: sub.suspended_at,
-        businessId: sub.business_id,
-        subscriptionStatus: subscriptionStatus
+        suspensionReason: business.suspension_reason,
+        suspendedAt: business.suspended_at
       };
     }
 
-    if (subscriptionStatus === 'inactive' || !sub.is_active) {
-      return {
-        status: 'suspended',
-        message: 'Business is inactive',
-        businessId: sub.business_id,
-        subscriptionStatus: subscriptionStatus
-      };
-    }
-
+    // Verificar si tiene pagos pendientes
     const paymentResult = await query(
       `SELECT COUNT(*) as pending_count
        FROM public.billing_history bh
-       WHERE bh.subscription_id = $1
+       JOIN public.subscriptions s ON bh.subscription_id = s.id
+       WHERE s.business_id = $1
          AND bh.status = 'pending'
          AND bh.billing_date <= NOW()`,
-      [sub.id]
+      [businessId]
     );
 
     const hasPendingPayment = parseInt(paymentResult.rows[0].pending_count) > 0;
@@ -187,29 +84,21 @@ export const checkBusinessStatus = async (businessId) => {
     if (hasPendingPayment) {
       return {
         status: 'payment_pending',
-        message: 'Business has pending payments',
-        businessId: sub.business_id,
-        subscriptionStatus: subscriptionStatus,
-        pendingPayments: parseInt(paymentResult.rows[0].pending_count)
+        message: 'Business has pending payments'
       };
     }
 
-    if (subscriptionStatus === 'pending_activation' || !sub.is_verified) {
+    // Verificar si está pendiente de verificación
+    if (!business.is_verified) {
       return {
         status: 'pending',
-        message: 'Business pending activation',
-        businessId: sub.business_id,
-        subscriptionStatus: subscriptionStatus
+        message: 'Business pending verification'
       };
     }
 
     return {
       status: 'active',
-      message: 'Business is active',
-      businessId: sub.business_id,
-      subscriptionStatus: subscriptionStatus,
-      activatedAt: sub.activated_at,
-      nextBillingAt: sub.next_billing_at
+      message: 'Business is active'
     };
   } catch (error) {
     logger.error('Error checking business status:', error);
@@ -221,7 +110,7 @@ export const checkBusinessStatus = async (businessId) => {
 };
 
 // ----------------------
-// Login - COMPLETO CON VERIFICACIÓN DE MÚLTIPLES NEGOCIOS (USANDO SUBSCRIPTIONS)
+// Login
 // ----------------------
 export const login = async (email, password) => {
   logger.info(`[LOGIN] Intentando login para: ${email}`);
@@ -235,7 +124,7 @@ export const login = async (email, password) => {
   );
   if (adminResult.rows.length > 0) {
     const admin = adminResult.rows[0];
-    logger.info('[LOGIN] Usuario admin encontrado');
+    logger.info('[LOGIN] Usuario admin encontrado:', admin);
 
     if (!admin.is_active) {
       logger.warn('[LOGIN] Usuario admin inactivo');
@@ -243,6 +132,7 @@ export const login = async (email, password) => {
     }
 
     const passwordMatch = await bcrypt.compare(password, admin.password_hash);
+    logger.info(`[LOGIN] Password match: ${passwordMatch}`);
     if (!passwordMatch) {
       logger.warn('[LOGIN] Credenciales inválidas para admin');
       throw new Error('Invalid credentials');
@@ -267,7 +157,7 @@ export const login = async (email, password) => {
       { expiresIn: env.jwt.expiresIn }
     );
 
-    logger.info('[LOGIN] Login exitoso como admin.');
+    logger.info('[LOGIN] Login exitoso como admin. Token generado.');
     return {
       token,
       user: {
@@ -301,120 +191,68 @@ export const login = async (email, password) => {
       throw new Error('Invalid credentials');
     }
     await query('UPDATE public.users SET last_login_at = NOW() WHERE id = $1', [user.id]);
-
-    // Verificar si es business_owner
+    // tipo business_owners / empleados / nuevos
     const ownerCheck = await query(
       `SELECT id FROM public.business_owners WHERE user_id = $1 LIMIT 1`,
       [user.id]
     );
     const isBusinessOwner = ownerCheck.rows.length > 0;
 
-    // Obtener TODOS los negocios del usuario CON SU SUSCRIPCIÓN
     const bizResult = await query(
-      `SELECT DISTINCT ON (b.id)
-              b.id, b.slug, b.name, b.schema_name, b.is_active, b.is_verified,
+      `SELECT b.id, b.slug, b.name, b.schema_name,
               bt.name AS business_type, bt.code AS business_type_code,
-              bu.is_owner, r.code AS role_code,
-              COALESCE(s.status, 'no_subscription') as subscription_status,
-              s.suspended_at, s.next_billing_at, s.activated_at,
-              s.id as subscription_id
+              bu.is_owner, r.code AS role_code
        FROM public.business_users bu
-       JOIN public.businesses b ON bu.business_id = b.id
+       JOIN public.businesses  b  ON bu.business_id = b.id
        LEFT JOIN public.business_types bt ON b.business_type_id = bt.id
-       LEFT JOIN public.roles r ON bu.role_id = r.id
-       LEFT JOIN public.subscriptions s ON b.id = s.business_id
-       WHERE bu.user_id = $1 AND bu.is_active = TRUE
-       ORDER BY b.id, s.created_at DESC`,
+       LEFT JOIN public.roles    r  ON bu.role_id = r.id
+       WHERE bu.user_id = $1 AND bu.is_active = TRUE AND b.is_active = TRUE
+       ORDER BY b.name`,
       [user.id]
     );
-    const allBusinesses = bizResult.rows;
+    const businesses = bizResult.rows;
 
-    const userType = isBusinessOwner ? 'owner' : (allBusinesses.length > 0 ? 'employee' : 'business_user');
-    logger.info(`[LOGIN] Usuario encontrado en public.users — userType: ${userType}, negocios: ${allBusinesses.length}`);
+    const userType = isBusinessOwner ? 'owner' : (businesses.length > 0 ? 'employee' : 'business_user');
+    logger.info(`[LOGIN] Usuario encontrado en public.users — userType: ${userType}, negocios: ${businesses.length}`);
 
-    // Verificar estado de TODOS los negocios
-    const businessIds = allBusinesses.map(b => b.id);
-    const businessStatuses = await checkMultipleBusinessStatus(businessIds);
-
-    // Filtrar negocios activos (los que sí pueden acceder)
-    const activeBusinesses = [];
-    const suspendedBusinesses = [];
-
-    for (const biz of allBusinesses) {
-      const status = businessStatuses.find(s => s.id === biz.id);
-      
-      // Si el negocio está activo y no suspendido, permitir acceso
-      if (status && (status.status === 'active' || status.status === 'pending')) {
-        activeBusinesses.push({
-          ...biz,
-          businessStatus: status.status,
-          subscriptionStatus: status.subscriptionStatus,
-          hasPendingPayment: status.hasPendingPayment
-        });
-      } else if (status) {
-        suspendedBusinesses.push({
-          ...biz,
-          businessStatus: status.status,
-          subscriptionStatus: status.subscriptionStatus,
-          suspensionReason: status.suspensionReason || status.message,
-          suspendedAt: status.suspendedAt,
-          hasPendingPayment: status.hasPendingPayment
-        });
-      }
+    if (businesses.length === 1) {
+      const biz = businesses[0];
+      const token = jwt.sign(
+        {
+          userId: user.id,
+          email: user.email,
+          firstName: user.first_name,
+          lastName: user.last_name,
+          userType,
+          businessId: biz.id,
+          businessSlug: biz.slug,
+          schemaName: biz.schema_name,
+          roleCode: biz.role_code || (isBusinessOwner ? 'owner' : 'employee'),
+        },
+        env.jwt.secret,
+        { expiresIn: env.jwt.expiresIn }
+      );
+      logger.info(`[LOGIN] Login exitoso — 1 negocio auto-seleccionado: ${biz.slug}`);
+      return {
+        token,
+        type: userType,
+        user: {
+          id: user.id,
+          email: user.email,
+          firstName: user.first_name,
+          lastName: user.last_name,
+          userType,
+          businessId: biz.id,
+          businessSlug: biz.slug,
+          schemaName: biz.schema_name,
+          roleCode: biz.role_code || (isBusinessOwner ? 'owner' : 'employee'),
+        },
+        businesses,
+        requiresBusinessSelection: false,
+      };
     }
 
-    logger.info(`[LOGIN] Negocios activos: ${activeBusinesses.length}, suspendidos: ${suspendedBusinesses.length}`);
-
-    // Caso 1: Tiene negocios activos (puede loguearse)
-    if (activeBusinesses.length > 0) {
-      logger.info(`[LOGIN] Usuario tiene ${activeBusinesses.length} negocios activos, ${suspendedBusinesses.length} suspendidos`);
-
-      // Si tiene exactamente 1 negocio activo, auto-seleccionarlo
-      if (activeBusinesses.length === 1) {
-        const biz = activeBusinesses[0];
-        const token = jwt.sign(
-          {
-            userId: user.id,
-            email: user.email,
-            firstName: user.first_name,
-            lastName: user.last_name,
-            userType,
-            businessId: biz.id,
-            businessSlug: biz.slug,
-            schemaName: biz.schema_name,
-            roleCode: biz.role_code || (isBusinessOwner ? 'owner' : 'employee'),
-            businessStatus: biz.businessStatus || 'active',
-            subscriptionStatus: biz.subscriptionStatus || 'active'
-          },
-          env.jwt.secret,
-          { expiresIn: env.jwt.expiresIn }
-        );
-
-        return {
-          token,
-          type: userType,
-          user: {
-            id: user.id,
-            email: user.email,
-            firstName: user.first_name,
-            lastName: user.last_name,
-            userType,
-            businessId: biz.id,
-            businessSlug: biz.slug,
-            schemaName: biz.schema_name,
-            roleCode: biz.role_code || (isBusinessOwner ? 'owner' : 'employee'),
-            businessStatus: biz.businessStatus || 'active',
-            subscriptionStatus: biz.subscriptionStatus || 'active'
-          },
-          businesses: activeBusinesses,
-          allBusinesses: allBusinesses,
-          suspendedBusinesses: suspendedBusinesses,
-          requiresBusinessSelection: false,
-          hasSuspendedBusinesses: suspendedBusinesses.length > 0
-        };
-      }
-
-      // Tiene múltiples negocios activos - requiere selección
+    if (businesses.length > 1) {
       const token = jwt.sign(
         {
           userId: user.id,
@@ -426,7 +264,7 @@ export const login = async (email, password) => {
         env.jwt.secret,
         { expiresIn: env.jwt.expiresIn }
       );
-
+      logger.info(`[LOGIN] Login exitoso — ${businesses.length} negocios, requiere selección`);
       return {
         token,
         type: userType,
@@ -437,37 +275,11 @@ export const login = async (email, password) => {
           lastName: user.last_name,
           userType,
         },
-        businesses: activeBusinesses,  // Solo negocios activos
-        allBusinesses: allBusinesses,  // Todos los negocios
-        suspendedBusinesses: suspendedBusinesses,
+        businesses,
         requiresBusinessSelection: true,
-        hasSuspendedBusinesses: suspendedBusinesses.length > 0,
-        warnings: {
-          hasSuspended: suspendedBusinesses.length > 0,
-          suspendedCount: suspendedBusinesses.length
-        }
       };
     }
 
-    // Caso 2: No tiene negocios activos (todos suspendidos o con pagos pendientes)
-    if (suspendedBusinesses.length > 0) {
-      // Verificar si son por suspensión o por pagos pendientes
-      const allSuspended = suspendedBusinesses.every(b => b.businessStatus === 'suspended');
-      const allPaymentPending = suspendedBusinesses.every(b => b.businessStatus === 'payment_pending');
-      const allNoSubscription = suspendedBusinesses.every(b => b.businessStatus === 'no_subscription');
-      
-      if (allSuspended) {
-        throw new Error('Todos tus negocios están suspendidos. Contacta a soporte.');
-      } else if (allPaymentPending) {
-        throw new Error('Tienes pagos pendientes en todos tus negocios. Por favor realiza el pago.');
-      } else if (allNoSubscription) {
-        throw new Error('Ninguno de tus negocios tiene una suscripción activa. Contacta a soporte.');
-      } else {
-        throw new Error('Tienes negocios suspendidos o con pagos pendientes. Contacta a soporte.');
-      }
-    }
-
-    // Caso 3: No tiene ningún negocio
     const token = jwt.sign(
       {
         userId: user.id,
@@ -497,26 +309,12 @@ export const login = async (email, password) => {
 
   // 3. SCHEMA TENANT EMPLOYEE
   logger.info('[LOGIN] No encontrado en public.users — buscando en schemas de negocios...');
-  const activeBusinessesQuery = await query(
-    `SELECT b.id, b.slug, b.name, b.schema_name, b.is_active,
-            COALESCE(s.status, 'no_subscription') as subscription_status,
-            s.suspended_at
-     FROM public.businesses b
-     LEFT JOIN public.subscriptions s ON b.id = s.business_id
-     WHERE b.is_active = TRUE
-     ORDER BY b.name`
+  const activeBusinesses = await query(
+    `SELECT id, slug, name, schema_name FROM public.businesses WHERE is_active = TRUE ORDER BY name`
   );
 
-  for (const biz of activeBusinessesQuery.rows) {
+  for (const biz of activeBusinesses.rows) {
     try {
-      // Verificar si el negocio está suspendido por subscription
-      if (biz.subscription_status === 'suspended' || 
-          biz.subscription_status === 'inactive' ||
-          biz.subscription_status === 'no_subscription') {
-        logger.warn(`[LOGIN] Business ${biz.name} is ${biz.subscription_status}, skipping`);
-        continue;
-      }
-
       const schemaUserResult = await query(
         `SELECT id, email, password_hash, first_name, last_name, is_active, role_id
          FROM "${biz.schema_name}".users
@@ -529,35 +327,14 @@ export const login = async (email, password) => {
       const schemaUser = schemaUserResult.rows[0];
 
       if (!schemaUser.is_active) {
+        logger.warn(`[LOGIN] Usuario inactivo en schema ${biz.schema_name}`);
         throw new Error('User is inactive');
       }
 
       const passwordMatch = await bcrypt.compare(password, schemaUser.password_hash);
       if (!passwordMatch) {
+        logger.warn(`[LOGIN] Credenciales inválidas para usuario en schema ${biz.schema_name}`);
         throw new Error('Invalid credentials');
-      }
-
-      // Obtener subscription_id para verificar pagos pendientes
-      const subIdResult = await query(
-        `SELECT id FROM public.subscriptions WHERE business_id = $1 ORDER BY created_at DESC LIMIT 1`,
-        [biz.id]
-      );
-
-      let hasPendingPayment = false;
-      if (subIdResult.rows.length > 0) {
-        const paymentResult = await query(
-          `SELECT COUNT(*) as pending_count
-           FROM public.billing_history bh
-           WHERE bh.subscription_id = $1
-             AND bh.status = 'pending'
-             AND bh.billing_date <= NOW()`,
-          [subIdResult.rows[0].id]
-        );
-        hasPendingPayment = parseInt(paymentResult.rows[0].pending_count) > 0;
-      }
-
-      if (hasPendingPayment) {
-        throw new Error(`El negocio "${biz.name}" tiene pagos pendientes. Por favor realiza el pago.`);
       }
 
       // Leer rol y permisos
@@ -629,8 +406,6 @@ export const login = async (email, password) => {
           businessSlug: biz.slug,
           schemaName: biz.schema_name,
           roleCode,
-          businessStatus: 'active',
-          subscriptionStatus: biz.subscription_status || 'active'
         },
         env.jwt.secret,
         { expiresIn: env.jwt.expiresIn }
@@ -653,8 +428,6 @@ export const login = async (email, password) => {
           roleCode,
           roleName,
           permissions,
-          businessStatus: 'active',
-          subscriptionStatus: biz.subscription_status || 'active'
         },
         businesses: [biz],
         requiresBusinessSelection: false,
@@ -670,34 +443,84 @@ export const login = async (email, password) => {
 };
 
 // ----------------------
+// LoginBusiness para slug específico
+// ----------------------
+export const loginBusiness = async (email, password, businessSlug) => {
+  const result = await query(
+    `SELECT u.id, u.email, u.password_hash, u.first_name, u.last_name, u.is_active,
+            b.id as business_id, b.slug, r.code as role_code
+     FROM public.users u
+     JOIN public.business_users bu ON u.id = bu.user_id
+     JOIN public.businesses b ON bu.business_id = b.id
+     JOIN public.roles r ON bu.role_id = r.id
+     WHERE u.email = $1 AND b.slug = $2 AND bu.is_active = true`,
+    [email, businessSlug]
+  );
+
+  if (result.rows.length === 0) {
+    throw new Error('Invalid credentials or business not found');
+  }
+
+  const user = result.rows[0];
+
+  if (!user.is_active) {
+    throw new Error('User is inactive');
+  }
+
+  const passwordMatch = await bcrypt.compare(password, user.password_hash);
+  if (!passwordMatch) {
+    throw new Error('Invalid credentials');
+  }
+
+  await query(
+    'UPDATE public.users SET last_login_at = NOW() WHERE id = $1',
+    [user.id]
+  );
+
+  const token = jwt.sign(
+    {
+      userId: user.id,
+      email: user.email,
+      firstName: user.first_name,
+      lastName: user.last_name,
+      businessId: user.business_id,
+      businessSlug: user.slug,
+      roleCode: user.role_code,
+    },
+    env.jwt.secret,
+    { expiresIn: env.jwt.expiresIn }
+  );
+
+  return {
+    token,
+    user: {
+      id: user.id,
+      email: user.email,
+      firstName: user.first_name,
+      lastName: user.last_name,
+      businessId: user.business_id,
+      businessSlug: user.slug,
+      roleCode: user.role_code,
+    },
+  };
+};
+
+// ----------------------
 // Seleccionar business tras login
 // ----------------------
 export const selectBusiness = async (userId, businessId) => {
-  // 🔥 NUEVO: Verificar estado del negocio antes de seleccionar
-  const statusCheck = await checkBusinessStatus(businessId);
-  if (statusCheck.status === 'suspended') {
-    throw new Error('Este negocio está suspendido. Contacta a soporte.');
-  }
-  if (statusCheck.status === 'payment_pending') {
-    throw new Error('Este negocio tiene pagos pendientes. Por favor realiza el pago.');
-  }
-
   const result = await query(
-    `SELECT b.id, b.slug, b.name, b.schema_name, b.is_active,
-            COALESCE(s.status, 'no_subscription') as subscription_status,
+    `SELECT b.id, b.slug, b.name, b.schema_name,
             bt.name AS business_type, bt.code AS business_type_code,
             bu.is_owner, r.code AS role_code,
             u.email, u.first_name, u.last_name
-    FROM public.business_users bu
-    JOIN public.businesses b ON bu.business_id = b.id
-    LEFT JOIN public.business_types bt ON b.business_type_id = bt.id
-    LEFT JOIN public.roles r ON bu.role_id = r.id
-    LEFT JOIN public.subscriptions s ON b.id = s.business_id
-    JOIN public.users u ON bu.user_id = u.id
-    WHERE bu.user_id = $1 AND b.id = $2
-      AND bu.is_active = TRUE AND b.is_active = TRUE
-    ORDER BY s.created_at DESC
-    LIMIT 1`,
+     FROM public.business_users bu
+     JOIN public.businesses b    ON bu.business_id = b.id
+     LEFT JOIN public.business_types bt ON b.business_type_id = bt.id
+     LEFT JOIN public.roles r    ON bu.role_id = r.id
+     JOIN public.users u         ON bu.user_id = u.id
+     WHERE bu.user_id = $1 AND b.id = $2
+       AND bu.is_active = TRUE AND b.is_active = TRUE`,
     [userId, businessId]
   );
 
@@ -707,27 +530,17 @@ export const selectBusiness = async (userId, businessId) => {
 
   const row = result.rows[0];
 
-  // 🔥 NUEVO: Doble verificación de estado
-  if (row.subscription_status === 'suspended' || 
-    row.subscription_status === 'inactive' || 
-    row.subscription_status === 'no_subscription' ||
-    !row.is_active) {
-    throw new Error('Este negocio está suspendido.');
-  }
-
   const token = jwt.sign(
     {
       userId,
-      email: row.email,
-      firstName: row.first_name,
-      lastName: row.last_name,
-      userType: 'owner',
-      businessId: row.id,
+      email:        row.email,
+      firstName:    row.first_name,
+      lastName:     row.last_name,
+      userType:     'owner',
+      businessId:   row.id,
       businessSlug: row.slug,
-      schemaName: row.schema_name,
-      roleCode: row.role_code || 'owner',
-      businessStatus: 'active',
-      subscriptionStatus: row.subscription_status || 'active'
+      schemaName:   row.schema_name,
+      roleCode:     row.role_code || 'owner',
     },
     env.jwt.secret,
     { expiresIn: env.jwt.expiresIn }
@@ -746,7 +559,6 @@ export const selectBusiness = async (userId, businessId) => {
       businessSlug: row.slug,
       schemaName:   row.schema_name,
       roleCode:     row.role_code || 'owner',
-      businessStatus: row.status || 'active'
     },
   };
 };
@@ -774,8 +586,6 @@ export const refreshToken = (token) => {
       ...(decoded.businessId && { businessId: decoded.businessId }),
       ...(decoded.businessSlug && { businessSlug: decoded.businessSlug }),
       ...(decoded.roleCode && { roleCode: decoded.roleCode }),
-      ...(decoded.businessStatus && { businessStatus: decoded.businessStatus }),
-      ...(decoded.subscriptionStatus && { subscriptionStatus: decoded.subscriptionStatus }),
     },
     env.jwt.secret,
     { expiresIn: env.jwt.expiresIn }
