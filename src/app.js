@@ -68,6 +68,9 @@ import pushRoutes                 from './routes/pushRoutes.js';
 import scheduledNotificationsRoutes from './routes/scheduledNotificationsRoutes.js';
 import notificationsEmailRoutes   from './routes/notificationsEmailRoutes.js';
 
+
+import pacientesRoutes from './routes/odontologia/pacientesRoutes.js';
+
 // ─── Middleware ───────────────────────────────────────────────────────────────
 import { authMiddleware, businessContextMiddleware, adminMiddleware } from './middleware/auth.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
@@ -119,13 +122,11 @@ app.use('/api/core/users',          ...authBusiness, usersRoutes);
 app.use('/api/pos/cash-register',   ...authBusiness, cashRegisterRoutes);
 
 
-
-
 app.use('/api/navigation',          ...authBusiness, navigationRoutes);
 app.use('/api/subscriptions',       ...authBusiness, subscriptionRoutes);
 app.use('/api/customers',           ...authBusiness, CustomersRoutes);
 app.use('/api/products',            ...authBusiness, productosRoutes);
-app.use('/api/productos',           ...authBusiness, productosRoutes);  // Alias para compatibilidad
+app.use('/api/productos',           ...authBusiness, productosRoutes);
 app.use('/api/categories',          ...authBusiness, categoriesRoutes);
 
 app.use('/api/graphs',              ...authBusiness, graphRoutes);
@@ -155,6 +156,9 @@ app.use('/api/expenses',            ...authBusiness, expensesRoutes);
 app.use('/api/expense-categories', ...authBusiness, expensesCategoriesRoutes);
 app.use('/api/hours',               ...authBusiness, hoursRouter);
 app.use('/api/business-status',     ...auth,         businessStatusRoutes);
+
+
+app.use('/api/odontologia/pacientes', ...authBusiness, pacientesRoutes);
 
 // ─── Rutas de admin (una por sección del sidebar) ─────────────────────────────
 app.use('/api/admin', ...authAdmin, adminDashboardRoutes);  // General → Dashboard
