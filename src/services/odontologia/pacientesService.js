@@ -1,5 +1,5 @@
 // src/services/odontologia/pacientesService.js
-import * as pacienteModel from '../../models/odontologia/PacienteModel';
+import * as pacienteModel from '../../models/odontologia/PacienteModel.js';
 
 // ============================================================
 // FUNCIONES DE SERVICIO (lógica de negocio)
