@@ -1,18 +1,23 @@
 // src/services/odontologia/pacientesService.js
-import * as pacienteModel from '../../models/odontologia/PacienteModel.js';
+import * as pacienteModel from '../../models/odontologia/pacientesModel.js';
 
 // ============================================================
-// FUNCIONES DE SERVICIO (lógica de negocio)
+// OBTENER TODOS LOS PACIENTES
 // ============================================================
-
 export const getAll = async (schema) => {
   return pacienteModel.findAll(schema);
 };
 
+// ============================================================
+// OBTENER PACIENTE POR ID
+// ============================================================
 export const getById = async (schema, id) => {
   return pacienteModel.findById(schema, id);
 };
 
+// ============================================================
+// BUSCAR PACIENTES
+// ============================================================
 export const search = async (schema, searchTerm) => {
   if (!searchTerm || searchTerm.trim().length < 2) {
     return [];
@@ -20,6 +25,9 @@ export const search = async (schema, searchTerm) => {
   return pacienteModel.search(schema, searchTerm.trim());
 };
 
+// ============================================================
+// CREAR PACIENTE
+// ============================================================
 export const create = async (schema, body) => {
   // Validaciones
   if (!body.document_number) {
@@ -58,13 +66,15 @@ export const create = async (schema, body) => {
     medical_history: body.medical_history || null,
     insurance_company: body.insurance_company || null,
     insurance_policy: body.insurance_policy || null,
-    external_id: body.external_id || null,
     is_active: body.is_active !== undefined ? body.is_active : true,
   });
 
   return paciente;
 };
 
+// ============================================================
+// ACTUALIZAR PACIENTE
+// ============================================================
 export const update = async (schema, id, body) => {
   // Verificar que el paciente existe
   const current = await pacienteModel.findById(schema, id);
@@ -103,6 +113,9 @@ export const update = async (schema, id, body) => {
   return paciente;
 };
 
+// ============================================================
+// ELIMINAR PACIENTE
+// ============================================================
 export const remove = async (schema, id) => {
   const paciente = await pacienteModel.findById(schema, id);
   if (!paciente) {
@@ -111,26 +124,9 @@ export const remove = async (schema, id) => {
   return pacienteModel.softDelete(schema, id);
 };
 
+// ============================================================
+// ESTADÍSTICAS DE PACIENTES
+// ============================================================
 export const getStats = async (schema) => {
-  const pacientes = await pacienteModel.findAll(schema);
-  const total = pacientes.length;
-  const activos = pacientes.filter(p => p.is_active !== false).length;
-  
-  // Calcular nuevos en los últimos 30 días
-  const haceUnMes = new Date();
-  haceUnMes.setDate(haceUnMes.getDate() - 30);
-  const nuevos = pacientes.filter(p => {
-    if (!p.created_at) return false;
-    return new Date(p.created_at) >= haceUnMes;
-  }).length;
-
-  // Pacientes con citas
-  const conCitas = pacientes.filter(p => (p.total_appointments || 0) > 0).length;
-
-  return {
-    total,
-    activos,
-    nuevos_30dias: nuevos,
-    con_citas: conCitas,
-  };
+  return pacienteModel.getStats(schema);
 };

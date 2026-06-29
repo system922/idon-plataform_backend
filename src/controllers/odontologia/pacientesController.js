@@ -6,20 +6,20 @@ import { getSchemaName } from '../../utils/tenantHelper.js';
 // FUNCIÓN AUXILIAR PARA OBTENER SCHEMA
 // ============================================================
 const getSchema = (req, res) => {
-  if (!req.schema && !req.user?.businessId) {
-    res.status(400).json({ 
-      success: false, 
-      error: 'Business context required' 
+  const schema = req.schema || req.headers['x-db-name'] || req.headers['x-schema-name'];
+  if (!schema) {
+    res.status(400).json({
+      success: false,
+      error: 'Business context required'
     });
     return null;
   }
-  return req.schema;
+  return schema;
 };
 
 // ============================================================
-// CONTROLLERS
+// LISTAR TODOS LOS PACIENTES
 // ============================================================
-
 export const getAll = async (req, res) => {
   try {
     const schema = getSchema(req, res);
@@ -32,13 +32,16 @@ export const getAll = async (req, res) => {
     });
   } catch (err) {
     console.error('Error en getAll pacientes:', err);
-    res.status(500).json({ 
-      success: false, 
-      error: err.message 
+    res.status(500).json({
+      success: false,
+      error: err.message
     });
   }
 };
 
+// ============================================================
+// OBTENER PACIENTE POR ID
+// ============================================================
 export const getById = async (req, res) => {
   try {
     const schema = getSchema(req, res);
@@ -46,9 +49,9 @@ export const getById = async (req, res) => {
 
     const paciente = await pacienteService.getById(schema, req.params.id);
     if (!paciente) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Paciente no encontrado' 
+      return res.status(404).json({
+        success: false,
+        error: 'Paciente no encontrado'
       });
     }
 
@@ -58,13 +61,16 @@ export const getById = async (req, res) => {
     });
   } catch (err) {
     console.error('Error en getById pacientes:', err);
-    res.status(500).json({ 
-      success: false, 
-      error: err.message 
+    res.status(500).json({
+      success: false,
+      error: err.message
     });
   }
 };
 
+// ============================================================
+// BUSCAR PACIENTES
+// ============================================================
 export const search = async (req, res) => {
   try {
     const schema = getSchema(req, res);
@@ -85,13 +91,16 @@ export const search = async (req, res) => {
     });
   } catch (err) {
     console.error('Error en search pacientes:', err);
-    res.status(500).json({ 
-      success: false, 
-      error: err.message 
+    res.status(500).json({
+      success: false,
+      error: err.message
     });
   }
 };
 
+// ============================================================
+// CREAR PACIENTE
+// ============================================================
 export const create = async (req, res) => {
   try {
     const schema = getSchema(req, res);
@@ -105,22 +114,24 @@ export const create = async (req, res) => {
     });
   } catch (err) {
     console.error('Error en create pacientes:', err);
-    
-    // Errores específicos
+
     if (err.message.includes('cédula')) {
       return res.status(409).json({
         success: false,
         error: err.message,
       });
     }
-    
-    res.status(500).json({ 
-      success: false, 
-      error: err.message 
+
+    res.status(500).json({
+      success: false,
+      error: err.message
     });
   }
 };
 
+// ============================================================
+// ACTUALIZAR PACIENTE
+// ============================================================
 export const update = async (req, res) => {
   try {
     const schema = getSchema(req, res);
@@ -134,28 +145,31 @@ export const update = async (req, res) => {
     });
   } catch (err) {
     console.error('Error en update pacientes:', err);
-    
+
     if (err.message.includes('no encontrado')) {
       return res.status(404).json({
         success: false,
         error: err.message,
       });
     }
-    
+
     if (err.message.includes('cédula')) {
       return res.status(409).json({
         success: false,
         error: err.message,
       });
     }
-    
-    res.status(500).json({ 
-      success: false, 
-      error: err.message 
+
+    res.status(500).json({
+      success: false,
+      error: err.message
     });
   }
 };
 
+// ============================================================
+// ELIMINAR PACIENTE
+// ============================================================
 export const remove = async (req, res) => {
   try {
     const schema = getSchema(req, res);
@@ -168,21 +182,24 @@ export const remove = async (req, res) => {
     });
   } catch (err) {
     console.error('Error en remove pacientes:', err);
-    
+
     if (err.message.includes('no encontrado')) {
       return res.status(404).json({
         success: false,
         error: err.message,
       });
     }
-    
-    res.status(500).json({ 
-      success: false, 
-      error: err.message 
+
+    res.status(500).json({
+      success: false,
+      error: err.message
     });
   }
 };
 
+// ============================================================
+// ESTADÍSTICAS DE PACIENTES
+// ============================================================
 export const getStats = async (req, res) => {
   try {
     const schema = getSchema(req, res);
@@ -195,9 +212,9 @@ export const getStats = async (req, res) => {
     });
   } catch (err) {
     console.error('Error en getStats pacientes:', err);
-    res.status(500).json({ 
-      success: false, 
-      error: err.message 
+    res.status(500).json({
+      success: false,
+      error: err.message
     });
   }
 };

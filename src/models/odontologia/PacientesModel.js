@@ -1,17 +1,13 @@
 // src/models/odontologia/pacientesModel.js
 import { query } from '../../config/database.js';
 
-const TABLE = 'pacientes';
-
 // ============================================================
-// FUNCIONES DE MODELO (solo queries SQL)
+// LISTAR TODOS LOS PACIENTES
 // ============================================================
-
 export const findAll = async (schema) => {
   const sql = `
     SELECT 
       id,
-      external_id,
       document_number,
       first_name,
       last_name,
@@ -40,11 +36,13 @@ export const findAll = async (schema) => {
   return rows;
 };
 
+// ============================================================
+// OBTENER PACIENTE POR ID
+// ============================================================
 export const findById = async (schema, id) => {
   const sql = `
     SELECT 
       id,
-      external_id,
       document_number,
       first_name,
       last_name,
@@ -71,6 +69,9 @@ export const findById = async (schema, id) => {
   return rows[0] || null;
 };
 
+// ============================================================
+// BUSCAR POR CÉDULA
+// ============================================================
 export const findByDocument = async (schema, documentNumber) => {
   const sql = `
     SELECT id, document_number, first_name, last_name, email, phone
@@ -81,6 +82,9 @@ export const findByDocument = async (schema, documentNumber) => {
   return rows[0] || null;
 };
 
+// ============================================================
+// BUSCAR POR TÉRMINO
+// ============================================================
 export const search = async (schema, searchTerm) => {
   const sql = `
     SELECT 
@@ -107,6 +111,9 @@ export const search = async (schema, searchTerm) => {
   return rows;
 };
 
+// ============================================================
+// INSERTAR PACIENTE
+// ============================================================
 export const insert = async (schema, data) => {
   const sql = `
     INSERT INTO "${schema}".pacientes (
@@ -126,11 +133,8 @@ export const insert = async (schema, data) => {
       medical_history,
       insurance_company,
       insurance_policy,
-      external_id,
-      is_active,
-      created_at,
-      updated_at
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW(), NOW())
+      is_active
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
     RETURNING *
   `;
   const { rows } = await query(sql, [
@@ -150,12 +154,14 @@ export const insert = async (schema, data) => {
     data.medical_history || null,
     data.insurance_company || null,
     data.insurance_policy || null,
-    data.external_id || null,
     data.is_active !== undefined ? data.is_active : true,
   ]);
   return rows[0] || null;
 };
 
+// ============================================================
+// ACTUALIZAR PACIENTE
+// ============================================================
 export const updateById = async (schema, id, data) => {
   const updates = [];
   const values = [];
@@ -247,6 +253,9 @@ export const updateById = async (schema, id, data) => {
   return rows[0] || null;
 };
 
+// ============================================================
+// ELIMINAR PACIENTE (SOFT DELETE)
+// ============================================================
 export const softDelete = async (schema, id) => {
   const sql = `
     UPDATE "${schema}".pacientes 
@@ -258,6 +267,9 @@ export const softDelete = async (schema, id) => {
   return rows[0] || null;
 };
 
+// ============================================================
+// GENERAR NÚMERO DE HISTORIA CLÍNICA
+// ============================================================
 export const generateHCNumber = async (schema) => {
   const sql = `
     SELECT MAX(CAST(SUBSTRING(hc_number FROM 'HC-\\d{4}-(\\d+)') AS INTEGER)) AS last_num
@@ -271,6 +283,9 @@ export const generateHCNumber = async (schema) => {
   return `HC-${year}-${String(nextNum).padStart(6, '0')}`;
 };
 
+// ============================================================
+// CONTAR PACIENTES POR RANGO DE FECHAS
+// ============================================================
 export const countByDateRange = async (schema, startDate, endDate) => {
   const sql = `
     SELECT COUNT(*) AS total
@@ -279,4 +294,26 @@ export const countByDateRange = async (schema, startDate, endDate) => {
   `;
   const { rows } = await query(sql, [startDate, endDate]);
   return Number(rows[0]?.total || 0);
+};
+
+// ============================================================
+// ESTADÍSTICAS DE PACIENTES
+// ============================================================
+export const getStats = async (schema) => {
+  const sql = `
+    SELECT 
+      COUNT(*) AS total,
+      COUNT(CASE WHEN is_active = true THEN 1 END) AS activos,
+      COUNT(CASE WHEN created_at >= NOW() - INTERVAL '30 days' THEN 1 END) AS nuevos_30dias,
+      (SELECT COUNT(DISTINCT patient_id) FROM "${schema}".citas) AS con_citas
+    FROM "${schema}".pacientes
+    WHERE deleted_at IS NULL
+  `;
+  const { rows } = await query(sql);
+  return {
+    total: Number(rows[0]?.total || 0),
+    activos: Number(rows[0]?.activos || 0),
+    nuevos_30dias: Number(rows[0]?.nuevos_30dias || 0),
+    con_citas: Number(rows[0]?.con_citas || 0),
+  };
 };
