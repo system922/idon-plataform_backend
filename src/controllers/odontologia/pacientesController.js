@@ -1,320 +1,203 @@
 // src/controllers/odontologia/pacientesController.js
-import * as pacienteModel from '../../models/odontologia/Paciente.js';
+import * as pacienteService from '../../services/odontologia/pacientesService.js';
 import { getSchemaName } from '../../utils/tenantHelper.js';
 
 // ============================================================
-// LISTAR PACIENTES
+// FUNCIÓN AUXILIAR PARA OBTENER SCHEMA
 // ============================================================
-export async function getPacientes(req, res) {
-  try {
-    const schema = await getSchemaName(req);
-    if (!schema) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Business context required' 
-      });
-    }
-
-    const pacientes = await pacienteModel.findAllPacientes(schema);
-    res.json({ 
-      success: true, 
-      data: pacientes 
+const getSchema = (req, res) => {
+  if (!req.schema && !req.user?.businessId) {
+    res.status(400).json({ 
+      success: false, 
+      error: 'Business context required' 
     });
-  } catch (error) {
-    console.error('Error en getPacientes:', error);
+    return null;
+  }
+  return req.schema;
+};
+
+// ============================================================
+// CONTROLLERS
+// ============================================================
+
+export const getAll = async (req, res) => {
+  try {
+    const schema = getSchema(req, res);
+    if (!schema) return;
+
+    const pacientes = await pacienteService.getAll(schema);
+    res.json({
+      success: true,
+      data: pacientes,
+    });
+  } catch (err) {
+    console.error('Error en getAll pacientes:', err);
     res.status(500).json({ 
       success: false, 
-      message: error.message || 'Error al obtener pacientes' 
+      error: err.message 
     });
   }
-}
+};
 
-// ============================================================
-// OBTENER PACIENTE POR ID
-// ============================================================
-export async function getPaciente(req, res) {
+export const getById = async (req, res) => {
   try {
-    const schema = await getSchemaName(req);
-    if (!schema) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Business context required' 
-      });
-    }
+    const schema = getSchema(req, res);
+    if (!schema) return;
 
-    const { id } = req.params;
-    const paciente = await pacienteModel.findPacienteById(schema, id);
-
+    const paciente = await pacienteService.getById(schema, req.params.id);
     if (!paciente) {
       return res.status(404).json({ 
         success: false, 
-        message: 'Paciente no encontrado' 
+        error: 'Paciente no encontrado' 
       });
     }
 
-    res.json({ 
-      success: true, 
-      data: paciente 
+    res.json({
+      success: true,
+      data: paciente,
     });
-  } catch (error) {
-    console.error('Error en getPaciente:', error);
+  } catch (err) {
+    console.error('Error en getById pacientes:', err);
     res.status(500).json({ 
       success: false, 
-      message: error.message || 'Error al obtener paciente' 
+      error: err.message 
     });
   }
-}
+};
 
-// ============================================================
-// CREAR PACIENTE
-// ============================================================
-export async function createPaciente(req, res) {
+export const search = async (req, res) => {
   try {
-    const schema = await getSchemaName(req);
-    if (!schema) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Business context required' 
-      });
-    }
-
-    const {
-      document_number,
-      first_name,
-      last_name,
-      email,
-      phone,
-      birth_date,
-      gender,
-      occupation,
-      nationality,
-      address,
-      allergies,
-      medical_history,
-      insurance_company,
-      insurance_policy
-    } = req.body;
-
-    // Validaciones
-    if (!document_number || !first_name || !last_name) {
-      return res.status(400).json({
-        success: false,
-        message: 'Nombres, apellidos y cédula son obligatorios'
-      });
-    }
-
-    // Verificar si ya existe un paciente con la misma cédula
-    const existing = await pacienteModel.findPacienteByDocument(schema, document_number);
-    if (existing) {
-      return res.status(409).json({
-        success: false,
-        message: 'Ya existe un paciente con esta cédula'
-      });
-    }
-
-    // Generar número de historia clínica
-    const hc_number = await pacienteModel.generateHCNumber(schema);
-
-    const paciente = await pacienteModel.createPaciente(schema, {
-      document_number,
-      first_name,
-      last_name,
-      email,
-      phone,
-      birth_date,
-      gender,
-      occupation,
-      nationality,
-      address,
-      hc_number,
-      allergies,
-      medical_history,
-      insurance_company,
-      insurance_policy
-    });
-
-    res.status(201).json({
-      success: true,
-      data: paciente,
-      message: 'Paciente creado exitosamente'
-    });
-  } catch (error) {
-    console.error('Error en createPaciente:', error);
-    if (error.code === '23505') {
-      return res.status(409).json({
-        success: false,
-        message: 'Ya existe un paciente con esta cédula o correo'
-      });
-    }
-    res.status(500).json({
-      success: false,
-      message: error.message || 'Error al crear paciente'
-    });
-  }
-}
-
-// ============================================================
-// ACTUALIZAR PACIENTE
-// ============================================================
-export async function updatePaciente(req, res) {
-  try {
-    const schema = await getSchemaName(req);
-    if (!schema) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Business context required' 
-      });
-    }
-
-    const { id } = req.params;
-    const {
-      document_number,
-      first_name,
-      last_name,
-      email,
-      phone,
-      birth_date,
-      gender,
-      occupation,
-      nationality,
-      address,
-      allergies,
-      medical_history,
-      insurance_company,
-      insurance_policy,
-      is_active
-    } = req.body;
-
-    // Verificar si el paciente existe
-    const existing = await pacienteModel.findPacienteById(schema, id);
-    if (!existing) {
-      return res.status(404).json({
-        success: false,
-        message: 'Paciente no encontrado'
-      });
-    }
-
-    // Validar campos requeridos
-    if (!document_number || !first_name || !last_name) {
-      return res.status(400).json({
-        success: false,
-        message: 'Nombres, apellidos y cédula son obligatorios'
-      });
-    }
-
-    const paciente = await pacienteModel.updatePaciente(schema, id, {
-      document_number,
-      first_name,
-      last_name,
-      email,
-      phone,
-      birth_date,
-      gender,
-      occupation,
-      nationality,
-      address,
-      allergies,
-      medical_history,
-      insurance_company,
-      insurance_policy,
-      is_active
-    });
-
-    res.json({
-      success: true,
-      data: paciente,
-      message: 'Paciente actualizado exitosamente'
-    });
-  } catch (error) {
-    console.error('Error en updatePaciente:', error);
-    if (error.code === '23505') {
-      return res.status(409).json({
-        success: false,
-        message: 'Ya existe otro paciente con esta cédula o correo'
-      });
-    }
-    res.status(500).json({
-      success: false,
-      message: error.message || 'Error al actualizar paciente'
-    });
-  }
-}
-
-// ============================================================
-// ELIMINAR PACIENTE (soft delete)
-// ============================================================
-export async function deletePaciente(req, res) {
-  try {
-    const schema = await getSchemaName(req);
-    if (!schema) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Business context required' 
-      });
-    }
-
-    const { id } = req.params;
-
-    const paciente = await pacienteModel.findPacienteById(schema, id);
-    if (!paciente) {
-      return res.status(404).json({
-        success: false,
-        message: 'Paciente no encontrado'
-      });
-    }
-
-    const deleted = await pacienteModel.deletePaciente(schema, id);
-    if (!deleted) {
-      return res.status(404).json({
-        success: false,
-        message: 'Paciente no encontrado o ya eliminado'
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Paciente eliminado exitosamente'
-    });
-  } catch (error) {
-    console.error('Error en deletePaciente:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message || 'Error al eliminar paciente'
-    });
-  }
-}
-
-// ============================================================
-// BUSCAR PACIENTES
-// ============================================================
-export async function searchPacientes(req, res) {
-  try {
-    const schema = await getSchemaName(req);
-    if (!schema) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Business context required' 
-      });
-    }
+    const schema = getSchema(req, res);
+    if (!schema) return;
 
     const { q } = req.query;
     if (!q || q.trim().length < 2) {
       return res.status(400).json({
         success: false,
-        message: 'La búsqueda debe tener al menos 2 caracteres'
+        error: 'La búsqueda debe tener al menos 2 caracteres'
       });
     }
 
-    const pacientes = await pacienteModel.searchPacientes(schema, q.trim());
+    const pacientes = await pacienteService.search(schema, q.trim());
     res.json({
       success: true,
-      data: pacientes
+      data: pacientes,
     });
-  } catch (error) {
-    console.error('Error en searchPacientes:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message || 'Error al buscar pacientes'
+  } catch (err) {
+    console.error('Error en search pacientes:', err);
+    res.status(500).json({ 
+      success: false, 
+      error: err.message 
     });
   }
-}
+};
+
+export const create = async (req, res) => {
+  try {
+    const schema = getSchema(req, res);
+    if (!schema) return;
+
+    const paciente = await pacienteService.create(schema, req.body);
+    res.status(201).json({
+      success: true,
+      data: paciente,
+      message: 'Paciente creado exitosamente',
+    });
+  } catch (err) {
+    console.error('Error en create pacientes:', err);
+    
+    // Errores específicos
+    if (err.message.includes('cédula')) {
+      return res.status(409).json({
+        success: false,
+        error: err.message,
+      });
+    }
+    
+    res.status(500).json({ 
+      success: false, 
+      error: err.message 
+    });
+  }
+};
+
+export const update = async (req, res) => {
+  try {
+    const schema = getSchema(req, res);
+    if (!schema) return;
+
+    const paciente = await pacienteService.update(schema, req.params.id, req.body);
+    res.json({
+      success: true,
+      data: paciente,
+      message: 'Paciente actualizado exitosamente',
+    });
+  } catch (err) {
+    console.error('Error en update pacientes:', err);
+    
+    if (err.message.includes('no encontrado')) {
+      return res.status(404).json({
+        success: false,
+        error: err.message,
+      });
+    }
+    
+    if (err.message.includes('cédula')) {
+      return res.status(409).json({
+        success: false,
+        error: err.message,
+      });
+    }
+    
+    res.status(500).json({ 
+      success: false, 
+      error: err.message 
+    });
+  }
+};
+
+export const remove = async (req, res) => {
+  try {
+    const schema = getSchema(req, res);
+    if (!schema) return;
+
+    await pacienteService.remove(schema, req.params.id);
+    res.json({
+      success: true,
+      message: 'Paciente eliminado exitosamente',
+    });
+  } catch (err) {
+    console.error('Error en remove pacientes:', err);
+    
+    if (err.message.includes('no encontrado')) {
+      return res.status(404).json({
+        success: false,
+        error: err.message,
+      });
+    }
+    
+    res.status(500).json({ 
+      success: false, 
+      error: err.message 
+    });
+  }
+};
+
+export const getStats = async (req, res) => {
+  try {
+    const schema = getSchema(req, res);
+    if (!schema) return;
+
+    const stats = await pacienteService.getStats(schema);
+    res.json({
+      success: true,
+      data: stats,
+    });
+  } catch (err) {
+    console.error('Error en getStats pacientes:', err);
+    res.status(500).json({ 
+      success: false, 
+      error: err.message 
+    });
+  }
+};
