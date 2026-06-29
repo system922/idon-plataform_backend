@@ -1,5 +1,5 @@
 // src/services/odontologia/pacientesService.js
-import * as pacienteModel from '../../models/odontologia/pacientesModel.js';
+import * as pacienteModel from '../../models/odontologia/PacientesModel.js';
 
 // ============================================================
 // OBTENER TODOS LOS PACIENTES
