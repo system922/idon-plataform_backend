@@ -1,4 +1,3 @@
-// src/routes/odontologia/pacientesRoutes.js
 import express from 'express';
 import { upload, multerErrorHandler } from '../../config/multer.js';
 import {

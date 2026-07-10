@@ -1,4 +1,3 @@
-// src/controllers/odontologia/pacientesController.js
 import db from '../../config/database.js';
 import * as pacienteService from '../../services/odontologia/pacientesService.js';
 import * as auditLogService from '../../services/auditLogService.js';

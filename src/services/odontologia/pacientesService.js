@@ -1,4 +1,3 @@
-// src/services/odontologia/pacientesService.js
 import * as pacientesModel from '../../models/odontologia/pacientesModel.js';
 import cloudinary from '../../config/cloudinary.js';
 

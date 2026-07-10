@@ -1,4 +1,3 @@
-// src/models/odontologia/pacientesModel.js
 import { query } from '../../config/database.js';
 
 // ============================================================
