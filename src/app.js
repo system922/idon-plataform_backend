@@ -177,7 +177,6 @@ app.use('/api/odontologia/horarios-trabajo', ...authBusiness, horariosTrabajoRou
 app.use('/api/odontologia/grupos-agendas', ...authBusiness, gruposAgendasRoutes);
 app.use('/api/odontologia/motivos-consulta', ...authBusiness, motivosConsultaRoutes);
 app.use('/api/odontologia/agendas', ...authBusiness, agendasRoutes);
-
 app.use('/api/odontologia/pacientes', ...authBusiness, pacientesRoutes);
 
 

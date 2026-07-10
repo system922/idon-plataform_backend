@@ -1,132 +1,234 @@
 // src/services/odontologia/pacientesService.js
-import * as pacienteModel from '../../models/odontologia/PacientesModel.js';
+import * as pacientesModel from '../../models/odontologia/pacientesModel.js';
+import cloudinary from '../../config/cloudinary.js';
 
 // ============================================================
-// OBTENER TODOS LOS PACIENTES
+// SUBIR IMAGEN A CLOUDINARY
+// ============================================================
+export const uploadImage = async (buffer, documentNumber) => {
+  try {
+    return new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          folder: 'odontologia/pacientes',
+          public_id: `paciente_${documentNumber}_${Date.now()}`,
+          transformation: [
+            { width: 400, height: 400, crop: 'fill', gravity: 'face' },
+            { quality: 'auto:good' }
+          ]
+        },
+        (error, result) => {
+          if (error) {
+            console.error('❌ Error en Cloudinary:', error);
+            reject(error);
+          } else {
+            console.log('✅ Imagen subida a Cloudinary:', result.secure_url);
+            resolve(result.secure_url);
+          }
+        }
+      );
+      uploadStream.end(buffer);
+    });
+  } catch (error) {
+    console.error('❌ Error al subir imagen:', error);
+    throw new Error(`Error al subir imagen: ${error.message}`);
+  }
+};
+
+// ============================================================
+// ELIMINAR IMAGEN DE CLOUDINARY
+// ============================================================
+export const deleteImage = async (imageUrl) => {
+  if (!imageUrl) return;
+  
+  try {
+    // Extraer public_id de la URL
+    const parts = imageUrl.split('/');
+    const filename = parts[parts.length - 1];
+    const publicId = `odontologia/pacientes/${filename.split('.')[0]}`;
+    
+    console.log('🗑️ Eliminando imagen de Cloudinary:', publicId);
+    
+    const result = await cloudinary.uploader.destroy(publicId);
+    console.log('✅ Imagen eliminada:', result);
+  } catch (error) {
+    console.error('❌ Error al eliminar imagen de Cloudinary:', error);
+    // No lanzamos error para no interrumpir el flujo
+  }
+};
+
+// ============================================================
+// LISTAR TODOS
 // ============================================================
 export const getAll = async (schema) => {
-  return pacienteModel.findAll(schema);
+  try {
+    return await pacientesModel.findAll(schema);
+  } catch (error) {
+    throw new Error(`Error al listar pacientes: ${error.message}`);
+  }
 };
 
 // ============================================================
-// OBTENER PACIENTE POR ID
+// OBTENER POR ID
 // ============================================================
 export const getById = async (schema, id) => {
-  return pacienteModel.findById(schema, id);
-};
-
-// ============================================================
-// BUSCAR PACIENTES
-// ============================================================
-export const search = async (schema, searchTerm) => {
-  if (!searchTerm || searchTerm.trim().length < 2) {
-    return [];
-  }
-  return pacienteModel.search(schema, searchTerm.trim());
-};
-
-// ============================================================
-// CREAR PACIENTE
-// ============================================================
-export const create = async (schema, body) => {
-  // Validaciones
-  if (!body.document_number) {
-    throw new Error('La cédula es requerida');
-  }
-  if (!body.first_name) {
-    throw new Error('El nombre es requerido');
-  }
-  if (!body.last_name) {
-    throw new Error('El apellido es requerido');
-  }
-
-  // Verificar duplicado por cédula
-  const existing = await pacienteModel.findByDocument(schema, body.document_number);
-  if (existing) {
-    throw new Error('Ya existe un paciente con esta cédula');
-  }
-
-  // Generar número de historia clínica
-  const hc_number = await pacienteModel.generateHCNumber(schema);
-
-  const paciente = await pacienteModel.insert(schema, {
-    document_number: body.document_number,
-    first_name: body.first_name,
-    last_name: body.last_name,
-    email: body.email || null,
-    phone: body.phone || null,
-    birth_date: body.birth_date || null,
-    gender: body.gender || null,
-    occupation: body.occupation || null,
-    nationality: body.nationality || null,
-    address: body.address || null,
-    hc_number: hc_number,
-    blood_type: body.blood_type || null,
-    allergies: body.allergies || null,
-    medical_history: body.medical_history || null,
-    insurance_company: body.insurance_company || null,
-    insurance_policy: body.insurance_policy || null,
-    is_active: body.is_active !== undefined ? body.is_active : true,
-  });
-
-  return paciente;
-};
-
-// ============================================================
-// ACTUALIZAR PACIENTE
-// ============================================================
-export const update = async (schema, id, body) => {
-  // Verificar que el paciente existe
-  const current = await pacienteModel.findById(schema, id);
-  if (!current) {
-    throw new Error('Paciente no encontrado');
-  }
-
-  // Si cambia la cédula, verificar que no esté duplicada
-  if (body.document_number && body.document_number !== current.document_number) {
-    const existing = await pacienteModel.findByDocument(schema, body.document_number);
-    if (existing) {
-      throw new Error('Ya existe otro paciente con esta cédula');
+  try {
+    if (!id) {
+      throw new Error('El ID es obligatorio');
     }
+    const paciente = await pacientesModel.findById(schema, id);
+    if (!paciente) {
+      throw new Error('Paciente no encontrado');
+    }
+    return paciente;
+  } catch (error) {
+    throw new Error(`Error al obtener paciente: ${error.message}`);
   }
-
-  const paciente = await pacienteModel.updateById(schema, id, {
-    document_number: body.document_number || current.document_number,
-    first_name: body.first_name || current.first_name,
-    last_name: body.last_name || current.last_name,
-    email: body.email !== undefined ? body.email : current.email,
-    phone: body.phone !== undefined ? body.phone : current.phone,
-    birth_date: body.birth_date !== undefined ? body.birth_date : current.birth_date,
-    gender: body.gender !== undefined ? body.gender : current.gender,
-    occupation: body.occupation !== undefined ? body.occupation : current.occupation,
-    nationality: body.nationality !== undefined ? body.nationality : current.nationality,
-    address: body.address !== undefined ? body.address : current.address,
-    hc_number: body.hc_number !== undefined ? body.hc_number : current.hc_number,
-    blood_type: body.blood_type !== undefined ? body.blood_type : current.blood_type,
-    allergies: body.allergies !== undefined ? body.allergies : current.allergies,
-    medical_history: body.medical_history !== undefined ? body.medical_history : current.medical_history,
-    insurance_company: body.insurance_company !== undefined ? body.insurance_company : current.insurance_company,
-    insurance_policy: body.insurance_policy !== undefined ? body.insurance_policy : current.insurance_policy,
-    is_active: body.is_active !== undefined ? body.is_active : current.is_active,
-  });
-
-  return paciente;
 };
 
 // ============================================================
-// ELIMINAR PACIENTE
+// BUSCAR
+// ============================================================
+export const search = async (schema, term) => {
+  try {
+    if (!term || term.trim().length < 2) {
+      throw new Error('La búsqueda debe tener al menos 2 caracteres');
+    }
+    return await pacientesModel.search(schema, term.trim());
+  } catch (error) {
+    throw new Error(`Error al buscar pacientes: ${error.message}`);
+  }
+};
+
+// ============================================================
+// CREAR
+// ============================================================
+export const create = async (schema, data, fileBuffer = null) => {
+  try {
+    // Validaciones
+    if (!data.document_number) {
+      throw new Error('La cédula es obligatoria');
+    }
+    if (data.document_number.length !== 10) {
+      throw new Error('La cédula debe tener 10 dígitos');
+    }
+    if (!data.first_name) {
+      throw new Error('El nombre es obligatorio');
+    }
+    if (!data.last_name) {
+      throw new Error('El apellido es obligatorio');
+    }
+
+    // Verificar que la cédula no esté duplicada
+    const existing = await pacientesModel.findByDocument(schema, data.document_number);
+    if (existing) {
+      throw new Error('Ya existe un paciente con esta cédula');
+    }
+
+    // Subir imagen si se proporciona
+    let imageUrl = null;
+    if (fileBuffer) {
+      imageUrl = await uploadImage(fileBuffer, data.document_number);
+    }
+
+    const pacienteData = {
+      ...data,
+      image_url: imageUrl,
+    };
+
+    return await pacientesModel.insert(schema, pacienteData);
+  } catch (error) {
+    throw new Error(`Error al crear paciente: ${error.message}`);
+  }
+};
+
+// ============================================================
+// ACTUALIZAR
+// ============================================================
+export const update = async (schema, id, data, fileBuffer = null) => {
+  try {
+    if (!id) {
+      throw new Error('El ID es obligatorio');
+    }
+
+    // Verificar que existe
+    const existing = await pacientesModel.findById(schema, id);
+    if (!existing) {
+      throw new Error('Paciente no encontrado');
+    }
+
+    // Si se envía cédula, verificar que no esté duplicada
+    if (data.document_number && data.document_number !== existing.document_number) {
+      const duplicated = await pacientesModel.findByDocument(schema, data.document_number);
+      if (duplicated) {
+        throw new Error('Ya existe un paciente con esta cédula');
+      }
+    }
+
+    // Subir nueva imagen si se proporciona
+    let imageUrl = existing.image_url;
+    if (fileBuffer) {
+      // Eliminar imagen anterior
+      if (existing.image_url) {
+        await deleteImage(existing.image_url);
+      }
+      imageUrl = await uploadImage(fileBuffer, data.document_number || existing.document_number);
+      data.image_url = imageUrl;
+    }
+
+    return await pacientesModel.updateById(schema, id, data);
+  } catch (error) {
+    throw new Error(`Error al actualizar paciente: ${error.message}`);
+  }
+};
+
+// ============================================================
+// ELIMINAR
 // ============================================================
 export const remove = async (schema, id) => {
-  const paciente = await pacienteModel.findById(schema, id);
-  if (!paciente) {
-    throw new Error('Paciente no encontrado');
+  try {
+    if (!id) {
+      throw new Error('El ID es obligatorio');
+    }
+
+    // Verificar que existe
+    const existing = await pacientesModel.findById(schema, id);
+    if (!existing) {
+      throw new Error('Paciente no encontrado');
+    }
+
+    // Eliminar imagen de Cloudinary
+    if (existing.image_url) {
+      await deleteImage(existing.image_url);
+    }
+
+    return await pacientesModel.softDelete(schema, id);
+  } catch (error) {
+    throw new Error(`Error al eliminar paciente: ${error.message}`);
   }
-  return pacienteModel.softDelete(schema, id);
 };
 
 // ============================================================
-// ESTADÍSTICAS DE PACIENTES
+// ESTADÍSTICAS
 // ============================================================
 export const getStats = async (schema) => {
-  return pacienteModel.getStats(schema);
+  try {
+    return await pacientesModel.getStats(schema);
+  } catch (error) {
+    throw new Error(`Error al obtener estadísticas: ${error.message}`);
+  }
+};
+
+// ============================================================
+// OBTENER POR CÉDULA
+// ============================================================
+export const getByDocument = async (schema, documentNumber) => {
+  try {
+    if (!documentNumber) {
+      throw new Error('La cédula es obligatoria');
+    }
+    return await pacientesModel.findByDocument(schema, documentNumber);
+  } catch (error) {
+    throw new Error(`Error al buscar por cédula: ${error.message}`);
+  }
 };

@@ -1,40 +1,45 @@
 // src/routes/odontologia/pacientesRoutes.js
 import express from 'express';
+import { upload, multerErrorHandler } from '../../config/multer.js';
 import {
   getAll,
   getById,
   search,
+  getByDocument,
   create,
   update,
   remove,
   getStats,
 } from '../../controllers/odontologia/pacientesController.js';
-import { authMiddleware, businessContextMiddleware } from '../../middleware/auth.js';
 
 const router = express.Router();
 
-// Todas las rutas requieren autenticación y contexto de negocio
-router.use(authMiddleware, businessContextMiddleware);
+// ============================================================
+// ENDPOINTS DE PACIENTES
+// ============================================================
 
-// GET /api/odontologia/pacientes - Listar todos los pacientes
+// GET /api/odontologia/pacientes - Listar todos
 router.get('/', getAll);
 
 // GET /api/odontologia/pacientes/stats - Estadísticas
 router.get('/stats', getStats);
 
-// GET /api/odontologia/pacientes/search - Buscar pacientes
+// GET /api/odontologia/pacientes/search - Buscar (query: ?q=term)
 router.get('/search', search);
 
-// GET /api/odontologia/pacientes/:id - Obtener un paciente
+// GET /api/odontologia/pacientes/document/:documentNumber - Buscar por cédula
+router.get('/document/:documentNumber', getByDocument);
+
+// GET /api/odontologia/pacientes/:id - Obtener por ID
 router.get('/:id', getById);
 
-// POST /api/odontologia/pacientes - Crear paciente
-router.post('/', create);
+// POST /api/odontologia/pacientes - Crear (con imagen opcional)
+router.post('/', upload.single('image'), multerErrorHandler, create);
 
-// PUT /api/odontologia/pacientes/:id - Actualizar paciente
-router.put('/:id', update);
+// PUT /api/odontologia/pacientes/:id - Actualizar (con imagen opcional)
+router.put('/:id', upload.single('image'), multerErrorHandler, update);
 
-// DELETE /api/odontologia/pacientes/:id - Eliminar paciente
+// DELETE /api/odontologia/pacientes/:id - Eliminar (soft delete)
 router.delete('/:id', remove);
 
 export default router;
