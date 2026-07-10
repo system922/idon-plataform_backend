@@ -11,7 +11,6 @@ import {
   getStats,
 } from '../../controllers/odontologia/pacientesController.js';
 
-
 const router = express.Router();
 
 // ============================================================

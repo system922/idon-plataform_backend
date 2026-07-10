@@ -3,7 +3,6 @@ import * as pacienteService from '../../services/odontologia/pacientesService.js
 import * as auditLogService from '../../services/auditLogService.js';
 import { getSchemaName } from '../../utils/tenantHelper.js';
 
-
 // ============================================================
 // FUNCIÓN AUXILIAR PARA OBTENER SCHEMA
 // ============================================================

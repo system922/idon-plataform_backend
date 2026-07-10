@@ -1,7 +1,6 @@
 import * as pacientesModel from '../../models/odontologia/pacientesModel.js';
 import cloudinary from '../../config/cloudinary.js';
 
-
 // ============================================================
 // SUBIR IMAGEN A CLOUDINARY
 // ============================================================
