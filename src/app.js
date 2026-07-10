@@ -68,6 +68,16 @@ import pushRoutes                 from './routes/pushRoutes.js';
 import scheduledNotificationsRoutes from './routes/scheduledNotificationsRoutes.js';
 import notificationsEmailRoutes   from './routes/notificationsEmailRoutes.js';
 
+// ============================================================
+// IMPORTAR RUTAS DE ODONTOLOGÍA - CONFIGURACIÓN
+// ============================================================
+import configuracionGeneralRoutes from './routes/odontologia/configuracionGeneralRoutes.js';
+import especialistasRoutes from './routes/odontologia/especialistasRoutes.js';
+import horariosTrabajoRoutes from './routes/odontologia/horariosTrabajoRoutes.js';
+import gruposAgendasRoutes from './routes/odontologia/gruposAgendasRoutes.js';
+import motivosConsultaRoutes from './routes/odontologia/motivosConsultaRoutes.js';
+import agendasRoutes from './routes/odontologia/agendasRoutes.js';
+
 
 import pacientesRoutes from './routes/odontologia/pacientesRoutes.js';
 
@@ -158,7 +168,18 @@ app.use('/api/hours',               ...authBusiness, hoursRouter);
 app.use('/api/business-status',     ...auth,         businessStatusRoutes);
 
 
+// ============================================================
+// RUTAS DE ODONTOLOGÍA
+// ============================================================
+app.use('/api/odontologia/configuracion-general', ...authBusiness, configuracionGeneralRoutes);
+app.use('/api/odontologia/especialistas', ...authBusiness, especialistasRoutes);
+app.use('/api/odontologia/horarios-trabajo', ...authBusiness, horariosTrabajoRoutes);
+app.use('/api/odontologia/grupos-agendas', ...authBusiness, gruposAgendasRoutes);
+app.use('/api/odontologia/motivos-consulta', ...authBusiness, motivosConsultaRoutes);
+app.use('/api/odontologia/agendas', ...authBusiness, agendasRoutes);
+
 app.use('/api/odontologia/pacientes', ...authBusiness, pacientesRoutes);
+
 
 // ─── Rutas de admin (una por sección del sidebar) ─────────────────────────────
 app.use('/api/admin', ...authAdmin, adminDashboardRoutes);  // General → Dashboard
