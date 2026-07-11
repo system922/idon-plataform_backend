@@ -1,4 +1,3 @@
-// src/models/odontologia/tratamientosModel.js
 import { query } from '../../config/database.js';
 
 // ============================================================
@@ -15,8 +14,7 @@ export const findAll = async (schema) => {
       color,
       is_active,
       created_at,
-      updated_at,
-      (SELECT COUNT(*) FROM "${schema}".citas WHERE treatment_id = tratamientos.id AND deleted_at IS NULL) AS total_used
+      updated_at
     FROM "${schema}".tratamientos
     WHERE deleted_at IS NULL
     ORDER BY name ASC
@@ -39,8 +37,7 @@ export const findById = async (schema, id) => {
       color,
       is_active,
       created_at,
-      updated_at,
-      (SELECT COUNT(*) FROM "${schema}".citas WHERE treatment_id = tratamientos.id AND deleted_at IS NULL) AS total_used
+      updated_at
     FROM "${schema}".tratamientos
     WHERE id = $1 AND deleted_at IS NULL
   `;
@@ -138,16 +135,6 @@ export const updateById = async (schema, id, data) => {
 // ELIMINAR (SOFT DELETE)
 // ============================================================
 export const softDelete = async (schema, id) => {
-  // Verificar si tiene citas asociadas
-  const checkSql = `
-    SELECT COUNT(*) AS count FROM "${schema}".citas
-    WHERE treatment_id = $1 AND deleted_at IS NULL
-  `;
-  const checkResult = await query(checkSql, [id]);
-  if (Number(checkResult.rows[0]?.count || 0) > 0) {
-    throw new Error('No se puede eliminar el tratamiento porque tiene citas asociadas');
-  }
-
   const sql = `
     UPDATE "${schema}".tratamientos 
     SET deleted_at = NOW(), updated_at = NOW()
