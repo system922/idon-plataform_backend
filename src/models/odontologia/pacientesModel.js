@@ -25,9 +25,7 @@ export const findAll = async (schema) => {
       image_url,
       is_active,
       created_at,
-      updated_at,
-      (SELECT COUNT(*) FROM "${schema}".citas WHERE patient_id = pacientes.id AND deleted_at IS NULL) AS total_appointments,
-      (SELECT COUNT(*) FROM "${schema}".tratamientos WHERE patient_id = pacientes.id AND deleted_at IS NULL) AS total_treatments
+      updated_at
     FROM "${schema}".pacientes
     WHERE deleted_at IS NULL
     ORDER BY created_at DESC
@@ -60,10 +58,7 @@ export const findById = async (schema, id) => {
       image_url,
       is_active,
       created_at,
-      updated_at,
-      (SELECT COUNT(*) FROM "${schema}".citas WHERE patient_id = pacientes.id AND deleted_at IS NULL) AS total_appointments,
-      (SELECT COUNT(*) FROM "${schema}".tratamientos WHERE patient_id = pacientes.id AND deleted_at IS NULL) AS total_treatments,
-      (SELECT COALESCE(SUM(total), 0) FROM "${schema}".pagos WHERE patient_id = pacientes.id AND deleted_at IS NULL) AS total_payments
+      updated_at
     FROM "${schema}".pacientes
     WHERE id = $1 AND deleted_at IS NULL
   `;
@@ -142,7 +137,6 @@ const generateHCNumber = async (schema) => {
 // INSERTAR
 // ============================================================
 export const insert = async (schema, data) => {
-  // Generar HC number si no viene
   let hcNumber = data.hc_number;
   if (!hcNumber) {
     hcNumber = await generateHCNumber(schema);
@@ -169,6 +163,7 @@ export const insert = async (schema, data) => {
     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
     RETURNING *
   `;
+  
   const { rows } = await query(sql, [
     data.document_number,
     data.first_name,
@@ -225,6 +220,7 @@ export const updateById = async (schema, id, data) => {
     WHERE id = $${idx} AND deleted_at IS NULL
     RETURNING *
   `;
+  
   const { rows } = await query(sql, values);
   return rows[0] || null;
 };
@@ -233,16 +229,6 @@ export const updateById = async (schema, id, data) => {
 // ELIMINAR (SOFT DELETE)
 // ============================================================
 export const softDelete = async (schema, id) => {
-  // Verificar si tiene citas asociadas
-  const checkSql = `
-    SELECT COUNT(*) AS count FROM "${schema}".citas
-    WHERE patient_id = $1 AND deleted_at IS NULL
-  `;
-  const checkResult = await query(checkSql, [id]);
-  if (Number(checkResult.rows[0]?.count || 0) > 0) {
-    throw new Error('No se puede eliminar el paciente porque tiene citas asociadas');
-  }
-
   const sql = `
     UPDATE "${schema}".pacientes 
     SET deleted_at = NOW(), updated_at = NOW()
@@ -261,8 +247,7 @@ export const getStats = async (schema) => {
     SELECT 
       COUNT(*) AS total,
       COUNT(CASE WHEN is_active = true THEN 1 END) AS activos,
-      COUNT(CASE WHEN created_at >= NOW() - INTERVAL '30 days' THEN 1 END) AS nuevos_30dias,
-      (SELECT COUNT(DISTINCT patient_id) FROM "${schema}".citas WHERE deleted_at IS NULL) AS con_citas
+      COUNT(CASE WHEN created_at >= NOW() - INTERVAL '30 days' THEN 1 END) AS nuevos_30dias
     FROM "${schema}".pacientes
     WHERE deleted_at IS NULL
   `;
@@ -271,7 +256,7 @@ export const getStats = async (schema) => {
     total: Number(rows[0]?.total || 0),
     activos: Number(rows[0]?.activos || 0),
     nuevos_30dias: Number(rows[0]?.nuevos_30dias || 0),
-    con_citas: Number(rows[0]?.con_citas || 0),
+    con_citas: 0,
   };
 };
 
