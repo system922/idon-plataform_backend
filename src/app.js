@@ -77,8 +77,7 @@ import horariosTrabajoRoutes from './routes/odontologia/horariosTrabajoRoutes.js
 import gruposAgendasRoutes from './routes/odontologia/gruposAgendasRoutes.js';
 import motivosConsultaRoutes from './routes/odontologia/motivosConsultaRoutes.js';
 import agendasRoutes from './routes/odontologia/agendasRoutes.js';
-
-
+import citasRoutes from './routes/odontologia/citasRoutes.js';
 import pacientesRoutes from './routes/odontologia/pacientesRoutes.js';
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
@@ -178,6 +177,7 @@ app.use('/api/odontologia/grupos-agendas', ...authBusiness, gruposAgendasRoutes)
 app.use('/api/odontologia/motivos-consulta', ...authBusiness, motivosConsultaRoutes);
 app.use('/api/odontologia/agendas', ...authBusiness, agendasRoutes);
 app.use('/api/odontologia/pacientes', ...authBusiness, pacientesRoutes);
+app.use('/api/odontologia/citas', ...authBusiness, citasRoutes);
 
 
 // ─── Rutas de admin (una por sección del sidebar) ─────────────────────────────
