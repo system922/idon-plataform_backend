@@ -37,7 +37,6 @@ export const getById = async (schema, id) => {
 // ============================================================
 export const create = async (schema, data, userId = null) => {
   try {
-    // Validaciones
     if (!data.patient_id) {
       throw new Error('El paciente es obligatorio');
     }
@@ -48,19 +47,16 @@ export const create = async (schema, data, userId = null) => {
       throw new Error('La fecha y hora son obligatorias');
     }
 
-    // Verificar que el paciente existe
     const paciente = await pacientesModel.findById(schema, data.patient_id);
     if (!paciente) {
       throw new Error('Paciente no encontrado');
     }
 
-    // Verificar que el odontólogo existe
     const odontologo = await especialistasModel.findById(schema, data.odontologo_id);
     if (!odontologo) {
       throw new Error('Odontólogo no encontrado');
     }
 
-    // Verificar disponibilidad
     const startTime = new Date(data.scheduled_for);
     const duration = data.duration_minutes || 30;
     const endTime = new Date(startTime.getTime() + duration * 60000);
@@ -76,11 +72,7 @@ export const create = async (schema, data, userId = null) => {
       throw new Error('El odontólogo ya tiene una cita en ese horario');
     }
 
-    const citaData = {
-      ...data,
-      created_by: userId,
-    };
-
+    const citaData = { ...data, created_by: userId };
     return await citasModel.insert(schema, citaData);
   } catch (error) {
     throw new Error(`Error al crear cita: ${error.message}`);
@@ -101,14 +93,12 @@ export const update = async (schema, id, data, userId = null) => {
       throw new Error('Cita no encontrada');
     }
 
-    // Si cambia odontólogo o fecha, verificar disponibilidad
     if (data.odontologo_id || data.scheduled_for) {
       const odontologoId = data.odontologo_id || existing.odontologo_id;
       const startTime = data.scheduled_for ? new Date(data.scheduled_for) : new Date(existing.scheduled_for);
       const duration = data.duration_minutes || existing.duration_minutes || 30;
       const endTime = new Date(startTime.getTime() + duration * 60000);
 
-      // Excluir la cita actual de la verificación
       const conflicts = await citasModel.checkAvailability(
         schema,
         odontologoId,
@@ -116,7 +106,6 @@ export const update = async (schema, id, data, userId = null) => {
         endTime
       );
 
-      // Si hay conflictos y la cita no es la misma
       if (conflicts > 0) {
         throw new Error('El odontólogo ya tiene una cita en ese horario');
       }
