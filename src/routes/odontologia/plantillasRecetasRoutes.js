@@ -32,86 +32,44 @@ import {
 const router = express.Router();
 
 // ============================================================
-// ENDPOINTS DE PLANTILLAS DE RECETAS
+// 🔴 IMPORTANTE: Las rutas específicas DEBEN ir ANTES de las rutas con parámetros (:id)
 // ============================================================
 
-// GET /api/odontologia/plantillas - Listar todas
-router.get('/', getAll);
-
-// GET /api/odontologia/plantillas/:id - Obtener por ID
-router.get('/:id', getById);
-
-// POST /api/odontologia/plantillas - Crear
-router.post('/', create);
-
-// PUT /api/odontologia/plantillas/:id - Actualizar
-router.put('/:id', update);
-
-// DELETE /api/odontologia/plantillas/:id - Eliminar
-router.delete('/:id', remove);
-
 // ============================================================
-// ENDPOINTS DE MEDICAMENTOS
+// ENDPOINTS DE TIPOS DE MEDICAMENTO (rutas específicas)
 // ============================================================
-
-// GET /api/odontologia/plantillas/medicamentos - Listar medicamentos (con filtros)
-router.get('/medicamentos', getMedicamentos);
-
-// GET /api/odontologia/plantillas/medicamentos/:id - Obtener medicamento por ID
-router.get('/medicamentos/:id', getMedicamentoById);
-
-// POST /api/odontologia/plantillas/medicamentos - Crear medicamento
-router.post('/medicamentos', createMedicamento);
-
-// PUT /api/odontologia/plantillas/medicamentos/:id - Actualizar medicamento
-router.put('/medicamentos/:id', updateMedicamento);
-
-// DELETE /api/odontologia/plantillas/medicamentos/:id - Eliminar medicamento
-router.delete('/medicamentos/:id', removeMedicamento);
-
-// ============================================================
-// ENDPOINTS DE TIPOS DE MEDICAMENTO
-// ============================================================
-
-// GET /api/odontologia/plantillas/tipos - Listar tipos
-router.get('/tipos', getTipos);
-
-// GET /api/odontologia/plantillas/tipos/:id - Obtener tipo por ID
-router.get('/tipos/:id', getTipoById);
-
-// POST /api/odontologia/plantillas/tipos - Crear tipo
+router.get('/tipos-categorias', getTiposCategorias);  // Combinado
+router.get('/tipos', getTipos);                      // Listar tipos
+router.get('/tipos/:id', getTipoById);               // Obtener tipo por ID
 router.post('/tipos', createTipo);
-
-// PUT /api/odontologia/plantillas/tipos/:id - Actualizar tipo
 router.put('/tipos/:id', updateTipo);
-
-// DELETE /api/odontologia/plantillas/tipos/:id - Eliminar tipo
 router.delete('/tipos/:id', removeTipo);
 
 // ============================================================
-// ENDPOINTS DE CATEGORÍAS DE MEDICAMENTO
+// ENDPOINTS DE CATEGORÍAS DE MEDICAMENTO (rutas específicas)
 // ============================================================
-
-// GET /api/odontologia/plantillas/categorias - Listar categorías
-router.get('/categorias', getCategorias);
-
-// GET /api/odontologia/plantillas/categorias/:id - Obtener categoría por ID
-router.get('/categorias/:id', getCategoriaById);
-
-// POST /api/odontologia/plantillas/categorias - Crear categoría
+router.get('/categorias', getCategorias);            // Listar categorías
+router.get('/categorias/:id', getCategoriaById);     // Obtener categoría por ID
 router.post('/categorias', createCategoria);
-
-// PUT /api/odontologia/plantillas/categorias/:id - Actualizar categoría
 router.put('/categorias/:id', updateCategoria);
-
-// DELETE /api/odontologia/plantillas/categorias/:id - Eliminar categoría
 router.delete('/categorias/:id', removeCategoria);
 
 // ============================================================
-// ENDPOINTS COMBINADOS
+// ENDPOINTS DE MEDICAMENTOS (rutas específicas)
 // ============================================================
+router.get('/medicamentos', getMedicamentos);        // Listar medicamentos
+router.get('/medicamentos/:id', getMedicamentoById); // Obtener medicamento por ID
+router.post('/medicamentos', createMedicamento);
+router.put('/medicamentos/:id', updateMedicamento);
+router.delete('/medicamentos/:id', removeMedicamento);
 
-// GET /api/odontologia/plantillas/tipos-categorias - Obtener tipos y categorías juntos
-router.get('/tipos-categorias', getTiposCategorias);
+// ============================================================
+// ENDPOINTS DE PLANTILLAS (rutas con parámetro :id - VAN AL FINAL)
+// ============================================================
+router.get('/', getAll);           // Listar todas
+router.get('/:id', getById);       // Obtener por ID - DEBE IR DESPUÉS DE LAS RUTAS ESPECÍFICAS
+router.post('/', create);
+router.put('/:id', update);
+router.delete('/:id', remove);
 
 export default router;
