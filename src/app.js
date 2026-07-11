@@ -80,6 +80,7 @@ import agendasRoutes from './routes/odontologia/agendasRoutes.js';
 import citasRoutes from './routes/odontologia/citasRoutes.js';
 import pacientesRoutes from './routes/odontologia/pacientesRoutes.js';
 import tratamientosRoutes from './routes/odontologia/tratamientosRoutes.js';
+import plantillasRecetasRoutes from './routes/odontologia/plantillasRecetasRoutes.js';
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 import { authMiddleware, businessContextMiddleware, adminMiddleware } from './middleware/auth.js';
@@ -180,6 +181,7 @@ app.use('/api/odontologia/agendas', ...authBusiness, agendasRoutes);
 app.use('/api/odontologia/pacientes', ...authBusiness, pacientesRoutes);
 app.use('/api/odontologia/citas', ...authBusiness, citasRoutes);
 app.use('/api/odontologia/tratamientos', ...authBusiness, tratamientosRoutes);
+app.use('/api/odontologia/plantillas-recetas', ...authBusiness, plantillasRecetasRoutes);
 
 
 // ─── Rutas de admin (una por sección del sidebar) ─────────────────────────────
