@@ -1,3 +1,4 @@
+// models/odontologia/pacientesModel.js
 import { query } from '../../config/database.js';
 
 // ============================================================
@@ -21,13 +22,12 @@ export const findAll = async (schema) => {
       blood_type,
       allergies,
       medical_history,
-      insurance_company,
-      insurance_policy,
       image_url,
       is_active,
       created_at,
       updated_at,
-      (SELECT COUNT(*) FROM "${schema}".citas WHERE patient_id = pacientes.id AND deleted_at IS NULL) AS total_appointments
+      (SELECT COUNT(*) FROM "${schema}".citas WHERE patient_id = pacientes.id AND deleted_at IS NULL) AS total_appointments,
+      (SELECT COUNT(*) FROM "${schema}".tratamientos WHERE patient_id = pacientes.id AND deleted_at IS NULL) AS total_treatments
     FROM "${schema}".pacientes
     WHERE deleted_at IS NULL
     ORDER BY created_at DESC
@@ -57,13 +57,13 @@ export const findById = async (schema, id) => {
       blood_type,
       allergies,
       medical_history,
-      insurance_company,
-      insurance_policy,
       image_url,
       is_active,
       created_at,
       updated_at,
-      (SELECT COUNT(*) FROM "${schema}".citas WHERE patient_id = pacientes.id AND deleted_at IS NULL) AS total_appointments
+      (SELECT COUNT(*) FROM "${schema}".citas WHERE patient_id = pacientes.id AND deleted_at IS NULL) AS total_appointments,
+      (SELECT COUNT(*) FROM "${schema}".tratamientos WHERE patient_id = pacientes.id AND deleted_at IS NULL) AS total_treatments,
+      (SELECT COALESCE(SUM(total), 0) FROM "${schema}".pagos WHERE patient_id = pacientes.id AND deleted_at IS NULL) AS total_payments
     FROM "${schema}".pacientes
     WHERE id = $1 AND deleted_at IS NULL
   `;
@@ -76,7 +76,18 @@ export const findById = async (schema, id) => {
 // ============================================================
 export const findByDocument = async (schema, documentNumber) => {
   const sql = `
-    SELECT id, document_number, first_name, last_name, email, phone, image_url
+    SELECT 
+      id, 
+      document_number, 
+      first_name, 
+      last_name, 
+      email, 
+      phone, 
+      image_url,
+      birth_date,
+      gender,
+      nationality,
+      hc_number
     FROM "${schema}".pacientes
     WHERE document_number = $1 AND deleted_at IS NULL
   `;
@@ -115,9 +126,28 @@ export const search = async (schema, searchTerm) => {
 };
 
 // ============================================================
+// GENERAR NÚMERO DE HISTORIA CLÍNICA
+// ============================================================
+const generateHCNumber = async (schema) => {
+  const sql = `
+    SELECT COUNT(*) AS total FROM "${schema}".pacientes WHERE deleted_at IS NULL
+  `;
+  const { rows } = await query(sql);
+  const count = Number(rows[0]?.total || 0) + 1;
+  const year = new Date().getFullYear();
+  return `HC-${year}-${String(count).padStart(5, '0')}`;
+};
+
+// ============================================================
 // INSERTAR
 // ============================================================
 export const insert = async (schema, data) => {
+  // Generar HC number si no viene
+  let hcNumber = data.hc_number;
+  if (!hcNumber) {
+    hcNumber = await generateHCNumber(schema);
+  }
+
   const sql = `
     INSERT INTO "${schema}".pacientes (
       document_number,
@@ -134,11 +164,9 @@ export const insert = async (schema, data) => {
       blood_type,
       allergies,
       medical_history,
-      insurance_company,
-      insurance_policy,
       image_url,
       is_active
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
     RETURNING *
   `;
   const { rows } = await query(sql, [
@@ -152,12 +180,10 @@ export const insert = async (schema, data) => {
     data.occupation || null,
     data.nationality || null,
     data.address || null,
-    data.hc_number || null,
+    hcNumber,
     data.blood_type || null,
     data.allergies || null,
     data.medical_history || null,
-    data.insurance_company || null,
-    data.insurance_policy || null,
     data.image_url || null,
     data.is_active !== undefined ? data.is_active : true,
   ]);
@@ -176,7 +202,7 @@ export const updateById = async (schema, id, data) => {
     'document_number', 'first_name', 'last_name', 'email', 'phone',
     'birth_date', 'gender', 'occupation', 'nationality', 'address',
     'hc_number', 'blood_type', 'allergies', 'medical_history',
-    'insurance_company', 'insurance_policy', 'image_url', 'is_active'
+    'image_url', 'is_active'
   ];
 
   fields.forEach(field => {

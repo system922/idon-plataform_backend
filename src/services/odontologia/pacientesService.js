@@ -1,3 +1,4 @@
+// services/odontologia/pacientesService.js
 import * as pacientesModel from '../../models/odontologia/pacientesModel.js';
 import cloudinary from '../../config/cloudinary.js';
 
@@ -41,7 +42,6 @@ export const deleteImage = async (imageUrl) => {
   if (!imageUrl) return;
   
   try {
-    // Extraer public_id de la URL
     const parts = imageUrl.split('/');
     const filename = parts[parts.length - 1];
     const publicId = `odontologia/pacientes/${filename.split('.')[0]}`;
@@ -52,7 +52,6 @@ export const deleteImage = async (imageUrl) => {
     console.log('✅ Imagen eliminada:', result);
   } catch (error) {
     console.error('❌ Error al eliminar imagen de Cloudinary:', error);
-    // No lanzamos error para no interrumpir el flujo
   }
 };
 
@@ -167,7 +166,6 @@ export const update = async (schema, id, data, fileBuffer = null) => {
     // Subir nueva imagen si se proporciona
     let imageUrl = existing.image_url;
     if (fileBuffer) {
-      // Eliminar imagen anterior
       if (existing.image_url) {
         await deleteImage(existing.image_url);
       }
@@ -190,13 +188,11 @@ export const remove = async (schema, id) => {
       throw new Error('El ID es obligatorio');
     }
 
-    // Verificar que existe
     const existing = await pacientesModel.findById(schema, id);
     if (!existing) {
       throw new Error('Paciente no encontrado');
     }
 
-    // Eliminar imagen de Cloudinary
     if (existing.image_url) {
       await deleteImage(existing.image_url);
     }
