@@ -335,6 +335,7 @@ export const getHorariosDisponibles = async (schema, especialistaId, fecha, dura
   // 3. Verificar fin de semana
   const esFinSemana = diaSemana === 'sábado' || diaSemana === 'domingo';
   if (esFinSemana && !mostrarFinSemana) {
+    console.log('  ❌ Es fin de semana');
     return { 
       disponible: false, 
       horarios: [],
@@ -342,7 +343,7 @@ export const getHorariosDisponibles = async (schema, especialistaId, fecha, dura
     };
   }
 
-  // 4. Obtener agenda del especialista
+  // 4. Obtener agenda del especialista - CON AMBOS DÍAS (con y sin acento)
   const agendaSql = `
     SELECT 
       a.id AS agenda_id,
@@ -389,6 +390,7 @@ export const getHorariosDisponibles = async (schema, especialistaId, fecha, dura
   console.log(`  - Horario real: ${horaInicioReal}h - ${horaFinReal}h`);
 
   if (horaInicioReal >= horaFinReal) {
+    console.log('  ❌ No hay intersección de horarios');
     return { 
       disponible: false, 
       horarios: [],
@@ -429,18 +431,19 @@ export const getHorariosDisponibles = async (schema, especialistaId, fecha, dura
   const citas = citasResult.rows;
   console.log(`  - ${citas.length} citas existentes`);
 
-  // 8. GENERAR SLOTS - Usando minutos desde medianoche
+  // 8. GENERAR SLOTS - USANDO MINUTOS DESDE MEDIANOCHE
   const slots = [];
   const duracionMs = duracionTurno * 60000;
   const tiempoEntreMs = tiempoEntreCitas * 60000;
 
-  // Hora de inicio y fin en minutos desde medianoche
+  // Convertir horas a minutos desde medianoche
   const inicioMinutos = Math.floor(horaInicioReal * 60);
   const finMinutos = Math.floor(horaFinReal * 60);
 
   let currentMinutos = inicioMinutos;
 
   console.log(`  - Generando slots desde ${horaInicioReal}h hasta ${horaFinReal}h`);
+  console.log(`  - Inicio en minutos: ${inicioMinutos}, Fin en minutos: ${finMinutos}`);
 
   let contador = 0;
   while (currentMinutos + duracionTurno <= finMinutos && contador < 100) {
