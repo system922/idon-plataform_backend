@@ -288,7 +288,7 @@ export const getHorariosDisponibles = async (schema, especialistaId, fecha, dura
   const dias = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
   const diaSemana = dias[new Date(fecha).getDay()];
   
-  // 2. Obtener configuración general
+  // 2. Obtener configuración general (horario global)
   const configSql = `
     SELECT 
       intervalo_inicio,
@@ -301,15 +301,19 @@ export const getHorariosDisponibles = async (schema, especialistaId, fecha, dura
   `;
   const configResult = await query(configSql);
   
-  if (configResult.rows.length === 0) {
-    return { 
-      disponible: false, 
-      horarios: [],
-      mensaje: 'No hay configuración general de agenda'
-    };
+  // Si no hay configuración, usar valores por defecto
+  let config = {
+    intervalo_inicio: 8,
+    intervalo_fin: 20,
+    duracion_turno: 30,
+    tiempo_entre_citas: 0,
+    mostrar_fin_semana: false
+  };
+  
+  if (configResult.rows.length > 0) {
+    config = configResult.rows[0];
   }
 
-  const config = configResult.rows[0];
   const horaInicioGlobal = config.intervalo_inicio; // 8
   const horaFinGlobal = config.intervalo_fin; // 20
   const duracionTurno = duracion || config.duracion_turno || 30;
@@ -331,6 +335,8 @@ export const getHorariosDisponibles = async (schema, especialistaId, fecha, dura
     SELECT 
       a.id AS agenda_id,
       a.nombre AS agenda_nombre,
+      EXTRACT(HOUR FROM ad.hora_inicio) AS agenda_inicio_hora,
+      EXTRACT(HOUR FROM ad.hora_fin) AS agenda_fin_hora,
       ad.hora_inicio AS agenda_inicio,
       ad.hora_fin AS agenda_fin
     FROM "${schema}".agendas a
@@ -352,15 +358,24 @@ export const getHorariosDisponibles = async (schema, especialistaId, fecha, dura
     };
   }
 
-  const { agenda_id, agenda_nombre, agenda_inicio, agenda_fin } = agendaResult.rows[0];
+  const { 
+    agenda_id, 
+    agenda_nombre, 
+    agenda_inicio, 
+    agenda_fin,
+    agenda_inicio_hora,
+    agenda_fin_hora
+  } = agendaResult.rows[0];
 
-  // 5. Convertir horas a números para comparar
-  const agendaInicioHora = parseInt(agenda_inicio.split(':')[0]);
-  const agendaFinHora = parseInt(agenda_fin.split(':')[0]);
-  
-  // 6. Calcular el rango de horario real (intersección entre global y agenda)
-  const horaInicioReal = Math.max(horaInicioGlobal, agendaInicioHora);
-  const horaFinReal = Math.min(horaFinGlobal, agendaFinHora);
+  // 5. Calcular el rango de horario real (intersección entre global y agenda)
+  // Convertir todo a horas (números) para comparar
+  const horaInicioReal = Math.max(horaInicioGlobal, agenda_inicio_hora);
+  const horaFinReal = Math.min(horaFinGlobal, agenda_fin_hora);
+
+  console.log('📊 [getHorariosDisponibles] Debug:');
+  console.log('  - Hora global:', horaInicioGlobal, '-', horaFinGlobal);
+  console.log('  - Hora agenda:', agenda_inicio_hora, '-', agenda_fin_hora);
+  console.log('  - Hora real:', horaInicioReal, '-', horaFinReal);
 
   if (horaInicioReal >= horaFinReal) {
     return { 
@@ -370,7 +385,7 @@ export const getHorariosDisponibles = async (schema, especialistaId, fecha, dura
     };
   }
 
-  // 7. Verificar si hay días libres
+  // 6. Verificar si hay días libres
   const diasLibresSql = `
     SELECT fecha, motivo
     FROM "${schema}".agenda_dias_libres
@@ -389,7 +404,7 @@ export const getHorariosDisponibles = async (schema, especialistaId, fecha, dura
     };
   }
 
-  // 8. Obtener citas existentes para ese día
+  // 7. Obtener citas existentes para ese día
   const citasSql = `
     SELECT hora_inicio, hora_fin, status
     FROM "${schema}".citas
@@ -402,22 +417,28 @@ export const getHorariosDisponibles = async (schema, especialistaId, fecha, dura
   const citasResult = await query(citasSql, [especialistaId, fecha]);
   const citas = citasResult.rows;
 
-  // 9. Generar slots disponibles
+  // 8. Generar slots disponibles
   const slots = [];
   const duracionMs = duracionTurno * 60000;
   const tiempoEntreMs = tiempoEntreCitas * 60000;
   
+  // Crear fechas para los cálculos
   let currentTime = new Date();
   currentTime.setHours(horaInicioReal, 0, 0, 0);
   const endTime = new Date();
   endTime.setHours(horaFinReal, 0, 0, 0);
 
+  // Formatear hora para comparación
+  const formatTime = (date) => {
+    return date.toTimeString().slice(0, 5);
+  };
+
   let contador = 0;
   const maxSlots = 100;
   while (currentTime < endTime && contador < maxSlots) {
     contador++;
-    const slotInicio = currentTime.toTimeString().slice(0, 5);
-    const slotFin = new Date(currentTime.getTime() + duracionMs).toTimeString().slice(0, 5);
+    const slotInicio = formatTime(currentTime);
+    const slotFin = formatTime(new Date(currentTime.getTime() + duracionMs));
     
     // Verificar si el slot está dentro del horario de trabajo
     const slotFinDate = new Date(currentTime.getTime() + duracionMs);
