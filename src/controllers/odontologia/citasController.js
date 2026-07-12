@@ -99,7 +99,7 @@ export const getHorariosDisponibles = async (req, res) => {
       schema,
       especialistaId,
       fecha,
-      duracion ? parseInt(duracion) : 30
+      duracion ? parseInt(duracion) : null
     );
     res.json({ success: true, data: horarios });
   } catch (err) {

@@ -121,7 +121,7 @@ export const remove = async (schema, id) => {
   }
 };
 
-export const getHorariosDisponibles = async (schema, especialistaId, fecha, duracion = 30) => {
+export const getHorariosDisponibles = async (schema, especialistaId, fecha, duracion = null) => {
   try {
     if (!especialistaId) throw new Error('El especialista es obligatorio');
     if (!fecha) throw new Error('La fecha es obligatoria');

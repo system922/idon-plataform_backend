@@ -281,37 +281,52 @@ export const softDelete = async (schema, id) => {
 };
 
 // ============================================================
-// OBTENER HORARIOS DISPONIBLES (CON AGENDAS Y HORARIO GLOBAL)
+// OBTENER HORARIOS DISPONIBLES (CON CONFIGURACIÓN GENERAL)
 // ============================================================
-export const getHorariosDisponibles = async (schema, especialistaId, fecha, duracion = 30) => {
+export const getHorariosDisponibles = async (schema, especialistaId, fecha, duracion = null) => {
   // 1. Obtener el día de la semana
   const dias = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
   const diaSemana = dias[new Date(fecha).getDay()];
   
-  // 2. Obtener el horario GLOBAL para ese día (desde horarios_trabajo)
-  const horarioGlobalSql = `
+  // 2. Obtener configuración general
+  const configSql = `
     SELECT 
-      hora_inicio,
-      hora_fin
-    FROM "${schema}".horarios_trabajo
-    WHERE dia = $1
-      AND is_active = true
-      AND deleted_at IS NULL
+      intervalo_inicio,
+      intervalo_fin,
+      duracion_turno,
+      tiempo_entre_citas,
+      mostrar_fin_semana
+    FROM "${schema}".configuracion_general
     LIMIT 1
   `;
-  const horarioGlobalResult = await query(horarioGlobalSql, [diaSemana]);
+  const configResult = await query(configSql);
   
-  if (horarioGlobalResult.rows.length === 0) {
+  if (configResult.rows.length === 0) {
     return { 
       disponible: false, 
       horarios: [],
-      mensaje: 'No hay horario de atención configurado para este día'
+      mensaje: 'No hay configuración general de agenda'
     };
   }
 
-  const { hora_inicio: globalInicio, hora_fin: globalFin } = horarioGlobalResult.rows[0];
+  const config = configResult.rows[0];
+  const horaInicioGlobal = config.intervalo_inicio; // 8
+  const horaFinGlobal = config.intervalo_fin; // 20
+  const duracionTurno = duracion || config.duracion_turno || 30;
+  const tiempoEntreCitas = config.tiempo_entre_citas || 0;
+  const mostrarFinSemana = config.mostrar_fin_semana || false;
 
-  // 3. Obtener la agenda del especialista para ese día
+  // 3. Verificar si es fin de semana y si está habilitado
+  const esFinSemana = diaSemana === 'sábado' || diaSemana === 'domingo';
+  if (esFinSemana && !mostrarFinSemana) {
+    return { 
+      disponible: false, 
+      horarios: [],
+      mensaje: 'No se atiende en fines de semana'
+    };
+  }
+
+  // 4. Obtener la agenda del especialista para ese día
   const agendaSql = `
     SELECT 
       a.id AS agenda_id,
@@ -319,7 +334,7 @@ export const getHorariosDisponibles = async (schema, especialistaId, fecha, dura
       ad.hora_inicio AS agenda_inicio,
       ad.hora_fin AS agenda_fin
     FROM "${schema}".agendas a
-    JOIN "${schema}".agenda_dias ad ON a.id = ad.agenda_id AND ad.deleted_at IS NULL
+    JOIN "${schema}".agenda_dias ad ON a.id = ad.agenda_id
     WHERE a.especialista_id = $1
       AND a.is_active = true
       AND a.deleted_at IS NULL
@@ -339,7 +354,23 @@ export const getHorariosDisponibles = async (schema, especialistaId, fecha, dura
 
   const { agenda_id, agenda_nombre, agenda_inicio, agenda_fin } = agendaResult.rows[0];
 
-  // 4. Verificar si hay días libres para esta agenda
+  // 5. Convertir horas a números para comparar
+  const agendaInicioHora = parseInt(agenda_inicio.split(':')[0]);
+  const agendaFinHora = parseInt(agenda_fin.split(':')[0]);
+  
+  // 6. Calcular el rango de horario real (intersección entre global y agenda)
+  const horaInicioReal = Math.max(horaInicioGlobal, agendaInicioHora);
+  const horaFinReal = Math.min(horaFinGlobal, agendaFinHora);
+
+  if (horaInicioReal >= horaFinReal) {
+    return { 
+      disponible: false, 
+      horarios: [],
+      mensaje: 'El horario del especialista no coincide con el horario global'
+    };
+  }
+
+  // 7. Verificar si hay días libres
   const diasLibresSql = `
     SELECT fecha, motivo
     FROM "${schema}".agenda_dias_libres
@@ -358,11 +389,7 @@ export const getHorariosDisponibles = async (schema, especialistaId, fecha, dura
     };
   }
 
-  // 5. Calcular el rango de horario real (intersección entre global y agenda)
-  const horaInicioReal = agenda_inicio > globalInicio ? agenda_inicio : globalInicio;
-  const horaFinReal = agenda_fin < globalFin ? agenda_fin : globalFin;
-
-  // 6. Obtener citas existentes para ese día y especialista
+  // 8. Obtener citas existentes para ese día
   const citasSql = `
     SELECT hora_inicio, hora_fin, status
     FROM "${schema}".citas
@@ -375,21 +402,19 @@ export const getHorariosDisponibles = async (schema, especialistaId, fecha, dura
   const citasResult = await query(citasSql, [especialistaId, fecha]);
   const citas = citasResult.rows;
 
-  // 7. Generar slots disponibles
+  // 9. Generar slots disponibles
   const slots = [];
-  const duracionMs = duracion * 60000;
-  
-  // Parsear horas
-  const [hInicio, mInicio] = horaInicioReal.split(':').map(Number);
-  const [hFin, mFin] = horaFinReal.split(':').map(Number);
+  const duracionMs = duracionTurno * 60000;
+  const tiempoEntreMs = tiempoEntreCitas * 60000;
   
   let currentTime = new Date();
-  currentTime.setHours(hInicio, mInicio, 0, 0);
+  currentTime.setHours(horaInicioReal, 0, 0, 0);
   const endTime = new Date();
-  endTime.setHours(hFin, mFin, 0, 0);
+  endTime.setHours(horaFinReal, 0, 0, 0);
 
   let contador = 0;
-  while (currentTime < endTime && contador < 100) {
+  const maxSlots = 100;
+  while (currentTime < endTime && contador < maxSlots) {
     contador++;
     const slotInicio = currentTime.toTimeString().slice(0, 5);
     const slotFin = new Date(currentTime.getTime() + duracionMs).toTimeString().slice(0, 5);
@@ -409,7 +434,17 @@ export const getHorariosDisponibles = async (schema, especialistaId, fecha, dura
              (slotInicio <= cInicio && slotFin >= cFin);
     });
 
-    if (!ocupado) {
+    // Verificar tiempo entre citas
+    let tieneTiempoEntre = true;
+    if (tiempoEntreMs > 0) {
+      const slotFinConTiempo = new Date(currentTime.getTime() + duracionMs + tiempoEntreMs);
+      tieneTiempoEntre = !citas.some(c => {
+        const cInicio = c.hora_inicio;
+        return slotFinConTiempo > new Date(`1970-01-01T${cInicio}`);
+      });
+    }
+
+    if (!ocupado && tieneTiempoEntre) {
       slots.push({
         hora_inicio: slotInicio,
         hora_fin: slotFin,
@@ -417,24 +452,27 @@ export const getHorariosDisponibles = async (schema, especialistaId, fecha, dura
       });
     }
 
-    currentTime = new Date(currentTime.getTime() + duracionMs);
+    // Avanzar al siguiente slot (duración + tiempo entre citas)
+    currentTime = new Date(currentTime.getTime() + duracionMs + tiempoEntreMs);
   }
 
   return {
     disponible: slots.length > 0,
     agenda_id,
     agenda_nombre,
-    horario_global: {
-      inicio: globalInicio,
-      fin: globalFin
+    configuracion: {
+      hora_inicio_global: horaInicioGlobal,
+      hora_fin_global: horaFinGlobal,
+      duracion_turno: duracionTurno,
+      tiempo_entre_citas: tiempoEntreCitas
     },
     horario_especialista: {
       inicio: agenda_inicio,
       fin: agenda_fin
     },
     horario_real: {
-      inicio: horaInicioReal,
-      fin: horaFinReal
+      inicio: horaInicioReal + ':00',
+      fin: horaFinReal + ':00'
     },
     slots
   };
