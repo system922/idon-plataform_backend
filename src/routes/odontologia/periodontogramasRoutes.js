@@ -11,19 +11,11 @@ import {
 
 const router = express.Router();
 
-// ============================================================
-// RUTAS ESPECÍFICAS (sin :id) - VAN PRIMERO
-// ============================================================
-
 // GET /api/odontologia/periodontogramas/stats - Estadísticas
 router.get('/stats', getStats);
 
 // GET /api/odontologia/periodontogramas/patient/:patientId - Por paciente
 router.get('/patient/:patientId', getByPatientId);
-
-// ============================================================
-// RUTAS CON :id - VAN DESPUÉS
-// ============================================================
 
 // GET /api/odontologia/periodontogramas - Listar todos
 router.get('/', getAll);
