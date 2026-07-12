@@ -1,82 +1,151 @@
-// src/models/odontologia/citasModel.js
+// models/odontologia/citasModel.js
 import { query } from '../../config/database.js';
 
 // ============================================================
-// LISTAR TODOS
+// LISTAR CITAS CON TODOS LOS DATOS RELACIONADOS
 // ============================================================
-export const findAll = async (schema, filters = {}) => {
-  let sql = `
+export const findAll = async (schema) => {
+  const sql = `
     SELECT 
-      c.*,
-      p.first_name AS paciente_nombre,
-      p.last_name AS paciente_apellido,
+      c.id,
+      c.patient_id,
+      c.especialista_id,
+      c.tratamiento_id,
+      c.motivo_id,
+      c.fecha,
+      c.hora_inicio,
+      c.hora_fin,
+      c.duracion,
+      c.status,
+      c.notas,
+      c.created_at,
+      c.updated_at,
+      p.first_name,
+      p.last_name,
       p.document_number,
-      e.nombre AS odontologo_nombre,
-      e.especialidad AS odontologo_especialidad,
-      t.name AS treatment_name
+      p.phone,
+      CONCAT(p.first_name, ' ', p.last_name) AS paciente_nombre,
+      e.nombre AS especialista_nombre,
+      e.especialidad,
+      t.name AS tratamiento_nombre,
+      t.duration_minutes,
+      m.nombre AS motivo_nombre,
+      m.duracion AS motivo_duracion
     FROM "${schema}".citas c
     LEFT JOIN "${schema}".pacientes p ON c.patient_id = p.id AND p.deleted_at IS NULL
-    LEFT JOIN "${schema}".especialistas e ON c.odontologo_id = e.id AND e.deleted_at IS NULL
-    LEFT JOIN "${schema}".tratamientos t ON c.treatment_id = t.id AND t.deleted_at IS NULL
+    LEFT JOIN "${schema}".especialistas e ON c.especialista_id = e.id AND e.deleted_at IS NULL
+    LEFT JOIN "${schema}".tratamientos t ON c.tratamiento_id = t.id AND t.deleted_at IS NULL
+    LEFT JOIN "${schema}".motivos_consulta m ON c.motivo_id = m.id AND m.deleted_at IS NULL
     WHERE c.deleted_at IS NULL
+    ORDER BY c.fecha DESC, c.hora_inicio ASC
   `;
-  
-  const values = [];
-  let idx = 1;
-
-  // Filtros
-  if (filters.patient_id) {
-    sql += ` AND c.patient_id = $${idx++}`;
-    values.push(filters.patient_id);
-  }
-  if (filters.odontologo_id) {
-    sql += ` AND c.odontologo_id = $${idx++}`;
-    values.push(filters.odontologo_id);
-  }
-  if (filters.status) {
-    sql += ` AND c.status = $${idx++}`;
-    values.push(filters.status);
-  }
-  if (filters.start_date) {
-    sql += ` AND c.scheduled_for >= $${idx++}`;
-    values.push(filters.start_date);
-  }
-  if (filters.end_date) {
-    sql += ` AND c.scheduled_for <= $${idx++}`;
-    values.push(filters.end_date);
-  }
-  if (filters.search) {
-    sql += ` AND (p.first_name ILIKE $${idx++} OR p.last_name ILIKE $${idx} OR p.document_number ILIKE $${idx + 1})`;
-    const term = `%${filters.search}%`;
-    values.push(term, term, term);
-    idx += 3;
-  }
-
-  sql += ` ORDER BY c.scheduled_for ASC`;
-
-  const { rows } = await query(sql, values);
+  const { rows } = await query(sql);
   return rows;
 };
 
 // ============================================================
-// OBTENER POR ID
+// LISTAR CITAS POR FECHA Y ESPECIALISTA
+// ============================================================
+export const findByFechaAndEspecialista = async (schema, fecha, especialistaId) => {
+  const sql = `
+    SELECT 
+      c.id,
+      c.patient_id,
+      c.especialista_id,
+      c.tratamiento_id,
+      c.motivo_id,
+      c.fecha,
+      c.hora_inicio,
+      c.hora_fin,
+      c.duracion,
+      c.status,
+      c.notas,
+      p.first_name,
+      p.last_name,
+      p.document_number,
+      p.phone,
+      CONCAT(p.first_name, ' ', p.last_name) AS paciente_nombre,
+      e.nombre AS especialista_nombre,
+      t.name AS tratamiento_nombre,
+      m.nombre AS motivo_nombre
+    FROM "${schema}".citas c
+    LEFT JOIN "${schema}".pacientes p ON c.patient_id = p.id AND p.deleted_at IS NULL
+    LEFT JOIN "${schema}".especialistas e ON c.especialista_id = e.id AND e.deleted_at IS NULL
+    LEFT JOIN "${schema}".tratamientos t ON c.tratamiento_id = t.id AND t.deleted_at IS NULL
+    LEFT JOIN "${schema}".motivos_consulta m ON c.motivo_id = m.id AND m.deleted_at IS NULL
+    WHERE c.deleted_at IS NULL
+      AND c.fecha = $1
+      AND c.especialista_id = $2
+      AND c.status NOT IN ('cancelled')
+    ORDER BY c.hora_inicio ASC
+  `;
+  const { rows } = await query(sql, [fecha, especialistaId]);
+  return rows;
+};
+
+// ============================================================
+// LISTAR CITAS POR PACIENTE
+// ============================================================
+export const findByPatientId = async (schema, patientId) => {
+  const sql = `
+    SELECT 
+      c.id,
+      c.fecha,
+      c.hora_inicio,
+      c.hora_fin,
+      c.status,
+      c.notas,
+      e.nombre AS especialista_nombre,
+      t.name AS tratamiento_nombre,
+      m.nombre AS motivo_nombre
+    FROM "${schema}".citas c
+    LEFT JOIN "${schema}".especialistas e ON c.especialista_id = e.id AND e.deleted_at IS NULL
+    LEFT JOIN "${schema}".tratamientos t ON c.tratamiento_id = t.id AND t.deleted_at IS NULL
+    LEFT JOIN "${schema}".motivos_consulta m ON c.motivo_id = m.id AND m.deleted_at IS NULL
+    WHERE c.patient_id = $1 AND c.deleted_at IS NULL
+    ORDER BY c.fecha DESC, c.hora_inicio ASC
+  `;
+  const { rows } = await query(sql, [patientId]);
+  return rows;
+};
+
+// ============================================================
+// OBTENER CITA POR ID
 // ============================================================
 export const findById = async (schema, id) => {
   const sql = `
     SELECT 
-      c.*,
-      p.first_name AS paciente_nombre,
-      p.last_name AS paciente_apellido,
+      c.id,
+      c.patient_id,
+      c.especialista_id,
+      c.tratamiento_id,
+      c.motivo_id,
+      c.fecha,
+      c.hora_inicio,
+      c.hora_fin,
+      c.duracion,
+      c.status,
+      c.notas,
+      c.created_at,
+      c.updated_at,
+      p.first_name,
+      p.last_name,
       p.document_number,
-      p.phone AS paciente_phone,
-      p.email AS paciente_email,
-      e.nombre AS odontologo_nombre,
-      e.especialidad AS odontologo_especialidad,
-      t.name AS treatment_name
+      p.phone,
+      p.email,
+      CONCAT(p.first_name, ' ', p.last_name) AS paciente_nombre,
+      e.nombre AS especialista_nombre,
+      e.especialidad,
+      t.name AS tratamiento_nombre,
+      t.duration_minutes,
+      t.price,
+      m.nombre AS motivo_nombre,
+      m.duracion AS motivo_duracion
     FROM "${schema}".citas c
     LEFT JOIN "${schema}".pacientes p ON c.patient_id = p.id AND p.deleted_at IS NULL
-    LEFT JOIN "${schema}".especialistas e ON c.odontologo_id = e.id AND e.deleted_at IS NULL
-    LEFT JOIN "${schema}".tratamientos t ON c.treatment_id = t.id AND t.deleted_at IS NULL
+    LEFT JOIN "${schema}".especialistas e ON c.especialista_id = e.id AND e.deleted_at IS NULL
+    LEFT JOIN "${schema}".tratamientos t ON c.tratamiento_id = t.id AND t.deleted_at IS NULL
+    LEFT JOIN "${schema}".motivos_consulta m ON c.motivo_id = m.id AND m.deleted_at IS NULL
     WHERE c.id = $1 AND c.deleted_at IS NULL
   `;
   const { rows } = await query(sql, [id]);
@@ -84,41 +153,70 @@ export const findById = async (schema, id) => {
 };
 
 // ============================================================
-// INSERTAR
+// VERIFICAR DISPONIBILIDAD DE HORA
+// ============================================================
+export const verificarDisponibilidad = async (schema, especialistaId, fecha, horaInicio, horaFin, excludeId = null) => {
+  let sql = `
+    SELECT COUNT(*) AS count
+    FROM "${schema}".citas
+    WHERE especialista_id = $1
+      AND fecha = $2
+      AND deleted_at IS NULL
+      AND status NOT IN ('cancelled')
+      AND (
+        (hora_inicio < $4 AND hora_fin > $3)
+        OR (hora_inicio >= $3 AND hora_inicio < $4)
+        OR (hora_fin > $3 AND hora_fin <= $4)
+      )
+  `;
+  
+  const params = [especialistaId, fecha, horaInicio, horaFin];
+  
+  if (excludeId) {
+    sql += ` AND id != $5`;
+    params.push(excludeId);
+  }
+  
+  const { rows } = await query(sql, params);
+  return Number(rows[0]?.count || 0) === 0;
+};
+
+// ============================================================
+// CREAR CITA
 // ============================================================
 export const insert = async (schema, data) => {
   const sql = `
     INSERT INTO "${schema}".citas (
       patient_id,
-      odontologo_id,
-      treatment_id,
-      scheduled_for,
-      duration_minutes,
+      especialista_id,
+      tratamiento_id,
+      motivo_id,
+      fecha,
+      hora_inicio,
+      hora_fin,
+      duracion,
       status,
-      service_type,
-      notes,
-      tooth_number,
-      created_by
+      notas
     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     RETURNING *
   `;
   const { rows } = await query(sql, [
     data.patient_id,
-    data.odontologo_id,
-    data.treatment_id || null,
-    data.scheduled_for,
-    data.duration_minutes || 30,
+    data.especialista_id,
+    data.tratamiento_id || null,
+    data.motivo_id || null,
+    data.fecha,
+    data.hora_inicio,
+    data.hora_fin,
+    data.duracion || 30,
     data.status || 'scheduled',
-    data.service_type || 'consulta',
-    data.notes || null,
-    data.tooth_number || null,
-    data.created_by || null,
+    data.notas || null
   ]);
   return rows[0] || null;
 };
 
 // ============================================================
-// ACTUALIZAR
+// ACTUALIZAR CITA
 // ============================================================
 export const updateById = async (schema, id, data) => {
   const updates = [];
@@ -126,8 +224,8 @@ export const updateById = async (schema, id, data) => {
   let idx = 1;
 
   const fields = [
-    'patient_id', 'odontologo_id', 'treatment_id', 'scheduled_for',
-    'duration_minutes', 'status', 'service_type', 'notes', 'tooth_number'
+    'patient_id', 'especialista_id', 'tratamiento_id', 'motivo_id',
+    'fecha', 'hora_inicio', 'hora_fin', 'duracion', 'status', 'notas'
   ];
 
   fields.forEach(field => {
@@ -155,7 +253,21 @@ export const updateById = async (schema, id, data) => {
 };
 
 // ============================================================
-// ELIMINAR (SOFT DELETE)
+// CAMBIAR ESTADO DE CITA
+// ============================================================
+export const updateStatus = async (schema, id, status) => {
+  const sql = `
+    UPDATE "${schema}".citas 
+    SET status = $1, updated_at = NOW()
+    WHERE id = $2 AND deleted_at IS NULL
+    RETURNING *
+  `;
+  const { rows } = await query(sql, [status, id]);
+  return rows[0] || null;
+};
+
+// ============================================================
+// ELIMINAR CITA (SOFT DELETE)
 // ============================================================
 export const softDelete = async (schema, id) => {
   const sql = `
@@ -169,76 +281,77 @@ export const softDelete = async (schema, id) => {
 };
 
 // ============================================================
-// OBTENER ESTADÍSTICAS
+// OBTENER HORARIOS DISPONIBLES POR DÍA
 // ============================================================
-export const getStats = async (schema, filters = {}) => {
-  let sql = `
+export const getHorariosDisponibles = async (schema, especialistaId, fecha, duracion = 30) => {
+  // Obtener horario de trabajo del especialista para ese día
+  const horarioSql = `
     SELECT 
-      COUNT(*) AS total,
-      COUNT(CASE WHEN status = 'scheduled' THEN 1 END) AS scheduled,
-      COUNT(CASE WHEN status = 'confirmed' THEN 1 END) AS confirmed,
-      COUNT(CASE WHEN status = 'in_progress' THEN 1 END) AS in_progress,
-      COUNT(CASE WHEN status = 'completed' THEN 1 END) AS completed,
-      COUNT(CASE WHEN status = 'cancelled' THEN 1 END) AS cancelled,
-      COUNT(CASE WHEN status = 'no_show' THEN 1 END) AS no_show
-    FROM "${schema}".citas
-    WHERE deleted_at IS NULL
+      ht.hora_inicio,
+      ht.hora_fin
+    FROM "${schema}".horarios_trabajo ht
+    WHERE ht.dia = $1
+      AND ht.is_active = true
+      AND ht.deleted_at IS NULL
+    LIMIT 1
   `;
-
-  const values = [];
-  let idx = 1;
-
-  if (filters.start_date) {
-    sql += ` AND scheduled_for >= $${idx++}`;
-    values.push(filters.start_date);
-  }
-  if (filters.end_date) {
-    sql += ` AND scheduled_for <= $${idx++}`;
-    values.push(filters.end_date);
-  }
-  if (filters.odontologo_id) {
-    sql += ` AND odontologo_id = $${idx++}`;
-    values.push(filters.odontologo_id);
+  const dias = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+  const diaSemana = dias[new Date(fecha).getDay()];
+  const horarioResult = await query(horarioSql, [diaSemana]);
+  
+  if (horarioResult.rows.length === 0) {
+    return { disponible: false, horarios: [] };
   }
 
-  const { rows } = await query(sql, values);
-  return rows[0] || {};
-};
+  const { hora_inicio, hora_fin } = horarioResult.rows[0];
 
-// ============================================================
-// OBTENER CITAS POR FECHA
-// ============================================================
-export const findByDate = async (schema, date) => {
-  const sql = `
-    SELECT 
-      c.*,
-      p.first_name AS paciente_nombre,
-      p.last_name AS paciente_apellido,
-      e.nombre AS odontologo_nombre
-    FROM "${schema}".citas c
-    LEFT JOIN "${schema}".pacientes p ON c.patient_id = p.id AND p.deleted_at IS NULL
-    LEFT JOIN "${schema}".especialistas e ON c.odontologo_id = e.id AND e.deleted_at IS NULL
-    WHERE c.deleted_at IS NULL
-      AND DATE(c.scheduled_for) = $1
-    ORDER BY c.scheduled_for ASC
-  `;
-  const { rows } = await query(sql, [date]);
-  return rows;
-};
-
-// ============================================================
-// VERIFICAR DISPONIBILIDAD
-// ============================================================
-export const checkAvailability = async (schema, odontologoId, startTime, endTime) => {
-  const sql = `
-    SELECT COUNT(*) AS count
+  // Obtener citas existentes para ese día
+  const citasSql = `
+    SELECT hora_inicio, hora_fin
     FROM "${schema}".citas
-    WHERE odontologo_id = $1
+    WHERE especialista_id = $1
+      AND fecha = $2
       AND deleted_at IS NULL
-      AND status NOT IN ('cancelled', 'completed')
-      AND scheduled_for < $2
-      AND scheduled_for + (duration_minutes || ' minutes')::INTERVAL > $1
+      AND status NOT IN ('cancelled')
+    ORDER BY hora_inicio ASC
   `;
-  const { rows } = await query(sql, [odontologoId, startTime, endTime]);
-  return Number(rows[0]?.count || 0);
+  const citasResult = await query(citasSql, [especialistaId, fecha]);
+  const citas = citasResult.rows;
+
+  // Generar slots disponibles
+  const slots = [];
+  let currentTime = new Date(`1970-01-01T${hora_inicio}`);
+  const endTime = new Date(`1970-01-01T${hora_fin}`);
+  const duracionMs = duracion * 60000;
+
+  while (currentTime < endTime) {
+    const slotInicio = currentTime.toTimeString().slice(0, 5);
+    const slotFin = new Date(currentTime.getTime() + duracionMs).toTimeString().slice(0, 5);
+    
+    // Verificar si el slot está ocupado
+    const ocupado = citas.some(c => {
+      const cInicio = c.hora_inicio;
+      const cFin = c.hora_fin;
+      return (slotInicio >= cInicio && slotInicio < cFin) || 
+             (slotFin > cInicio && slotFin <= cFin) ||
+             (slotInicio <= cInicio && slotFin >= cFin);
+    });
+
+    if (!ocupado) {
+      slots.push({
+        hora_inicio: slotInicio,
+        hora_fin: slotFin,
+        disponible: true
+      });
+    }
+
+    currentTime = new Date(currentTime.getTime() + duracionMs);
+  }
+
+  return {
+    disponible: true,
+    horario_inicio: hora_inicio,
+    horario_fin: hora_fin,
+    slots
+  };
 };

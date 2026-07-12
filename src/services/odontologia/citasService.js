@@ -1,113 +1,95 @@
-// src/services/odontologia/citasService.js
+// services/odontologia/citasService.js
 import * as citasModel from '../../models/odontologia/citasModel.js';
-import * as pacientesModel from '../../models/odontologia/pacientesModel.js';
-import * as especialistasModel from '../../models/odontologia/especialistasModel.js';
 
-// ============================================================
-// LISTAR TODOS
-// ============================================================
-export const getAll = async (schema, filters = {}) => {
+export const getAll = async (schema) => {
   try {
-    return await citasModel.findAll(schema, filters);
+    return await citasModel.findAll(schema);
   } catch (error) {
     throw new Error(`Error al listar citas: ${error.message}`);
   }
 };
 
-// ============================================================
-// OBTENER POR ID
-// ============================================================
+export const getByFechaAndEspecialista = async (schema, fecha, especialistaId) => {
+  try {
+    if (!fecha) throw new Error('La fecha es obligatoria');
+    if (!especialistaId) throw new Error('El especialista es obligatorio');
+    return await citasModel.findByFechaAndEspecialista(schema, fecha, especialistaId);
+  } catch (error) {
+    throw new Error(`Error al obtener citas: ${error.message}`);
+  }
+};
+
+export const getByPatientId = async (schema, patientId) => {
+  try {
+    if (!patientId) throw new Error('El ID del paciente es obligatorio');
+    return await citasModel.findByPatientId(schema, patientId);
+  } catch (error) {
+    throw new Error(`Error al obtener citas del paciente: ${error.message}`);
+  }
+};
+
 export const getById = async (schema, id) => {
   try {
-    if (!id) {
-      throw new Error('El ID es obligatorio');
-    }
+    if (!id) throw new Error('El ID es obligatorio');
     const cita = await citasModel.findById(schema, id);
-    if (!cita) {
-      throw new Error('Cita no encontrada');
-    }
+    if (!cita) throw new Error('Cita no encontrada');
     return cita;
   } catch (error) {
     throw new Error(`Error al obtener cita: ${error.message}`);
   }
 };
 
-// ============================================================
-// CREAR
-// ============================================================
-export const create = async (schema, data, userId = null) => {
+export const create = async (schema, data) => {
   try {
-    if (!data.patient_id) {
-      throw new Error('El paciente es obligatorio');
-    }
-    if (!data.odontologo_id) {
-      throw new Error('El odontólogo es obligatorio');
-    }
-    if (!data.scheduled_for) {
-      throw new Error('La fecha y hora son obligatorias');
-    }
+    if (!data.patient_id) throw new Error('El paciente es obligatorio');
+    if (!data.especialista_id) throw new Error('El especialista es obligatorio');
+    if (!data.fecha) throw new Error('La fecha es obligatoria');
+    if (!data.hora_inicio) throw new Error('La hora de inicio es obligatoria');
+    if (!data.hora_fin) throw new Error('La hora de fin es obligatoria');
 
-    const paciente = await pacientesModel.findById(schema, data.patient_id);
-    if (!paciente) {
-      throw new Error('Paciente no encontrado');
-    }
-
-    const odontologo = await especialistasModel.findById(schema, data.odontologo_id);
-    if (!odontologo) {
-      throw new Error('Odontólogo no encontrado');
-    }
-
-    const startTime = new Date(data.scheduled_for);
-    const duration = data.duration_minutes || 30;
-    const endTime = new Date(startTime.getTime() + duration * 60000);
-    
-    const conflicts = await citasModel.checkAvailability(
+    // Verificar disponibilidad
+    const disponible = await citasModel.verificarDisponibilidad(
       schema,
-      data.odontologo_id,
-      startTime,
-      endTime
+      data.especialista_id,
+      data.fecha,
+      data.hora_inicio,
+      data.hora_fin
     );
 
-    if (conflicts > 0) {
-      throw new Error('El odontólogo ya tiene una cita en ese horario');
+    if (!disponible) {
+      throw new Error('El horario seleccionado no está disponible');
     }
 
-    const citaData = { ...data, created_by: userId };
-    return await citasModel.insert(schema, citaData);
+    return await citasModel.insert(schema, data);
   } catch (error) {
     throw new Error(`Error al crear cita: ${error.message}`);
   }
 };
 
-// ============================================================
-// ACTUALIZAR
-// ============================================================
-export const update = async (schema, id, data, userId = null) => {
+export const update = async (schema, id, data) => {
   try {
-    if (!id) {
-      throw new Error('El ID es obligatorio');
-    }
-
+    if (!id) throw new Error('El ID es obligatorio');
     const existing = await citasModel.findById(schema, id);
-    if (!existing) {
-      throw new Error('Cita no encontrada');
-    }
+    if (!existing) throw new Error('Cita no encontrada');
 
-    if (data.odontologo_id || data.scheduled_for) {
-      const odontologoId = data.odontologo_id || existing.odontologo_id;
-      const startTime = data.scheduled_for ? new Date(data.scheduled_for) : new Date(existing.scheduled_for);
-      const duration = data.duration_minutes || existing.duration_minutes || 30;
-      const endTime = new Date(startTime.getTime() + duration * 60000);
+    // Si cambia fecha, hora o especialista, verificar disponibilidad
+    if (data.fecha || data.hora_inicio || data.hora_fin || data.especialista_id) {
+      const especialistaId = data.especialista_id || existing.especialista_id;
+      const fecha = data.fecha || existing.fecha;
+      const horaInicio = data.hora_inicio || existing.hora_inicio;
+      const horaFin = data.hora_fin || existing.hora_fin;
 
-      const conflicts = await citasModel.checkAvailability(
+      const disponible = await citasModel.verificarDisponibilidad(
         schema,
-        odontologoId,
-        startTime,
-        endTime
+        especialistaId,
+        fecha,
+        horaInicio,
+        horaFin,
+        id
       );
 
-      if (conflicts > 0) {
-        throw new Error('El odontólogo ya tiene una cita en ese horario');
+      if (!disponible) {
+        throw new Error('El horario seleccionado no está disponible');
       }
     }
 
@@ -117,75 +99,34 @@ export const update = async (schema, id, data, userId = null) => {
   }
 };
 
-// ============================================================
-// ELIMINAR
-// ============================================================
+export const updateStatus = async (schema, id, status) => {
+  try {
+    if (!id) throw new Error('El ID es obligatorio');
+    const existing = await citasModel.findById(schema, id);
+    if (!existing) throw new Error('Cita no encontrada');
+    return await citasModel.updateStatus(schema, id, status);
+  } catch (error) {
+    throw new Error(`Error al cambiar estado de la cita: ${error.message}`);
+  }
+};
+
 export const remove = async (schema, id) => {
   try {
-    if (!id) {
-      throw new Error('El ID es obligatorio');
-    }
-
+    if (!id) throw new Error('El ID es obligatorio');
     const existing = await citasModel.findById(schema, id);
-    if (!existing) {
-      throw new Error('Cita no encontrada');
-    }
-
+    if (!existing) throw new Error('Cita no encontrada');
     return await citasModel.softDelete(schema, id);
   } catch (error) {
     throw new Error(`Error al eliminar cita: ${error.message}`);
   }
 };
 
-// ============================================================
-// ESTADÍSTICAS
-// ============================================================
-export const getStats = async (schema, filters = {}) => {
+export const getHorariosDisponibles = async (schema, especialistaId, fecha, duracion = 30) => {
   try {
-    return await citasModel.getStats(schema, filters);
+    if (!especialistaId) throw new Error('El especialista es obligatorio');
+    if (!fecha) throw new Error('La fecha es obligatoria');
+    return await citasModel.getHorariosDisponibles(schema, especialistaId, fecha, duracion);
   } catch (error) {
-    throw new Error(`Error al obtener estadísticas: ${error.message}`);
-  }
-};
-
-// ============================================================
-// OBTENER POR FECHA
-// ============================================================
-export const getByDate = async (schema, date) => {
-  try {
-    if (!date) {
-      throw new Error('La fecha es obligatoria');
-    }
-    return await citasModel.findByDate(schema, date);
-  } catch (error) {
-    throw new Error(`Error al obtener citas por fecha: ${error.message}`);
-  }
-};
-
-// ============================================================
-// CAMBIAR ESTADO
-// ============================================================
-export const updateStatus = async (schema, id, status) => {
-  try {
-    if (!id) {
-      throw new Error('El ID es obligatorio');
-    }
-    if (!status) {
-      throw new Error('El estado es obligatorio');
-    }
-
-    const validStatus = ['scheduled', 'confirmed', 'in_progress', 'completed', 'cancelled', 'no_show'];
-    if (!validStatus.includes(status)) {
-      throw new Error('Estado inválido');
-    }
-
-    const existing = await citasModel.findById(schema, id);
-    if (!existing) {
-      throw new Error('Cita no encontrada');
-    }
-
-    return await citasModel.updateById(schema, id, { status });
-  } catch (error) {
-    throw new Error(`Error al actualizar estado: ${error.message}`);
+    throw new Error(`Error al obtener horarios disponibles: ${error.message}`);
   }
 };

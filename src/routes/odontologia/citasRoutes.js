@@ -1,26 +1,30 @@
-// src/routes/odontologia/citasRoutes.js
+// routes/odontologia/citasRoutes.js
 import express from 'express';
 import {
   getAll,
+  getByFechaAndEspecialista,
+  getByPatientId,
   getById,
+  getHorariosDisponibles,
   create,
   update,
-  remove,
-  getStats,
-  getByDate,
   updateStatus,
+  remove
 } from '../../controllers/odontologia/citasController.js';
 
 const router = express.Router();
 
-// GET /api/odontologia/citas - Listar todos (con filtros)
+// GET /api/odontologia/citas - Listar todas
 router.get('/', getAll);
 
-// GET /api/odontologia/citas/stats - Estadísticas
-router.get('/stats', getStats);
+// GET /api/odontologia/citas/horarios-disponibles - Horarios disponibles
+router.get('/horarios-disponibles', getHorariosDisponibles);
 
-// GET /api/odontologia/citas/date/:date - Obtener por fecha
-router.get('/date/:date', getByDate);
+// GET /api/odontologia/citas/fecha-especialista - Por fecha y especialista
+router.get('/fecha-especialista', getByFechaAndEspecialista);
+
+// GET /api/odontologia/citas/patient/:patientId - Por paciente
+router.get('/patient/:patientId', getByPatientId);
 
 // GET /api/odontologia/citas/:id - Obtener por ID
 router.get('/:id', getById);
