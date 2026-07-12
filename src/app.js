@@ -82,6 +82,7 @@ import pacientesRoutes from './routes/odontologia/pacientesRoutes.js';
 import tratamientosRoutes from './routes/odontologia/tratamientosRoutes.js';
 import plantillasRecetasRoutes from './routes/odontologia/plantillasRecetasRoutes.js';
 import planesTratamientoRoutes from './routes/odontologia/planesTratamientoRoutes.js';
+import odontogramasRoutes from './routes/odontologia/odontogramasRoutes.js';
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 import { authMiddleware, businessContextMiddleware, adminMiddleware } from './middleware/auth.js';
@@ -184,6 +185,7 @@ app.use('/api/odontologia/citas', ...authBusiness, citasRoutes);
 app.use('/api/odontologia/tratamientos', ...authBusiness, tratamientosRoutes);
 app.use('/api/odontologia/plantillas-recetas', ...authBusiness, plantillasRecetasRoutes);
 app.use('/api/odontologia/planes-tratamiento', ...authBusiness, planesTratamientoRoutes);
+app.use('/api/odontologia/odontogramas', ...authBusiness, odontogramasRoutes);
 
 // ─── Rutas de admin (una por sección del sidebar) ─────────────────────────────
 app.use('/api/admin', ...authAdmin, adminDashboardRoutes);  // General → Dashboard
