@@ -16,7 +16,12 @@ export const getAll = async (req, res) => {
     if (!schema) return res.status(400).json({ error: 'Business context required' });
 
     const plantillas = await plantillasService.getAll(schema);
-    res.json({ success: true, data: plantillas });
+    
+    // Asegurar que siempre devuelva un array
+    res.json({ 
+      success: true, 
+      data: Array.isArray(plantillas) ? plantillas : [] 
+    });
   } catch (err) {
     console.error('❌ Error en getAll plantillas:', err);
     res.status(500).json({ success: false, error: err.message });
@@ -117,7 +122,7 @@ export const getMedicamentos = async (req, res) => {
 
     const { tipoId, categoriaId } = req.query;
     const medicamentos = await plantillasService.getMedicamentos(schema, tipoId, categoriaId);
-    res.json({ success: true, data: medicamentos });
+    res.json({ success: true, data: Array.isArray(medicamentos) ? medicamentos : [] });
   } catch (err) {
     console.error('❌ Error en getMedicamentos:', err);
     res.status(500).json({ success: false, error: err.message });
@@ -220,7 +225,7 @@ export const getTipos = async (req, res) => {
     if (!schema) return res.status(400).json({ error: 'Business context required' });
 
     const tipos = await plantillasService.getTipos(schema);
-    res.json({ success: true, data: tipos });
+    res.json({ success: true, data: Array.isArray(tipos) ? tipos : [] });
   } catch (err) {
     console.error('❌ Error en getTipos:', err);
     res.status(500).json({ success: false, error: err.message });
@@ -323,7 +328,7 @@ export const getCategorias = async (req, res) => {
     if (!schema) return res.status(400).json({ error: 'Business context required' });
 
     const categorias = await plantillasService.getCategorias(schema);
-    res.json({ success: true, data: categorias });
+    res.json({ success: true, data: Array.isArray(categorias) ? categorias : [] });
   } catch (err) {
     console.error('❌ Error en getCategorias:', err);
     res.status(500).json({ success: false, error: err.message });
@@ -425,7 +430,7 @@ export const getTiposCategorias = async (req, res) => {
     if (!schema) return res.status(400).json({ error: 'Business context required' });
 
     const data = await plantillasService.getTiposCategorias(schema);
-    res.json({ success: true, data });
+    res.json({ success: true, data: data || { tipos: [], categorias: [] } });
   } catch (err) {
     console.error('❌ Error en getTiposCategorias:', err);
     res.status(500).json({ success: false, error: err.message });

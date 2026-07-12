@@ -5,7 +5,6 @@ import { query } from '../../config/database.js';
 // TIPOS DE MEDICAMENTO
 // ============================================================
 
-// LISTAR TIPOS
 export const findAllTipos = async (schema) => {
   const sql = `
     SELECT 
@@ -22,7 +21,6 @@ export const findAllTipos = async (schema) => {
   return rows;
 };
 
-// OBTENER TIPO POR ID
 export const findTipoById = async (schema, id) => {
   const sql = `
     SELECT 
@@ -38,7 +36,6 @@ export const findTipoById = async (schema, id) => {
   return rows[0] || null;
 };
 
-// CREAR TIPO
 export const insertTipo = async (schema, data) => {
   const sql = `
     INSERT INTO "${schema}".tipos_medicamento (
@@ -54,7 +51,6 @@ export const insertTipo = async (schema, data) => {
   return rows[0] || null;
 };
 
-// ACTUALIZAR TIPO
 export const updateTipoById = async (schema, id, data) => {
   const updates = [];
   const values = [];
@@ -86,9 +82,7 @@ export const updateTipoById = async (schema, id, data) => {
   return rows[0] || null;
 };
 
-// ELIMINAR TIPO (SOFT DELETE) - Verificar si tiene medicamentos asociados
 export const softDeleteTipo = async (schema, id) => {
-  // Verificar si hay medicamentos usando este tipo
   const checkSql = `
     SELECT COUNT(*) AS count FROM "${schema}".medicamentos
     WHERE tipo_id = $1 AND deleted_at IS NULL
@@ -112,7 +106,6 @@ export const softDeleteTipo = async (schema, id) => {
 // CATEGORÍAS DE MEDICAMENTO
 // ============================================================
 
-// LISTAR CATEGORÍAS
 export const findAllCategorias = async (schema) => {
   const sql = `
     SELECT 
@@ -129,7 +122,6 @@ export const findAllCategorias = async (schema) => {
   return rows;
 };
 
-// OBTENER CATEGORÍA POR ID
 export const findCategoriaById = async (schema, id) => {
   const sql = `
     SELECT 
@@ -145,7 +137,6 @@ export const findCategoriaById = async (schema, id) => {
   return rows[0] || null;
 };
 
-// CREAR CATEGORÍA
 export const insertCategoria = async (schema, data) => {
   const sql = `
     INSERT INTO "${schema}".categorias_medicamento (
@@ -161,7 +152,6 @@ export const insertCategoria = async (schema, data) => {
   return rows[0] || null;
 };
 
-// ACTUALIZAR CATEGORÍA
 export const updateCategoriaById = async (schema, id, data) => {
   const updates = [];
   const values = [];
@@ -193,9 +183,7 @@ export const updateCategoriaById = async (schema, id, data) => {
   return rows[0] || null;
 };
 
-// ELIMINAR CATEGORÍA (SOFT DELETE) - Verificar si tiene medicamentos asociados
 export const softDeleteCategoria = async (schema, id) => {
-  // Verificar si hay medicamentos usando esta categoría
   const checkSql = `
     SELECT COUNT(*) AS count FROM "${schema}".medicamentos
     WHERE categoria_id = $1 AND deleted_at IS NULL

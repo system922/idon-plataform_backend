@@ -86,32 +86,6 @@ export const findById = async (schema, id) => {
 };
 
 // ============================================================
-// BUSCAR MEDICAMENTOS POR TÉRMINO
-// ============================================================
-export const search = async (schema, term) => {
-  const sql = `
-    SELECT 
-      m.id,
-      m.nombre,
-      m.descripcion,
-      m.presentacion,
-      m.tipo_id,
-      t.nombre AS tipo_nombre,
-      m.categoria_id,
-      c.nombre AS categoria_nombre
-    FROM "${schema}".medicamentos m
-    LEFT JOIN "${schema}".tipos_medicamento t ON m.tipo_id = t.id AND t.deleted_at IS NULL
-    LEFT JOIN "${schema}".categorias_medicamento c ON m.categoria_id = c.id AND c.deleted_at IS NULL
-    WHERE m.deleted_at IS NULL
-      AND m.nombre ILIKE $1
-    ORDER BY m.nombre ASC
-    LIMIT 10
-  `;
-  const { rows } = await query(sql, [`%${term}%`]);
-  return rows;
-};
-
-// ============================================================
 // CREAR MEDICAMENTO
 // ============================================================
 export const insert = async (schema, data) => {

@@ -16,28 +16,31 @@ export const findAll = async (schema) => {
       p.is_active,
       p.created_at,
       p.updated_at,
-      (
-        SELECT json_agg(
-          json_build_object(
-            'id', pm.id,
-            'medicamento_id', m.id,
-            'medicamento_nombre', m.nombre,
-            'dosis_especifica', pm.dosis_especifica,
-            'frecuencia_especifica', pm.frecuencia_especifica,
-            'notas', pm.notas,
-            'orden', pm.orden,
-            'tipo_id', t.id,
-            'tipo_nombre', t.nombre,
-            'categoria_id', c.id,
-            'categoria_nombre', c.nombre
+      COALESCE(
+        (
+          SELECT json_agg(
+            json_build_object(
+              'id', pm.id,
+              'medicamento_id', m.id,
+              'medicamento_nombre', m.nombre,
+              'dosis_especifica', pm.dosis_especifica,
+              'frecuencia_especifica', pm.frecuencia_especifica,
+              'notas', pm.notas,
+              'orden', pm.orden,
+              'tipo_id', t.id,
+              'tipo_nombre', t.nombre,
+              'categoria_id', c.id,
+              'categoria_nombre', c.nombre
+            )
+            ORDER BY pm.orden ASC, m.nombre ASC
           )
-          ORDER BY pm.orden ASC, m.nombre ASC
-        )
-        FROM "${schema}".plantilla_medicamentos pm
-        LEFT JOIN "${schema}".medicamentos m ON pm.medicamento_id = m.id AND m.deleted_at IS NULL
-        LEFT JOIN "${schema}".tipos_medicamento t ON m.tipo_id = t.id AND t.deleted_at IS NULL
-        LEFT JOIN "${schema}".categorias_medicamento c ON m.categoria_id = c.id AND c.deleted_at IS NULL
-        WHERE pm.plantilla_id = p.id AND pm.deleted_at IS NULL
+          FROM "${schema}".plantilla_medicamentos pm
+          LEFT JOIN "${schema}".medicamentos m ON pm.medicamento_id = m.id AND m.deleted_at IS NULL
+          LEFT JOIN "${schema}".tipos_medicamento t ON m.tipo_id = t.id AND t.deleted_at IS NULL
+          LEFT JOIN "${schema}".categorias_medicamento c ON m.categoria_id = c.id AND c.deleted_at IS NULL
+          WHERE pm.plantilla_id = p.id AND pm.deleted_at IS NULL
+        ),
+        '[]'::json
       ) AS medicamentos
     FROM "${schema}".plantillas_recetas p
     WHERE p.deleted_at IS NULL
@@ -62,28 +65,31 @@ export const findById = async (schema, id) => {
       p.is_active,
       p.created_at,
       p.updated_at,
-      (
-        SELECT json_agg(
-          json_build_object(
-            'id', pm.id,
-            'medicamento_id', m.id,
-            'medicamento_nombre', m.nombre,
-            'dosis_especifica', pm.dosis_especifica,
-            'frecuencia_especifica', pm.frecuencia_especifica,
-            'notas', pm.notas,
-            'orden', pm.orden,
-            'tipo_id', t.id,
-            'tipo_nombre', t.nombre,
-            'categoria_id', c.id,
-            'categoria_nombre', c.nombre
+      COALESCE(
+        (
+          SELECT json_agg(
+            json_build_object(
+              'id', pm.id,
+              'medicamento_id', m.id,
+              'medicamento_nombre', m.nombre,
+              'dosis_especifica', pm.dosis_especifica,
+              'frecuencia_especifica', pm.frecuencia_especifica,
+              'notas', pm.notas,
+              'orden', pm.orden,
+              'tipo_id', t.id,
+              'tipo_nombre', t.nombre,
+              'categoria_id', c.id,
+              'categoria_nombre', c.nombre
+            )
+            ORDER BY pm.orden ASC, m.nombre ASC
           )
-          ORDER BY pm.orden ASC, m.nombre ASC
-        )
-        FROM "${schema}".plantilla_medicamentos pm
-        LEFT JOIN "${schema}".medicamentos m ON pm.medicamento_id = m.id AND m.deleted_at IS NULL
-        LEFT JOIN "${schema}".tipos_medicamento t ON m.tipo_id = t.id AND t.deleted_at IS NULL
-        LEFT JOIN "${schema}".categorias_medicamento c ON m.categoria_id = c.id AND c.deleted_at IS NULL
-        WHERE pm.plantilla_id = p.id AND pm.deleted_at IS NULL
+          FROM "${schema}".plantilla_medicamentos pm
+          LEFT JOIN "${schema}".medicamentos m ON pm.medicamento_id = m.id AND m.deleted_at IS NULL
+          LEFT JOIN "${schema}".tipos_medicamento t ON m.tipo_id = t.id AND t.deleted_at IS NULL
+          LEFT JOIN "${schema}".categorias_medicamento c ON m.categoria_id = c.id AND c.deleted_at IS NULL
+          WHERE pm.plantilla_id = p.id AND pm.deleted_at IS NULL
+        ),
+        '[]'::json
       ) AS medicamentos
     FROM "${schema}".plantillas_recetas p
     WHERE p.id = $1 AND p.deleted_at IS NULL
@@ -193,26 +199,28 @@ export const updateById = async (schema, id, data) => {
     await query(sqlDelete, [id]);
 
     // Insertar nuevos medicamentos
-    for (let i = 0; i < data.medicamentos.length; i++) {
-      const med = data.medicamentos[i];
-      const sqlInsert = `
-        INSERT INTO "${schema}".plantilla_medicamentos (
-          plantilla_id,
-          medicamento_id,
-          dosis_especifica,
-          frecuencia_especifica,
-          notas,
-          orden
-        ) VALUES ($1, $2, $3, $4, $5, $6)
-      `;
-      await query(sqlInsert, [
-        id,
-        med.medicamento_id,
-        med.dosis_especifica || null,
-        med.frecuencia_especifica || null,
-        med.notas || null,
-        i
-      ]);
+    if (data.medicamentos.length > 0) {
+      for (let i = 0; i < data.medicamentos.length; i++) {
+        const med = data.medicamentos[i];
+        const sqlInsert = `
+          INSERT INTO "${schema}".plantilla_medicamentos (
+            plantilla_id,
+            medicamento_id,
+            dosis_especifica,
+            frecuencia_especifica,
+            notas,
+            orden
+          ) VALUES ($1, $2, $3, $4, $5, $6)
+        `;
+        await query(sqlInsert, [
+          id,
+          med.medicamento_id,
+          med.dosis_especifica || null,
+          med.frecuencia_especifica || null,
+          med.notas || null,
+          i
+        ]);
+      }
     }
   }
 

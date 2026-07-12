@@ -118,7 +118,6 @@ export const removeMedicamento = async (schema, id) => {
 // TIPOS Y CATEGORÍAS (CRUD completo)
 // ============================================================
 
-// --- TIPOS ---
 export const getTipos = async (schema) => {
   try {
     return await tiposCategoriasModel.findAllTipos(schema);
@@ -169,7 +168,6 @@ export const removeTipo = async (schema, id) => {
   }
 };
 
-// --- CATEGORÍAS ---
 export const getCategorias = async (schema) => {
   try {
     return await tiposCategoriasModel.findAllCategorias(schema);
@@ -220,9 +218,6 @@ export const removeCategoria = async (schema, id) => {
   }
 };
 
-// ============================================================
-// OBTENER TIPOS Y CATEGORÍAS JUNTOS
-// ============================================================
 export const getTiposCategorias = async (schema) => {
   try {
     const tipos = await tiposCategoriasModel.findAllTipos(schema);
