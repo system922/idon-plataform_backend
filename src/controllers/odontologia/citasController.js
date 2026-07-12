@@ -215,3 +215,19 @@ export const remove = async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 };
+
+// ============================================================
+// ESTADÍSTICAS DE CITAS
+// ============================================================
+export const getStats = async (req, res) => {
+  try {
+    const schema = await getSchema(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const stats = await citasService.getStats(schema);
+    res.json({ success: true, data: stats });
+  } catch (err) {
+    console.error('❌ Error en getStats citas:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};

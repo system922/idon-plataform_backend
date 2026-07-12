@@ -9,13 +9,17 @@ import {
   create,
   update,
   updateStatus,
-  remove
+  remove,
+  getStats
 } from '../../controllers/odontologia/citasController.js';
 
 const router = express.Router();
 
 // GET /api/odontologia/citas - Listar todas
 router.get('/', getAll);
+
+// GET /api/odontologia/citas/stats - Estadísticas
+router.get('/stats', getStats);
 
 // GET /api/odontologia/citas/horarios-disponibles - Horarios disponibles
 router.get('/horarios-disponibles', getHorariosDisponibles);

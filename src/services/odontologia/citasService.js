@@ -130,3 +130,11 @@ export const getHorariosDisponibles = async (schema, especialistaId, fecha, dura
     throw new Error(`Error al obtener horarios disponibles: ${error.message}`);
   }
 };
+
+export const getStats = async (schema) => {
+  try {
+    return await citasModel.getStats(schema);
+  } catch (error) {
+    throw new Error(`Error al obtener estadísticas: ${error.message}`);
+  }
+};
