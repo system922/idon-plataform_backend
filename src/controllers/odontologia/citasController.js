@@ -6,9 +6,6 @@ const getSchema = async (req) => {
   return await getSchemaName(req);
 };
 
-// ============================================================
-// LISTAR CITAS
-// ============================================================
 export const getAll = async (req, res) => {
   try {
     const schema = await getSchema(req);
@@ -22,9 +19,6 @@ export const getAll = async (req, res) => {
   }
 };
 
-// ============================================================
-// LISTAR CITAS POR FECHA Y ESPECIALISTA
-// ============================================================
 export const getByFechaAndEspecialista = async (req, res) => {
   try {
     const schema = await getSchema(req);
@@ -42,9 +36,6 @@ export const getByFechaAndEspecialista = async (req, res) => {
   }
 };
 
-// ============================================================
-// LISTAR CITAS POR PACIENTE
-// ============================================================
 export const getByPatientId = async (req, res) => {
   try {
     const schema = await getSchema(req);
@@ -61,9 +52,6 @@ export const getByPatientId = async (req, res) => {
   }
 };
 
-// ============================================================
-// OBTENER CITA POR ID
-// ============================================================
 export const getById = async (req, res) => {
   try {
     const schema = await getSchema(req);
@@ -83,9 +71,6 @@ export const getById = async (req, res) => {
   }
 };
 
-// ============================================================
-// OBTENER HORARIOS DISPONIBLES
-// ============================================================
 export const getHorariosDisponibles = async (req, res) => {
   try {
     const schema = await getSchema(req);
@@ -108,9 +93,6 @@ export const getHorariosDisponibles = async (req, res) => {
   }
 };
 
-// ============================================================
-// OBTENER ESPECIALISTAS DISPONIBLES
-// ============================================================
 export const getEspecialistasDisponibles = async (req, res) => {
   try {
     const schema = await getSchema(req);
@@ -129,9 +111,6 @@ export const getEspecialistasDisponibles = async (req, res) => {
   }
 };
 
-// ============================================================
-// CREAR CITA
-// ============================================================
 export const create = async (req, res) => {
   try {
     const schema = await getSchema(req);
@@ -153,9 +132,6 @@ export const create = async (req, res) => {
   }
 };
 
-// ============================================================
-// ACTUALIZAR CITA
-// ============================================================
 export const update = async (req, res) => {
   try {
     const schema = await getSchema(req);
@@ -183,9 +159,6 @@ export const update = async (req, res) => {
   }
 };
 
-// ============================================================
-// ACTUALIZAR ESTADO DE CITA
-// ============================================================
 export const updateStatus = async (req, res) => {
   try {
     const schema = await getSchema(req);
@@ -212,9 +185,6 @@ export const updateStatus = async (req, res) => {
   }
 };
 
-// ============================================================
-// ELIMINAR CITA
-// ============================================================
 export const remove = async (req, res) => {
   try {
     const schema = await getSchema(req);
@@ -237,9 +207,6 @@ export const remove = async (req, res) => {
   }
 };
 
-// ============================================================
-// ESTADÍSTICAS DE CITAS
-// ============================================================
 export const getStats = async (req, res) => {
   try {
     const schema = await getSchema(req);
