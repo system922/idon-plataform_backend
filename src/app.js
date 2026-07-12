@@ -185,8 +185,6 @@ app.use('/api/odontologia/citas', ...authBusiness, citasRoutes);
 app.use('/api/odontologia/tratamientos', ...authBusiness, tratamientosRoutes);
 app.use('/api/odontologia/plantillas-recetas', ...authBusiness, plantillasRecetasRoutes);
 app.use('/api/odontologia/planes-tratamiento', ...authBusiness, planesTratamientoRoutes);
-app.use('/api/odontologia/citas', ...authBusiness, citasRoutes);
-
 
 // ─── Rutas de admin (una por sección del sidebar) ─────────────────────────────
 app.use('/api/admin', ...authAdmin, adminDashboardRoutes);  // General → Dashboard
