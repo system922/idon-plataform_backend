@@ -3,7 +3,6 @@ import express from 'express';
 import {
   getAll,
   getByPatientId,
-  getByPatientIdAndFase,
   savePeriodontograma,
   updatePeriodontograma,
   remove,
@@ -21,9 +20,6 @@ router.get('/stats', getStats);
 
 // GET /api/odontologia/periodontogramas/patient/:patientId - Por paciente
 router.get('/patient/:patientId', getByPatientId);
-
-// GET /api/odontologia/periodontogramas/patient/:patientId/fase/:fase - Por paciente y fase (inicial/seguimiento)
-router.get('/patient/:patientId/fase/:fase', getByPatientIdAndFase);
 
 // ============================================================
 // RUTAS CON :id - VAN DESPUÉS

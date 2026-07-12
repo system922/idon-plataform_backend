@@ -1,211 +1,132 @@
-// src/controllers/odontologia/periodontogramasController.js
-import * as periodontogramasService from '../../services/odontologia/periodontogramasService.js';
-import * as auditLogService from '../../services/auditLogService.js';
-import { getSchemaName } from '../../utils/tenantHelper.js';
-
-const getSchema = async (req) => {
-  return await getSchemaName(req);
-};
+// src/services/odontologia/periodontogramasService.js
+import * as periodontogramasModel from '../../models/odontologia/periodontogramasModel.js';
 
 // ============================================================
 // LISTAR TODOS
 // ============================================================
-export const getAll = async (req, res) => {
+export const getAll = async (schema) => {
   try {
-    const schema = await getSchema(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
+    return await periodontogramasModel.findAll(schema);
+  } catch (error) {
+    throw new Error(`Error al listar periodontogramas: ${error.message}`);
+  }
+};
 
-    const periodontogramas = await periodontogramasService.getAll(schema);
-    res.json({ success: true, data: periodontogramas });
-  } catch (err) {
-    console.error('❌ Error en getAll periodontogramas:', err);
-    res.status(500).json({ success: false, error: err.message });
+// ============================================================
+// OBTENER POR ID
+// ============================================================
+export const getById = async (schema, id) => {
+  try {
+    if (!id) {
+      throw new Error('El ID es obligatorio');
+    }
+    const periodontograma = await periodontogramasModel.findById(schema, id);
+    if (!periodontograma) {
+      throw new Error('Periodontograma no encontrado');
+    }
+    return periodontograma;
+  } catch (error) {
+    throw new Error(`Error al obtener periodontograma: ${error.message}`);
   }
 };
 
 // ============================================================
 // OBTENER POR PACIENTE
 // ============================================================
-export const getByPatientId = async (req, res) => {
+export const getByPatientId = async (schema, patientId) => {
   try {
-    const schema = await getSchema(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
-
-    const { patientId } = req.params;
-    const periodontograma = await periodontogramasService.getByPatientId(schema, patientId);
-    res.json({ success: true, data: periodontograma });
-  } catch (err) {
-    console.error('❌ Error en getByPatientId periodontogramas:', err);
-    if (err.message.includes('no encontrado')) {
-      return res.status(404).json({ success: false, error: err.message });
+    if (!patientId) {
+      throw new Error('El ID del paciente es obligatorio');
     }
-    res.status(500).json({ success: false, error: err.message });
-  }
-};
-
-// ============================================================
-// OBTENER POR PACIENTE Y FASE
-// ============================================================
-export const getByPatientIdAndFase = async (req, res) => {
-  try {
-    const schema = await getSchema(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
-
-    const { patientId, fase } = req.params;
-    
-    // Validar fase
-    const fasesValidas = ['inicial', 'seguimiento', 'alta'];
-    if (!fasesValidas.includes(fase)) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Fase inválida. Debe ser: inicial, seguimiento o alta' 
-      });
-    }
-
-    const periodontograma = await periodontogramasService.getByPatientIdAndFase(schema, patientId, fase);
-    res.json({ success: true, data: periodontograma });
-  } catch (err) {
-    console.error('❌ Error en getByPatientIdAndFase periodontogramas:', err);
-    if (err.message.includes('no encontrado')) {
-      return res.status(404).json({ success: false, error: err.message });
-    }
-    res.status(500).json({ success: false, error: err.message });
+    return await periodontogramasModel.findByPatientId(schema, patientId);
+  } catch (error) {
+    throw new Error(`Error al obtener periodontograma del paciente: ${error.message}`);
   }
 };
 
 // ============================================================
 // GUARDAR PERIODONTOGRAMA
 // ============================================================
-export const savePeriodontograma = async (req, res) => {
+export const save = async (schema, data) => {
   try {
-    const schema = await getSchema(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
+    const { patient_id, teeth, patient_info, notas } = data;
 
-    const userId = req.user?.id || req.body.created_by;
-    
-    // Validar datos requeridos
-    if (!req.body.patient_id) {
-      return res.status(400).json({ success: false, error: 'El ID del paciente es requerido' });
+    if (!patient_id) {
+      throw new Error('El ID del paciente es obligatorio');
     }
 
-    const periodontograma = await periodontogramasService.save(schema, req.body);
+    // Verificar si ya existe un periodontograma para este paciente
+    const existing = await periodontogramasModel.findByPatientId(schema, patient_id);
 
-    if (userId) {
-      await auditLogService.createAuditLog(schema, {
-        user_id: userId,
-        table_name: 'periodontogramas',
-        action: 'CREATE',
-        record_id: periodontograma.id,
-        new_values: {
-          patient_id: periodontograma.patient_id,
-          teeth_count: Object.keys(periodontograma.teeth || {}).length,
-          fase: req.body.fase || 'inicial'
-        },
-        description: `Periodontograma guardado para paciente ${periodontograma.patient_id}`
+    if (existing) {
+      // Actualizar existente
+      return await periodontogramasModel.updateById(schema, existing.id, {
+        teeth: teeth || {},
+        patient_info: patient_info || {},
+        notas: notas || '',
+        last_saved_at: new Date().toISOString()
+      });
+    } else {
+      // Crear nuevo
+      return await periodontogramasModel.insert(schema, {
+        patient_id,
+        teeth: teeth || {},
+        patient_info: patient_info || {},
+        notas: notas || ''
       });
     }
-
-    res.status(201).json({
-      success: true,
-      data: periodontograma,
-      message: 'Periodontograma guardado exitosamente'
-    });
-  } catch (err) {
-    console.error('❌ Error en savePeriodontograma:', err);
-    res.status(500).json({ success: false, error: err.message });
+  } catch (error) {
+    throw new Error(`Error al guardar periodontograma: ${error.message}`);
   }
 };
 
 // ============================================================
 // ACTUALIZAR PERIODONTOGRAMA
 // ============================================================
-export const updatePeriodontograma = async (req, res) => {
+export const update = async (schema, id, data) => {
   try {
-    const schema = await getSchema(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
-
-    const { id } = req.params;
-    const userId = req.user?.id || req.body.updated_by;
-
-    const periodontograma = await periodontogramasService.update(schema, id, req.body);
-
-    if (userId) {
-      await auditLogService.createAuditLog(schema, {
-        user_id: userId,
-        table_name: 'periodontogramas',
-        action: 'UPDATE',
-        record_id: periodontograma.id,
-        new_values: req.body,
-        description: `Periodontograma actualizado para paciente ${periodontograma.patient_id}`
-      });
+    if (!id) {
+      throw new Error('El ID es obligatorio');
     }
 
-    res.json({
-      success: true,
-      data: periodontograma,
-      message: 'Periodontograma actualizado exitosamente'
-    });
-  } catch (err) {
-    console.error('❌ Error en updatePeriodontograma:', err);
-    if (err.message.includes('no encontrado')) {
-      return res.status(404).json({ success: false, error: err.message });
+    const existing = await periodontogramasModel.findById(schema, id);
+    if (!existing) {
+      throw new Error('Periodontograma no encontrado');
     }
-    res.status(500).json({ success: false, error: err.message });
+
+    return await periodontogramasModel.updateById(schema, id, data);
+  } catch (error) {
+    throw new Error(`Error al actualizar periodontograma: ${error.message}`);
   }
 };
 
 // ============================================================
 // ELIMINAR
 // ============================================================
-export const remove = async (req, res) => {
+export const remove = async (schema, id) => {
   try {
-    const schema = await getSchema(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
-
-    const { id } = req.params;
-    const userId = req.user?.id;
-
-    const periodontograma = await periodontogramasService.getById(schema, id);
-    await periodontogramasService.remove(schema, id);
-
-    if (userId) {
-      await auditLogService.createAuditLog(schema, {
-        user_id: userId,
-        table_name: 'periodontogramas',
-        action: 'DELETE',
-        record_id: id,
-        old_values: {
-          patient_id: periodontograma.patient_id,
-        },
-        description: `Periodontograma eliminado para paciente ${periodontograma.patient_id}`
-      });
+    if (!id) {
+      throw new Error('El ID es obligatorio');
     }
 
-    res.json({
-      success: true,
-      message: 'Periodontograma eliminado exitosamente'
-    });
-  } catch (err) {
-    console.error('❌ Error en remove periodontogramas:', err);
-    if (err.message.includes('no encontrado')) {
-      return res.status(404).json({ success: false, error: err.message });
+    const existing = await periodontogramasModel.findById(schema, id);
+    if (!existing) {
+      throw new Error('Periodontograma no encontrado');
     }
-    res.status(500).json({ success: false, error: err.message });
+
+    return await periodontogramasModel.softDelete(schema, id);
+  } catch (error) {
+    throw new Error(`Error al eliminar periodontograma: ${error.message}`);
   }
 };
 
 // ============================================================
 // ESTADÍSTICAS
 // ============================================================
-export const getStats = async (req, res) => {
+export const getStats = async (schema) => {
   try {
-    const schema = await getSchema(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
-
-    const stats = await periodontogramasService.getStats(schema);
-    res.json({ success: true, data: stats });
-  } catch (err) {
-    console.error('❌ Error en getStats periodontogramas:', err);
-    res.status(500).json({ success: false, error: err.message });
+    return await periodontogramasModel.getStats(schema);
+  } catch (error) {
+    throw new Error(`Error al obtener estadísticas: ${error.message}`);
   }
 };

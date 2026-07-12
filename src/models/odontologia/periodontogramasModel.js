@@ -12,7 +12,6 @@ export const findAll = async (schema) => {
       teeth,
       patient_info,
       notas,
-      fase,
       last_saved_at,
       created_at,
       updated_at
@@ -35,7 +34,6 @@ export const findById = async (schema, id) => {
       teeth,
       patient_info,
       notas,
-      fase,
       last_saved_at,
       created_at,
       updated_at
@@ -57,7 +55,6 @@ export const findByPatientId = async (schema, patientId) => {
       teeth,
       patient_info,
       notas,
-      fase,
       last_saved_at,
       created_at,
       updated_at
@@ -65,28 +62,6 @@ export const findByPatientId = async (schema, patientId) => {
     WHERE patient_id = $1 AND deleted_at IS NULL
   `;
   const { rows } = await query(sql, [patientId]);
-  return rows[0] || null;
-};
-
-// ============================================================
-// OBTENER POR PACIENTE Y FASE
-// ============================================================
-export const findByPatientIdAndFase = async (schema, patientId, fase) => {
-  const sql = `
-    SELECT 
-      id,
-      patient_id,
-      teeth,
-      patient_info,
-      notas,
-      fase,
-      last_saved_at,
-      created_at,
-      updated_at
-    FROM "${schema}".periodontogramas
-    WHERE patient_id = $1 AND fase = $2 AND deleted_at IS NULL
-  `;
-  const { rows } = await query(sql, [patientId, fase]);
   return rows[0] || null;
 };
 
@@ -100,9 +75,8 @@ export const insert = async (schema, data) => {
       teeth,
       patient_info,
       notas,
-      fase,
       last_saved_at
-    ) VALUES ($1, $2, $3, $4, $5, $6)
+    ) VALUES ($1, $2, $3, $4, $5)
     RETURNING *
   `;
   const { rows } = await query(sql, [
@@ -110,7 +84,6 @@ export const insert = async (schema, data) => {
     data.teeth || {},
     data.patient_info || {},
     data.notas || '',
-    data.fase || 'inicial',
     new Date().toISOString()
   ]);
   return rows[0] || null;
@@ -124,7 +97,7 @@ export const updateById = async (schema, id, data) => {
   const values = [];
   let idx = 1;
 
-  const fields = ['teeth', 'patient_info', 'notas', 'fase', 'last_saved_at'];
+  const fields = ['teeth', 'patient_info', 'notas', 'last_saved_at'];
 
   fields.forEach(field => {
     if (data[field] !== undefined) {
@@ -171,9 +144,6 @@ export const getStats = async (schema) => {
   const sql = `
     SELECT 
       COUNT(*) AS total,
-      COUNT(CASE WHEN fase = 'inicial' THEN 1 END) AS iniciales,
-      COUNT(CASE WHEN fase = 'seguimiento' THEN 1 END) AS seguimientos,
-      COUNT(CASE WHEN fase = 'alta' THEN 1 END) AS altas,
       COUNT(DISTINCT patient_id) AS pacientes_unicos
     FROM "${schema}".periodontogramas
     WHERE deleted_at IS NULL
@@ -181,9 +151,6 @@ export const getStats = async (schema) => {
   const { rows } = await query(sql);
   return {
     total: Number(rows[0]?.total || 0),
-    iniciales: Number(rows[0]?.iniciales || 0),
-    seguimientos: Number(rows[0]?.seguimientos || 0),
-    altas: Number(rows[0]?.altas || 0),
     pacientes_unicos: Number(rows[0]?.pacientes_unicos || 0),
   };
 };

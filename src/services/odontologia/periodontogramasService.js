@@ -1,180 +1,156 @@
-// src/services/odontologia/periodontogramasService.js
-import * as periodontogramasModel from '../../models/odontologia/periodontogramasModel.js';
+// src/models/odontologia/periodontogramasModel.js
+import { query } from '../../config/database.js';
 
 // ============================================================
 // LISTAR TODOS
 // ============================================================
-export const getAll = async (schema) => {
-  try {
-    return await periodontogramasModel.findAll(schema);
-  } catch (error) {
-    throw new Error(`Error al listar periodontogramas: ${error.message}`);
-  }
+export const findAll = async (schema) => {
+  const sql = `
+    SELECT 
+      id,
+      patient_id,
+      teeth,
+      patient_info,
+      notas,
+      last_saved_at,
+      created_at,
+      updated_at
+    FROM "${schema}".periodontogramas
+    WHERE deleted_at IS NULL
+    ORDER BY patient_id
+  `;
+  const { rows } = await query(sql);
+  return rows;
 };
 
 // ============================================================
 // OBTENER POR ID
 // ============================================================
-export const getById = async (schema, id) => {
-  try {
-    if (!id) {
-      throw new Error('El ID es obligatorio');
-    }
-    const periodontograma = await periodontogramasModel.findById(schema, id);
-    if (!periodontograma) {
-      throw new Error('Periodontograma no encontrado');
-    }
-    return periodontograma;
-  } catch (error) {
-    throw new Error(`Error al obtener periodontograma: ${error.message}`);
-  }
+export const findById = async (schema, id) => {
+  const sql = `
+    SELECT 
+      id,
+      patient_id,
+      teeth,
+      patient_info,
+      notas,
+      last_saved_at,
+      created_at,
+      updated_at
+    FROM "${schema}".periodontogramas
+    WHERE id = $1 AND deleted_at IS NULL
+  `;
+  const { rows } = await query(sql, [id]);
+  return rows[0] || null;
 };
 
 // ============================================================
 // OBTENER POR PACIENTE
 // ============================================================
-export const getByPatientId = async (schema, patientId) => {
-  try {
-    if (!patientId) {
-      throw new Error('El ID del paciente es obligatorio');
-    }
-    return await periodontogramasModel.findByPatientId(schema, patientId);
-  } catch (error) {
-    throw new Error(`Error al obtener periodontograma del paciente: ${error.message}`);
-  }
+export const findByPatientId = async (schema, patientId) => {
+  const sql = `
+    SELECT 
+      id,
+      patient_id,
+      teeth,
+      patient_info,
+      notas,
+      last_saved_at,
+      created_at,
+      updated_at
+    FROM "${schema}".periodontogramas
+    WHERE patient_id = $1 AND deleted_at IS NULL
+  `;
+  const { rows } = await query(sql, [patientId]);
+  return rows[0] || null;
 };
 
 // ============================================================
-// OBTENER POR PACIENTE Y FASE
+// INSERTAR
 // ============================================================
-export const getByPatientIdAndFase = async (schema, patientId, fase) => {
-  try {
-    if (!patientId) {
-      throw new Error('El ID del paciente es obligatorio');
-    }
-    if (!fase) {
-      throw new Error('La fase es obligatoria');
-    }
-
-    const periodontograma = await periodontogramasModel.findByPatientIdAndFase(schema, patientId, fase);
-    
-    if (!periodontograma) {
-      return {
-        id: null,
-        patient_id: patientId,
-        fase: fase,
-        teeth: {},
-        patient_info: {},
-        notas: '',
-        last_saved_at: null
-      };
-    }
-    
-    return periodontograma;
-  } catch (error) {
-    throw new Error(`Error al obtener periodontograma por paciente y fase: ${error.message}`);
-  }
+export const insert = async (schema, data) => {
+  const sql = `
+    INSERT INTO "${schema}".periodontogramas (
+      patient_id,
+      teeth,
+      patient_info,
+      notas,
+      last_saved_at
+    ) VALUES ($1, $2, $3, $4, $5)
+    RETURNING *
+  `;
+  const { rows } = await query(sql, [
+    data.patient_id,
+    data.teeth || {},
+    data.patient_info || {},
+    data.notas || '',
+    new Date().toISOString()
+  ]);
+  return rows[0] || null;
 };
 
 // ============================================================
-// GUARDAR PERIODONTOGRAMA
+// ACTUALIZAR
 // ============================================================
-export const save = async (schema, data) => {
-  try {
-    const { patient_id, teeth, patient_info, notas, fase } = data;
+export const updateById = async (schema, id, data) => {
+  const updates = [];
+  const values = [];
+  let idx = 1;
 
-    if (!patient_id) {
-      throw new Error('El ID del paciente es obligatorio');
+  const fields = ['teeth', 'patient_info', 'notas', 'last_saved_at'];
+
+  fields.forEach(field => {
+    if (data[field] !== undefined) {
+      updates.push(`${field} = $${idx++}`);
+      values.push(data[field]);
     }
+  });
 
-    // Verificar si ya existe un periodontograma para este paciente
-    const existing = await periodontogramasModel.findByPatientId(schema, patient_id);
-
-    // Si existe y viene fase, buscar por fase
-    if (existing && fase) {
-      const existingByFase = await periodontogramasModel.findByPatientIdAndFase(schema, patient_id, fase);
-      if (existingByFase) {
-        return await periodontogramasModel.updateById(schema, existingByFase.id, {
-          teeth: teeth || {},
-          patient_info: patient_info || {},
-          notas: notas || '',
-          last_saved_at: new Date().toISOString(),
-          fase: fase
-        });
-      }
-    }
-
-    if (existing) {
-      // Actualizar existente
-      return await periodontogramasModel.updateById(schema, existing.id, {
-        teeth: teeth || {},
-        patient_info: patient_info || {},
-        notas: notas || '',
-        last_saved_at: new Date().toISOString(),
-        fase: fase || 'inicial'
-      });
-    } else {
-      // Crear nuevo
-      return await periodontogramasModel.insert(schema, {
-        patient_id,
-        teeth: teeth || {},
-        patient_info: patient_info || {},
-        notas: notas || '',
-        fase: fase || 'inicial'
-      });
-    }
-  } catch (error) {
-    throw new Error(`Error al guardar periodontograma: ${error.message}`);
+  if (updates.length === 0) {
+    return findById(schema, id);
   }
+
+  updates.push('updated_at = NOW()');
+  values.push(id);
+
+  const sql = `
+    UPDATE "${schema}".periodontogramas 
+    SET ${updates.join(', ')} 
+    WHERE id = $${idx} AND deleted_at IS NULL
+    RETURNING *
+  `;
+  const { rows } = await query(sql, values);
+  return rows[0] || null;
 };
 
 // ============================================================
-// ACTUALIZAR PERIODONTOGRAMA
+// ELIMINAR (SOFT DELETE)
 // ============================================================
-export const update = async (schema, id, data) => {
-  try {
-    if (!id) {
-      throw new Error('El ID es obligatorio');
-    }
-
-    const existing = await periodontogramasModel.findById(schema, id);
-    if (!existing) {
-      throw new Error('Periodontograma no encontrado');
-    }
-
-    return await periodontogramasModel.updateById(schema, id, data);
-  } catch (error) {
-    throw new Error(`Error al actualizar periodontograma: ${error.message}`);
-  }
-};
-
-// ============================================================
-// ELIMINAR
-// ============================================================
-export const remove = async (schema, id) => {
-  try {
-    if (!id) {
-      throw new Error('El ID es obligatorio');
-    }
-
-    const existing = await periodontogramasModel.findById(schema, id);
-    if (!existing) {
-      throw new Error('Periodontograma no encontrado');
-    }
-
-    return await periodontogramasModel.softDelete(schema, id);
-  } catch (error) {
-    throw new Error(`Error al eliminar periodontograma: ${error.message}`);
-  }
+export const softDelete = async (schema, id) => {
+  const sql = `
+    UPDATE "${schema}".periodontogramas 
+    SET deleted_at = NOW(), updated_at = NOW()
+    WHERE id = $1 AND deleted_at IS NULL
+    RETURNING id
+  `;
+  const { rows } = await query(sql, [id]);
+  return rows[0] || null;
 };
 
 // ============================================================
 // ESTADÍSTICAS
 // ============================================================
 export const getStats = async (schema) => {
-  try {
-    return await periodontogramasModel.getStats(schema);
-  } catch (error) {
-    throw new Error(`Error al obtener estadísticas: ${error.message}`);
-  }
+  const sql = `
+    SELECT 
+      COUNT(*) AS total,
+      COUNT(DISTINCT patient_id) AS pacientes_unicos
+    FROM "${schema}".periodontogramas
+    WHERE deleted_at IS NULL
+  `;
+  const { rows } = await query(sql);
+  return {
+    total: Number(rows[0]?.total || 0),
+    pacientes_unicos: Number(rows[0]?.pacientes_unicos || 0),
+  };
 };
