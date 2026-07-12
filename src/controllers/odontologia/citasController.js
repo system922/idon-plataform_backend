@@ -109,6 +109,27 @@ export const getHorariosDisponibles = async (req, res) => {
 };
 
 // ============================================================
+// OBTENER ESPECIALISTAS DISPONIBLES
+// ============================================================
+export const getEspecialistasDisponibles = async (req, res) => {
+  try {
+    const schema = await getSchema(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { fecha, hora_inicio, hora_fin } = req.query;
+    if (!fecha) return res.status(400).json({ error: 'Fecha requerida' });
+    if (!hora_inicio) return res.status(400).json({ error: 'Hora de inicio requerida' });
+    if (!hora_fin) return res.status(400).json({ error: 'Hora de fin requerida' });
+
+    const especialistas = await citasService.getEspecialistasDisponibles(schema, fecha, hora_inicio, hora_fin);
+    res.json({ success: true, data: especialistas });
+  } catch (err) {
+    console.error('❌ Error en getEspecialistasDisponibles:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+// ============================================================
 // CREAR CITA
 // ============================================================
 export const create = async (req, res) => {

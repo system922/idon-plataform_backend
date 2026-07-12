@@ -6,6 +6,7 @@ import {
   getByPatientId,
   getById,
   getHorariosDisponibles,
+  getEspecialistasDisponibles,
   create,
   update,
   updateStatus,
@@ -15,8 +16,9 @@ import {
 
 const router = express.Router();
 
-// GET /api/odontologia/citas - Listar todas
-router.get('/', getAll);
+// ============================================================
+// RUTAS ESPECÍFICAS (sin :id) - VAN PRIMERO
+// ============================================================
 
 // GET /api/odontologia/citas/stats - Estadísticas
 router.get('/stats', getStats);
@@ -24,11 +26,21 @@ router.get('/stats', getStats);
 // GET /api/odontologia/citas/horarios-disponibles - Horarios disponibles
 router.get('/horarios-disponibles', getHorariosDisponibles);
 
+// GET /api/odontologia/citas/especialistas-disponibles - Especialistas disponibles
+router.get('/especialistas-disponibles', getEspecialistasDisponibles);
+
 // GET /api/odontologia/citas/fecha-especialista - Por fecha y especialista
 router.get('/fecha-especialista', getByFechaAndEspecialista);
 
-// GET /api/odontologia/citas/patient/:patientId - Por paciente
+// GET /api/odontologia/citas/patient/:patientId - Por paciente (tiene :id pero es específico)
 router.get('/patient/:patientId', getByPatientId);
+
+// ============================================================
+// RUTAS CON :id - VAN DESPUÉS
+// ============================================================
+
+// GET /api/odontologia/citas - Listar todas
+router.get('/', getAll);
 
 // GET /api/odontologia/citas/:id - Obtener por ID
 router.get('/:id', getById);
