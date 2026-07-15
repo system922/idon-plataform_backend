@@ -22,7 +22,11 @@ export const findAll = async (schema) => {
     ORDER BY patient_id, fase
   `;
   const { rows } = await query(sql);
-  return rows;
+  // ✅ Asegurar que plan_tratamiento sea array
+  return rows.map(row => ({
+    ...row,
+    plan_tratamiento: Array.isArray(row.plan_tratamiento) ? row.plan_tratamiento : []
+  }));
 };
 
 // ============================================================
@@ -45,6 +49,10 @@ export const findById = async (schema, id) => {
     WHERE id = $1 AND deleted_at IS NULL
   `;
   const { rows } = await query(sql, [id]);
+  if (rows[0]) {
+    // ✅ Asegurar que plan_tratamiento sea array
+    rows[0].plan_tratamiento = Array.isArray(rows[0].plan_tratamiento) ? rows[0].plan_tratamiento : [];
+  }
   return rows[0] || null;
 };
 
@@ -69,7 +77,11 @@ export const findByPatientId = async (schema, patientId) => {
     ORDER BY fase
   `;
   const { rows } = await query(sql, [patientId]);
-  return rows;
+  // ✅ Asegurar que plan_tratamiento sea array
+  return rows.map(row => ({
+    ...row,
+    plan_tratamiento: Array.isArray(row.plan_tratamiento) ? row.plan_tratamiento : []
+  }));
 };
 
 // ============================================================
@@ -92,6 +104,10 @@ export const findByPatientAndFase = async (schema, patientId, fase) => {
     WHERE patient_id = $1 AND fase = $2 AND deleted_at IS NULL
   `;
   const { rows } = await query(sql, [patientId, fase]);
+  if (rows[0]) {
+    // ✅ Asegurar que plan_tratamiento sea array
+    rows[0].plan_tratamiento = Array.isArray(rows[0].plan_tratamiento) ? rows[0].plan_tratamiento : [];
+  }
   return rows[0] || null;
 };
 
@@ -115,6 +131,9 @@ export const findByPlanId = async (schema, planId) => {
     WHERE plan_id = $1 AND deleted_at IS NULL
   `;
   const { rows } = await query(sql, [planId]);
+  if (rows[0]) {
+    rows[0].plan_tratamiento = Array.isArray(rows[0].plan_tratamiento) ? rows[0].plan_tratamiento : [];
+  }
   return rows[0] || null;
 };
 
@@ -122,6 +141,11 @@ export const findByPlanId = async (schema, planId) => {
 // INSERTAR
 // ============================================================
 export const insert = async (schema, data) => {
+  // ✅ Asegurar que plan_tratamiento sea un array
+  const planTratamiento = Array.isArray(data.plan_tratamiento) 
+    ? data.plan_tratamiento 
+    : [];
+
   const sql = `
     INSERT INTO "${schema}".odontogramas (
       patient_id,
@@ -138,11 +162,14 @@ export const insert = async (schema, data) => {
     data.patient_id,
     data.fase,
     data.teeth || {},
-    data.plan_tratamiento || [],
+    planTratamiento,
     data.plan_id || null,
     data.notas || '',
     new Date().toISOString()
   ]);
+  if (rows[0]) {
+    rows[0].plan_tratamiento = Array.isArray(rows[0].plan_tratamiento) ? rows[0].plan_tratamiento : [];
+  }
   return rows[0] || null;
 };
 
@@ -150,6 +177,13 @@ export const insert = async (schema, data) => {
 // ACTUALIZAR
 // ============================================================
 export const updateById = async (schema, id, data) => {
+  // ✅ Asegurar que plan_tratamiento sea un array
+  if (data.plan_tratamiento !== undefined) {
+    data.plan_tratamiento = Array.isArray(data.plan_tratamiento) 
+      ? data.plan_tratamiento 
+      : [];
+  }
+
   const updates = [];
   const values = [];
   let idx = 1;
@@ -177,6 +211,9 @@ export const updateById = async (schema, id, data) => {
     RETURNING *
   `;
   const { rows } = await query(sql, values);
+  if (rows[0]) {
+    rows[0].plan_tratamiento = Array.isArray(rows[0].plan_tratamiento) ? rows[0].plan_tratamiento : [];
+  }
   return rows[0] || null;
 };
 

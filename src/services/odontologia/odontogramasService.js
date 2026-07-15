@@ -2,7 +2,7 @@
 import * as odontogramasModel from '../../models/odontologia/odontogramasModel.js';
 
 // ============================================================
-// CONDICIONES FAVORABLES
+// CONDICIONES FAVORABLES Y NO FAVORABLES
 // ============================================================
 const CONDICIONES_FAVORABLES = [
   'diente_sano',
@@ -16,6 +16,93 @@ const CONDICIONES_FAVORABLES = [
   'implante_bueno',
   'ponico'
 ];
+
+const HALLAZGOS_GLOBALES = [
+  'extraccion_indicada',
+  'endodoncia_mala',
+  'perno_malo',
+  'implante_malo',
+  'diente_ausente',
+  'otro'
+];
+
+const esCondicionNoFavorable = (condition) => {
+  return !CONDICIONES_FAVORABLES.includes(condition) && condition && condition !== '';
+};
+
+const esHallazgoGlobal = (condition) => {
+  return HALLAZGOS_GLOBALES.includes(condition);
+};
+
+// ✅ Función para obtener hallazgos NO favorables de un diente
+const obtenerHallazgosNoFavorablesDelDiente = (tooth, toothNumber) => {
+  const resultados = [];
+  const caras = tooth?.caras || {};
+  const condition = tooth?.condition || '';
+
+  // 1. Hallazgos por superficie (caries, resina_desadaptada, etc.)
+  Object.entries(caras).forEach(([surface, cond]) => {
+    if (esCondicionNoFavorable(cond) && !esHallazgoGlobal(cond)) {
+      resultados.push({
+        tooth: toothNumber,
+        surface,
+        condition: cond,
+        surfaces: [surface],
+        tipo: 'superficial'
+      });
+    }
+  });
+
+  // 2. Hallazgos globales (endodoncia_mala, perno_malo, etc.)
+  if (esCondicionNoFavorable(condition) && esHallazgoGlobal(condition)) {
+    resultados.push({
+      tooth: toothNumber,
+      surface: 'global',
+      condition: condition,
+      surfaces: ['global'],
+      tipo: 'global'
+    });
+  }
+
+  return resultados;
+};
+
+// ✅ Función para construir el plan_tratamiento automáticamente
+const construirPlanTratamiento = (teeth) => {
+  const plan = [];
+  
+  Object.keys(teeth || {}).forEach((key) => {
+    const toothNumber = parseInt(key);
+    const tooth = teeth[key];
+    const hallazgos = obtenerHallazgosNoFavorablesDelDiente(tooth, toothNumber);
+    
+    hallazgos.forEach(hallazgo => {
+      // Solo agregar si no existe ya un tratamiento para este hallazgo
+      const existe = plan.some(p => 
+        p.tooth === hallazgo.tooth && 
+        p.condition === hallazgo.condition &&
+        p.surfaces?.join(',') === hallazgo.surfaces?.join(',')
+      );
+      
+      if (!existe) {
+        plan.push({
+          id: `temp-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+          tooth: hallazgo.tooth,
+          hallazgo: hallazgo.condition,
+          surfaces: hallazgo.surfaces,
+          tipo: hallazgo.tipo,
+          servicio_id: null,
+          servicio: '',
+          price: 0,
+          estado: 'pendiente',
+          observaciones: ''
+        });
+      }
+    });
+  });
+  
+  return plan;
+};
 
 // ============================================================
 // LISTAR TODOS
@@ -61,7 +148,7 @@ export const getByPatientId = async (schema, patientId) => {
 };
 
 // ============================================================
-// OBTENER POR PACIENTE Y FASE
+// OBTENER POR PACIENTE Y FASE (MODIFICADO)
 // ============================================================
 export const getByPatientAndFase = async (schema, patientId, fase) => {
   try {
@@ -74,7 +161,7 @@ export const getByPatientAndFase = async (schema, patientId, fase) => {
 
     const odontograma = await odontogramasModel.findByPatientAndFase(schema, patientId, fase);
     
-    // Si no existe, devolver estructura vacía
+    // Si no existe, devolver estructura vacía con plan_tratamiento construido
     if (!odontograma) {
       return {
         id: null,
@@ -86,6 +173,16 @@ export const getByPatientAndFase = async (schema, patientId, fase) => {
         plan_id: null,
         last_saved_at: null
       };
+    }
+    
+    // ✅ Asegurar que plan_tratamiento sea un array
+    if (odontograma.plan_tratamiento && !Array.isArray(odontograma.plan_tratamiento)) {
+      odontograma.plan_tratamiento = [];
+    }
+    
+    // ✅ Si es Inicial y no tiene plan_tratamiento o está vacío, construirlo
+    if (fase === 'inicial' && (!odontograma.plan_tratamiento || odontograma.plan_tratamiento.length === 0)) {
+      odontograma.plan_tratamiento = construirPlanTratamiento(odontograma.teeth);
     }
     
     return odontograma;
@@ -109,7 +206,7 @@ export const getByPlanId = async (schema, planId) => {
 };
 
 // ============================================================
-// GUARDAR ODONTOGRAMA
+// GUARDAR ODONTOGRAMA (MODIFICADO)
 // ============================================================
 export const save = async (schema, data) => {
   try {
@@ -127,28 +224,38 @@ export const save = async (schema, data) => {
       throw new Error('Fase inválida. Debe ser: inicial, evolucion o alta');
     }
 
+    // ✅ Si es Inicial y no hay plan_tratamiento, construirlo automáticamente
+    let finalPlanTratamiento = plan_tratamiento || [];
+    if (fase === 'inicial' && (!finalPlanTratamiento || finalPlanTratamiento.length === 0)) {
+      finalPlanTratamiento = construirPlanTratamiento(teeth);
+    }
+
     // Verificar si ya existe
     const existing = await odontogramasModel.findByPatientAndFase(schema, patient_id, fase);
 
     if (existing) {
-      // Actualizar existente
-      return await odontogramasModel.updateById(schema, existing.id, {
+      // ✅ Actualizar existente (asegurar que plan_tratamiento sea array)
+      const updateData = {
         teeth: teeth || {},
-        plan_tratamiento: plan_tratamiento || [],
+        plan_tratamiento: Array.isArray(finalPlanTratamiento) ? finalPlanTratamiento : [],
         notas: notas || '',
         plan_id: plan_id || null,
         last_saved_at: new Date().toISOString()
-      });
+      };
+      
+      return await odontogramasModel.updateById(schema, existing.id, updateData);
     } else {
-      // Crear nuevo
-      return await odontogramasModel.insert(schema, {
+      // ✅ Crear nuevo (asegurar que plan_tratamiento sea array)
+      const insertData = {
         patient_id,
         fase,
         teeth: teeth || {},
-        plan_tratamiento: plan_tratamiento || [],
+        plan_tratamiento: Array.isArray(finalPlanTratamiento) ? finalPlanTratamiento : [],
         notas: notas || '',
         plan_id: plan_id || null
-      });
+      };
+      
+      return await odontogramasModel.insert(schema, insertData);
     }
   } catch (error) {
     throw new Error(`Error al guardar odontograma: ${error.message}`);
@@ -167,6 +274,11 @@ export const update = async (schema, id, data) => {
     const existing = await odontogramasModel.findById(schema, id);
     if (!existing) {
       throw new Error('Odontograma no encontrado');
+    }
+
+    // ✅ Asegurar que plan_tratamiento sea array
+    if (data.plan_tratamiento !== undefined) {
+      data.plan_tratamiento = Array.isArray(data.plan_tratamiento) ? data.plan_tratamiento : [];
     }
 
     return await odontogramasModel.updateById(schema, id, data);
