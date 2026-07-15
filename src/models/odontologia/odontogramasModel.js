@@ -2,6 +2,47 @@
 import { query } from '../../config/database.js';
 
 // ============================================================
+// HELPER: Parsear JSONB fields (teeth y plan_tratamiento)
+// ============================================================
+const parseOdontogramaRow = (row) => {
+  if (!row) return null;
+  
+  // ✅ Parsear teeth de string a objeto
+  let teeth = {};
+  if (row.teeth) {
+    if (typeof row.teeth === 'string') {
+      try {
+        teeth = JSON.parse(row.teeth);
+      } catch (e) {
+        teeth = {};
+      }
+    } else if (typeof row.teeth === 'object') {
+      teeth = row.teeth;
+    }
+  }
+  
+  // ✅ Parsear plan_tratamiento de string a array
+  let planTratamiento = [];
+  if (row.plan_tratamiento) {
+    if (typeof row.plan_tratamiento === 'string') {
+      try {
+        planTratamiento = JSON.parse(row.plan_tratamiento);
+      } catch (e) {
+        planTratamiento = [];
+      }
+    } else if (Array.isArray(row.plan_tratamiento)) {
+      planTratamiento = row.plan_tratamiento;
+    }
+  }
+  
+  return {
+    ...row,
+    teeth: teeth,
+    plan_tratamiento: planTratamiento
+  };
+};
+
+// ============================================================
 // LISTAR TODOS
 // ============================================================
 export const findAll = async (schema) => {
@@ -22,11 +63,7 @@ export const findAll = async (schema) => {
     ORDER BY patient_id, fase
   `;
   const { rows } = await query(sql);
-  // ✅ Asegurar que plan_tratamiento sea array
-  return rows.map(row => ({
-    ...row,
-    plan_tratamiento: Array.isArray(row.plan_tratamiento) ? row.plan_tratamiento : []
-  }));
+  return rows.map(row => parseOdontogramaRow(row));
 };
 
 // ============================================================
@@ -49,11 +86,7 @@ export const findById = async (schema, id) => {
     WHERE id = $1 AND deleted_at IS NULL
   `;
   const { rows } = await query(sql, [id]);
-  if (rows[0]) {
-    // ✅ Asegurar que plan_tratamiento sea array
-    rows[0].plan_tratamiento = Array.isArray(rows[0].plan_tratamiento) ? rows[0].plan_tratamiento : [];
-  }
-  return rows[0] || null;
+  return parseOdontogramaRow(rows[0]);
 };
 
 // ============================================================
@@ -77,11 +110,7 @@ export const findByPatientId = async (schema, patientId) => {
     ORDER BY fase
   `;
   const { rows } = await query(sql, [patientId]);
-  // ✅ Asegurar que plan_tratamiento sea array
-  return rows.map(row => ({
-    ...row,
-    plan_tratamiento: Array.isArray(row.plan_tratamiento) ? row.plan_tratamiento : []
-  }));
+  return rows.map(row => parseOdontogramaRow(row));
 };
 
 // ============================================================
@@ -104,11 +133,7 @@ export const findByPatientAndFase = async (schema, patientId, fase) => {
     WHERE patient_id = $1 AND fase = $2 AND deleted_at IS NULL
   `;
   const { rows } = await query(sql, [patientId, fase]);
-  if (rows[0]) {
-    // ✅ Asegurar que plan_tratamiento sea array
-    rows[0].plan_tratamiento = Array.isArray(rows[0].plan_tratamiento) ? rows[0].plan_tratamiento : [];
-  }
-  return rows[0] || null;
+  return parseOdontogramaRow(rows[0]);
 };
 
 // ============================================================
@@ -131,20 +156,40 @@ export const findByPlanId = async (schema, planId) => {
     WHERE plan_id = $1 AND deleted_at IS NULL
   `;
   const { rows } = await query(sql, [planId]);
-  if (rows[0]) {
-    rows[0].plan_tratamiento = Array.isArray(rows[0].plan_tratamiento) ? rows[0].plan_tratamiento : [];
-  }
-  return rows[0] || null;
+  return parseOdontogramaRow(rows[0]);
 };
 
 // ============================================================
 // INSERTAR
 // ============================================================
 export const insert = async (schema, data) => {
+  // ✅ Asegurar que teeth sea un objeto
+  let teethData = {};
+  if (data.teeth) {
+    if (typeof data.teeth === 'string') {
+      try {
+        teethData = JSON.parse(data.teeth);
+      } catch (e) {
+        teethData = {};
+      }
+    } else if (typeof data.teeth === 'object') {
+      teethData = data.teeth;
+    }
+  }
+  
   // ✅ Asegurar que plan_tratamiento sea un array
-  const planTratamiento = Array.isArray(data.plan_tratamiento) 
-    ? data.plan_tratamiento 
-    : [];
+  let planTratamientoData = [];
+  if (data.plan_tratamiento) {
+    if (typeof data.plan_tratamiento === 'string') {
+      try {
+        planTratamientoData = JSON.parse(data.plan_tratamiento);
+      } catch (e) {
+        planTratamientoData = [];
+      }
+    } else if (Array.isArray(data.plan_tratamiento)) {
+      planTratamientoData = data.plan_tratamiento;
+    }
+  }
 
   const sql = `
     INSERT INTO "${schema}".odontogramas (
@@ -161,41 +206,69 @@ export const insert = async (schema, data) => {
   const { rows } = await query(sql, [
     data.patient_id,
     data.fase,
-    data.teeth || {},
-    planTratamiento,
+    teethData,
+    planTratamientoData,
     data.plan_id || null,
     data.notas || '',
-    new Date().toISOString()
+    data.last_saved_at || new Date().toISOString()
   ]);
-  if (rows[0]) {
-    rows[0].plan_tratamiento = Array.isArray(rows[0].plan_tratamiento) ? rows[0].plan_tratamiento : [];
-  }
-  return rows[0] || null;
+  return parseOdontogramaRow(rows[0]);
 };
 
 // ============================================================
 // ACTUALIZAR
 // ============================================================
 export const updateById = async (schema, id, data) => {
-  // ✅ Asegurar que plan_tratamiento sea un array
-  if (data.plan_tratamiento !== undefined) {
-    data.plan_tratamiento = Array.isArray(data.plan_tratamiento) 
-      ? data.plan_tratamiento 
-      : [];
-  }
-
   const updates = [];
   const values = [];
   let idx = 1;
 
-  const fields = ['teeth', 'plan_tratamiento', 'plan_id', 'notas', 'last_saved_at'];
-
-  fields.forEach(field => {
-    if (data[field] !== undefined) {
-      updates.push(`${field} = $${idx++}`);
-      values.push(data[field]);
+  // ✅ Procesar teeth
+  if (data.teeth !== undefined) {
+    let teethData = {};
+    if (typeof data.teeth === 'string') {
+      try {
+        teethData = JSON.parse(data.teeth);
+      } catch (e) {
+        teethData = {};
+      }
+    } else if (typeof data.teeth === 'object') {
+      teethData = data.teeth;
     }
-  });
+    updates.push(`teeth = $${idx++}`);
+    values.push(teethData);
+  }
+
+  // ✅ Procesar plan_tratamiento
+  if (data.plan_tratamiento !== undefined) {
+    let planTratamientoData = [];
+    if (typeof data.plan_tratamiento === 'string') {
+      try {
+        planTratamientoData = JSON.parse(data.plan_tratamiento);
+      } catch (e) {
+        planTratamientoData = [];
+      }
+    } else if (Array.isArray(data.plan_tratamiento)) {
+      planTratamientoData = data.plan_tratamiento;
+    }
+    updates.push(`plan_tratamiento = $${idx++}`);
+    values.push(planTratamientoData);
+  }
+
+  if (data.plan_id !== undefined) {
+    updates.push(`plan_id = $${idx++}`);
+    values.push(data.plan_id);
+  }
+
+  if (data.notas !== undefined) {
+    updates.push(`notas = $${idx++}`);
+    values.push(data.notas);
+  }
+
+  if (data.last_saved_at !== undefined) {
+    updates.push(`last_saved_at = $${idx++}`);
+    values.push(data.last_saved_at);
+  }
 
   if (updates.length === 0) {
     return findById(schema, id);
@@ -211,10 +284,7 @@ export const updateById = async (schema, id, data) => {
     RETURNING *
   `;
   const { rows } = await query(sql, values);
-  if (rows[0]) {
-    rows[0].plan_tratamiento = Array.isArray(rows[0].plan_tratamiento) ? rows[0].plan_tratamiento : [];
-  }
-  return rows[0] || null;
+  return parseOdontogramaRow(rows[0]);
 };
 
 // ============================================================
