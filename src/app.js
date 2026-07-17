@@ -84,6 +84,8 @@ import plantillasRecetasRoutes from './routes/odontologia/plantillasRecetasRoute
 import planesTratamientoRoutes from './routes/odontologia/planesTratamientoRoutes.js';
 import odontogramasRoutes from './routes/odontologia/odontogramasRoutes.js';
 import evolucionesRoutes from './routes/odontologia/evolucionesClinicasRoutes.js';
+import ortodonciasRoutes from './routes/odontologia/ortodonciasRoutes.js';
+import ortodonciasUploadRoutes from './routes/odontologia/ortodonciasUploadRoutes.js';
 
 import periodontogramasRoutes from './routes/odontologia/periodontogramasRoutes.js';
 
@@ -192,6 +194,9 @@ app.use('/api/odontologia/planes-tratamiento', ...authBusiness, planesTratamient
 app.use('/api/odontologia/odontogramas', ...authBusiness, odontogramasRoutes);
 app.use('/api/odontologia/evoluciones', ...authBusiness, evolucionesRoutes);
 app.use('/api/odontologia/periodontogramas', periodontogramasRoutes);
+app.use('/api/odontologia/ortodoncias', ...authBusiness, ortodonciasRoutes);
+app.use('/api/odontologia/ortodoncias/upload', ...authBusiness, ortodonciasUploadRoutes);
+
 
 // ─── Rutas de admin (una por sección del sidebar) ─────────────────────────────
 app.use('/api/admin', ...authAdmin, adminDashboardRoutes);  // General → Dashboard
