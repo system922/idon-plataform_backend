@@ -91,7 +91,16 @@ export const findById = async (schema, id) => {
 // ============================================================
 // CREAR PLAN
 // ============================================================
+// models/odontologia/planesTratamientoModel.js
+
+// ============================================================
+// CREAR PLAN (VERSIÓN CORREGIDA)
+// ============================================================
 export const insert = async (schema, data) => {
+  // ✅ Limpiar y stringificar datos JSON para evitar errores
+  const itemsJson = JSON.stringify(data.items || []);
+  const odontogramaDataJson = JSON.stringify(data.odontograma_data || {});
+  
   const sql = `
     INSERT INTO "${schema}".planes_tratamiento (
       patient_id,
@@ -105,16 +114,18 @@ export const insert = async (schema, data) => {
     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     RETURNING *
   `;
+  
   const { rows } = await query(sql, [
     data.patient_id,
     data.name,
     data.description || null,
     data.fase || 'inicial',
     data.status || 'draft',
-    data.total_cost || 0,
-    data.items || [],
-    data.odontograma_data || {}
+    data.costo_total || 0,   // ✅ usa 'costo_total' (coincide con columna)
+    itemsJson,               // ✅ JSON string
+    odontogramaDataJson      // ✅ JSON string
   ]);
+  
   return rows[0] || null;
 };
 
@@ -126,12 +137,18 @@ export const updateById = async (schema, id, data) => {
   const values = [];
   let idx = 1;
 
+  // Asegurar que los campos JSON se stringifiquen si existen
   const fields = ['patient_id', 'nombre', 'descripcion', 'fase', 'status', 'costo_total', 'items', 'odontograma_data'];
 
   fields.forEach(field => {
     if (data[field] !== undefined) {
+      let value = data[field];
+      // Stringificar campos JSONB
+      if (field === 'items' || field === 'odontograma_data') {
+        value = JSON.stringify(value);
+      }
       updates.push(`${field} = $${idx++}`);
-      values.push(data[field]);
+      values.push(value);
     }
   });
 

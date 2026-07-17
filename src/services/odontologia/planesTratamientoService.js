@@ -1,5 +1,6 @@
 // services/odontologia/planesTratamientoService.js
 import * as planesModel from '../../models/odontologia/planesTratamientoModel.js';
+import * as odontogramasService from './odontogramasService.js';
 
 export const getAll = async (schema) => {
   try {
@@ -33,7 +34,34 @@ export const create = async (schema, data) => {
   try {
     if (!data.patient_id) throw new Error('El paciente es obligatorio');
     if (!data.name) throw new Error('El nombre del plan es obligatorio');
-    return await planesModel.insert(schema, data);
+    
+    // Create the plan
+    const newPlan = await planesModel.insert(schema, data);
+    
+    // Update the initial odontogram (fase 'inicial') to set plan_id
+    try {
+      await odontogramasService.save(schema, {
+        patient_id: data.patient_id,
+        fase: 'inicial',
+        teeth: {}, // This won't overwrite existing teeth because save function handles existing
+        plan_id: newPlan.id,
+        plan_tratamiento: data.odontograma_data?.planTratamiento || []
+      });
+      
+      // Also update the evolution odontogram
+      await odontogramasService.save(schema, {
+        patient_id: data.patient_id,
+        fase: 'evolucion',
+        teeth: {},
+        plan_id: newPlan.id,
+        plan_tratamiento: data.odontograma_data?.planTratamiento || []
+      });
+    } catch (odontogramError) {
+      console.error('Error updating odontogram when creating plan:', odontogramError);
+      // We don't throw here because the plan was created successfully
+    }
+    
+    return newPlan;
   } catch (error) {
     throw new Error(`Error al crear plan: ${error.message}`);
   }

@@ -224,22 +224,28 @@ export const save = async (schema, data) => {
       throw new Error('Fase inválida. Debe ser: inicial, evolucion o alta');
     }
 
+    // Verificar si ya existe
+    const existing = await odontogramasModel.findByPatientAndFase(schema, patient_id, fase);
+
+    let finalTeeth = teeth || {};
+    // If we have existing teeth and didn't provide new teeth data, keep existing
+    if (existing && (!teeth || Object.keys(teeth).length === 0)) {
+      finalTeeth = existing.teeth;
+    }
+
     // ✅ Si es Inicial y no hay plan_tratamiento, construirlo automáticamente
     let finalPlanTratamiento = plan_tratamiento || [];
     if (fase === 'inicial' && (!finalPlanTratamiento || finalPlanTratamiento.length === 0)) {
-      finalPlanTratamiento = construirPlanTratamiento(teeth);
+      finalPlanTratamiento = construirPlanTratamiento(finalTeeth);
     }
-
-    // Verificar si ya existe
-    const existing = await odontogramasModel.findByPatientAndFase(schema, patient_id, fase);
 
     if (existing) {
       // ✅ Actualizar existente (asegurar que plan_tratamiento sea array)
       const updateData = {
-        teeth: teeth || {},
+        teeth: finalTeeth,
         plan_tratamiento: Array.isArray(finalPlanTratamiento) ? finalPlanTratamiento : [],
-        notas: notas || '',
-        plan_id: plan_id || null,
+        notas: notas !== undefined ? notas : existing.notas,
+        plan_id: plan_id !== undefined ? plan_id : existing.plan_id,
         last_saved_at: new Date().toISOString()
       };
       
@@ -249,7 +255,7 @@ export const save = async (schema, data) => {
       const insertData = {
         patient_id,
         fase,
-        teeth: teeth || {},
+        teeth: finalTeeth,
         plan_tratamiento: Array.isArray(finalPlanTratamiento) ? finalPlanTratamiento : [],
         notas: notas || '',
         plan_id: plan_id || null
