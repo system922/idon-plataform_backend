@@ -1,13 +1,14 @@
+// routes/odontologia/ortodonciasRoutes.js
 import express from 'express';
-import { upload, multerErrorHandler } from '../../config/multer.js';
 import {
   getAll,
-  getByPatientId,
   getById,
+  getByPatientId,
   create,
   update,
   remove,
   getStats,
+  upsert,
 } from '../../controllers/odontologia/ortodonciasController.js';
 
 const router = express.Router();
@@ -33,6 +34,9 @@ router.post('/', create);
 
 // PUT /api/odontologia/ortodoncias/:id - Actualizar
 router.put('/:id', update);
+
+// PUT /api/odontologia/ortodoncias/patient/:paciente_id - Crear o actualizar (upsert)
+router.put('/patient/:paciente_id', upsert);
 
 // DELETE /api/odontologia/ortodoncias/:id - Eliminar (soft delete)
 router.delete('/:id', remove);

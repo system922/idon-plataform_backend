@@ -1,41 +1,9 @@
+// services/odontologia/ortodonciasService.js
+import { query } from '../../config/database.js';
 import * as ortodonciasModel from '../../models/odontologia/ortodonciasModel.js';
-import * as fotosModel from '../../models/odontologia/ortodonciaFotografiasModel.js';
-import cloudinary from '../../config/cloudinary.js';
 
 // ============================================================
-// SUBIR IMÁGENES A CLOUDINARY
-// ============================================================
-export const uploadImages = async (files, pacienteId) => {
-  const results = [];
-  for (const file of files) {
-    try {
-      const result = await new Promise((resolve, reject) => {
-        const uploadStream = cloudinary.uploader.upload_stream(
-          {
-            folder: `odontologia/ortodoncia/${pacienteId}`,
-            transformation: [{ quality: 'auto:good' }],
-          },
-          (error, result) => {
-            if (error) reject(error);
-            else resolve(result);
-          }
-        );
-        uploadStream.end(file.buffer);
-      });
-      results.push({
-        nombre_archivo: file.originalname,
-        image_url: result.secure_url,
-      });
-    } catch (err) {
-      console.error('❌ Error subiendo imagen a Cloudinary:', err);
-      throw new Error(`Error al subir imagen: ${err.message}`);
-    }
-  }
-  return results;
-};
-
-// ============================================================
-// LISTAR TODAS
+// LISTAR TODOS
 // ============================================================
 export const getAll = async (schema) => {
   try {
@@ -46,19 +14,16 @@ export const getAll = async (schema) => {
 };
 
 // ============================================================
-// OBTENER POR PACIENTE
+// OBTENER POR ID DE PACIENTE
 // ============================================================
 export const getByPatientId = async (schema, patientId) => {
   try {
-    if (!patientId) throw new Error('El ID del paciente es obligatorio');
-    const ortodoncia = await ortodonciasModel.findByPatientId(schema, patientId);
-    if (ortodoncia) {
-      const fotos = await fotosModel.findByOrtodonciaId(schema, ortodoncia.id);
-      ortodoncia.fotografias = fotos;
+    if (!patientId) {
+      throw new Error('El ID del paciente es obligatorio');
     }
-    return ortodoncia;
+    return await ortodonciasModel.findByPatientId(schema, patientId);
   } catch (error) {
-    throw new Error(`Error al obtener ortodoncia: ${error.message}`);
+    throw new Error(`Error al obtener ortodoncia por paciente: ${error.message}`);
   }
 };
 
@@ -67,13 +32,14 @@ export const getByPatientId = async (schema, patientId) => {
 // ============================================================
 export const getById = async (schema, id) => {
   try {
-    if (!id) throw new Error('El ID es obligatorio');
-    const ortodoncia = await ortodonciasModel.findById(schema, id);
-    if (ortodoncia) {
-      const fotos = await fotosModel.findByOrtodonciaId(schema, ortodoncia.id);
-      ortodoncia.fotografias = fotos;
+    if (!id) {
+      throw new Error('El ID es obligatorio');
     }
-    return ortodoncia;
+    const registro = await ortodonciasModel.findById(schema, id);
+    if (!registro) {
+      throw new Error('Registro de ortodoncia no encontrado');
+    }
+    return registro;
   } catch (error) {
     throw new Error(`Error al obtener ortodoncia: ${error.message}`);
   }
@@ -84,27 +50,28 @@ export const getById = async (schema, id) => {
 // ============================================================
 export const create = async (schema, data) => {
   try {
-    if (!data.paciente_id) throw new Error('El paciente es obligatorio');
-
-    // Si viene el array de fotos (con URLs ya subidas), las guardamos
-    const fotos = data.fotografias || data.fotos || [];
-    delete data.fotografias;
-    delete data.fotos;
-
-    const ortodoncia = await ortodonciasModel.insert(schema, data);
-
-    // Guardar fotografías
-    if (fotos.length > 0) {
-      for (const foto of fotos) {
-        await fotosModel.insert(schema, {
-          ortodoncia_id: ortodoncia.id,
-          nombre_archivo: foto.nombre_archivo || foto.name || 'foto',
-          image_url: foto.image_url || foto.url || '',
-        });
-      }
+    // Validaciones
+    if (!data.paciente_id) {
+      throw new Error('El paciente_id es obligatorio');
     }
 
-    return { ...ortodoncia, fotografias: fotos };
+    // Verificar que el paciente existe
+    const pacienteCheck = await query(
+      `SELECT id FROM "${schema}".pacientes WHERE id = $1 AND deleted_at IS NULL`,
+      [data.paciente_id]
+    );
+    
+    if (pacienteCheck.rows.length === 0) {
+      throw new Error('Paciente no encontrado');
+    }
+
+    // Verificar si ya existe un registro para este paciente
+    const existing = await ortodonciasModel.findByPatientId(schema, data.paciente_id);
+    if (existing) {
+      throw new Error('Ya existe un registro de ortodoncia para este paciente');
+    }
+
+    return await ortodonciasModel.insert(schema, data);
   } catch (error) {
     throw new Error(`Error al crear ortodoncia: ${error.message}`);
   }
@@ -115,50 +82,17 @@ export const create = async (schema, data) => {
 // ============================================================
 export const update = async (schema, id, data) => {
   try {
-    if (!id) throw new Error('El ID es obligatorio');
-
-    const existing = await ortodonciasModel.findById(schema, id);
-    if (!existing) throw new Error('Ortodoncia no encontrada');
-
-    // Separar fotos del resto de datos
-    const fotos = data.fotografias || data.fotos || [];
-    delete data.fotografias;
-    delete data.fotos;
-
-    // Actualizar ortodoncia
-    const ortodoncia = await ortodonciasModel.updateById(schema, id, data);
-
-    // Gestionar fotografías: eliminar las que no estén en el nuevo array
-    if (fotos.length > 0) {
-      // Obtener fotos actuales
-      const fotosActuales = await fotosModel.findByOrtodonciaId(schema, id);
-      const urlsActuales = fotosActuales.map(f => f.image_url);
-      const urlsNuevas = fotos.map(f => f.image_url || f.url || '');
-
-      // Eliminar fotos que ya no están
-      for (const foto of fotosActuales) {
-        if (!urlsNuevas.includes(foto.image_url)) {
-          await fotosModel.deleteByOrtodonciaId(schema, id, foto.image_url);
-        }
-      }
-
-      // Insertar nuevas fotos
-      for (const foto of fotos) {
-        const exists = fotosActuales.some(f => f.image_url === (foto.image_url || foto.url));
-        if (!exists) {
-          await fotosModel.insert(schema, {
-            ortodoncia_id: id,
-            nombre_archivo: foto.nombre_archivo || foto.name || 'foto',
-            image_url: foto.image_url || foto.url || '',
-          });
-        }
-      }
-    } else {
-      // Si no hay fotos, eliminar todas las existentes
-      await fotosModel.deleteAllByOrtodonciaId(schema, id);
+    if (!id) {
+      throw new Error('El ID es obligatorio');
     }
 
-    return { ...ortodoncia, fotografias: fotos };
+    // Verificar que existe
+    const existing = await ortodonciasModel.findById(schema, id);
+    if (!existing) {
+      throw new Error('Registro de ortodoncia no encontrado');
+    }
+
+    return await ortodonciasModel.updateById(schema, id, data);
   } catch (error) {
     throw new Error(`Error al actualizar ortodoncia: ${error.message}`);
   }
@@ -169,7 +103,15 @@ export const update = async (schema, id, data) => {
 // ============================================================
 export const remove = async (schema, id) => {
   try {
-    if (!id) throw new Error('El ID es obligatorio');
+    if (!id) {
+      throw new Error('El ID es obligatorio');
+    }
+
+    const existing = await ortodonciasModel.findById(schema, id);
+    if (!existing) {
+      throw new Error('Registro de ortodoncia no encontrado');
+    }
+
     return await ortodonciasModel.softDelete(schema, id);
   } catch (error) {
     throw new Error(`Error al eliminar ortodoncia: ${error.message}`);
@@ -184,5 +126,30 @@ export const getStats = async (schema) => {
     return await ortodonciasModel.getStats(schema);
   } catch (error) {
     throw new Error(`Error al obtener estadísticas: ${error.message}`);
+  }
+};
+
+// ============================================================
+// CREAR O ACTUALIZAR (UPSERT)
+// ============================================================
+export const upsert = async (schema, pacienteId, data) => {
+  try {
+    // Verificar si ya existe
+    const existing = await ortodonciasModel.findByPatientId(schema, pacienteId);
+    
+    if (existing) {
+      // Actualizar
+      const updated = await ortodonciasModel.updateById(schema, existing.id, data);
+      return { ...updated, _wasCreated: false };
+    } else {
+      // Crear nuevo
+      const created = await ortodonciasModel.insert(schema, {
+        ...data,
+        paciente_id: pacienteId,
+      });
+      return { ...created, _wasCreated: true };
+    }
+  } catch (error) {
+    throw new Error(`Error al guardar ortodoncia: ${error.message}`);
   }
 };

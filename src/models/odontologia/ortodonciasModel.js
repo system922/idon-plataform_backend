@@ -1,34 +1,38 @@
+// models/odontologia/ortodonciasModel.js
 import { query } from '../../config/database.js';
 
 // ============================================================
-// LISTAR TODAS
+// LISTAR TODOS
 // ============================================================
 export const findAll = async (schema) => {
   const sql = `
     SELECT 
-      id,
-      paciente_id,
-      requiere_tratamiento,
-      estado,
-      diagnostico,
-      trabajo,
-      tratamiento,
-      resumen,
-      doctor,
-      fecha_inicio,
-      fecha_fin,
-      created_at,
-      updated_at
-    FROM "${schema}".ortodoncias
-    WHERE deleted_at IS NULL
-    ORDER BY created_at DESC
+      o.id,
+      o.paciente_id,
+      o.requiere_tratamiento,
+      o.estado,
+      o.diagnostico,
+      o.trabajo,
+      o.tratamiento,
+      o.resumen,
+      o.doctor,
+      o.fecha_inicio,
+      o.fecha_fin,
+      o.created_at,
+      o.updated_at,
+      CONCAT(p.first_name, ' ', p.last_name) as paciente_nombre,
+      p.document_number as paciente_documento
+    FROM "${schema}".ortodoncias o
+    LEFT JOIN "${schema}".pacientes p ON o.paciente_id = p.id
+    WHERE o.deleted_at IS NULL
+    ORDER BY o.created_at DESC
   `;
   const { rows } = await query(sql);
   return rows;
 };
 
 // ============================================================
-// OBTENER POR PACIENTE
+// OBTENER POR ID DE PACIENTE
 // ============================================================
 export const findByPatientId = async (schema, patientId) => {
   const sql = `
@@ -100,10 +104,11 @@ export const insert = async (schema, data) => {
     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     RETURNING *
   `;
+  
   const { rows } = await query(sql, [
     data.paciente_id,
     data.requiere_tratamiento || false,
-    data.estado || 'diagnostico',
+    data.estado || (data.requiere_tratamiento ? 'diagnostico' : 'no_requiere'),
     data.diagnostico || {},
     data.trabajo || {},
     data.tratamiento || {},
@@ -132,7 +137,7 @@ export const updateById = async (schema, id, data) => {
     'resumen',
     'doctor',
     'fecha_inicio',
-    'fecha_fin',
+    'fecha_fin'
   ];
 
   fields.forEach(field => {
@@ -155,6 +160,7 @@ export const updateById = async (schema, id, data) => {
     WHERE id = $${idx} AND deleted_at IS NULL
     RETURNING *
   `;
+  
   const { rows } = await query(sql, values);
   return rows[0] || null;
 };
@@ -180,21 +186,17 @@ export const getStats = async (schema) => {
   const sql = `
     SELECT 
       COUNT(*) AS total,
-      COUNT(CASE WHEN requiere_tratamiento = true THEN 1 END) AS requieren,
+      COUNT(CASE WHEN requiere_tratamiento = true THEN 1 END) AS requieren_tratamiento,
       COUNT(CASE WHEN requiere_tratamiento = false THEN 1 END) AS no_requieren,
-      COUNT(CASE WHEN estado = 'diagnostico' THEN 1 END) AS en_diagnostico,
-      COUNT(CASE WHEN estado = 'en_curso' THEN 1 END) AS en_curso,
-      COUNT(CASE WHEN estado = 'finalizado' THEN 1 END) AS finalizados
+      COUNT(CASE WHEN created_at >= NOW() - INTERVAL '30 days' THEN 1 END) AS nuevos_30dias
     FROM "${schema}".ortodoncias
     WHERE deleted_at IS NULL
   `;
   const { rows } = await query(sql);
   return {
     total: Number(rows[0]?.total || 0),
-    requieren: Number(rows[0]?.requieren || 0),
+    requieren_tratamiento: Number(rows[0]?.requieren_tratamiento || 0),
     no_requieren: Number(rows[0]?.no_requieren || 0),
-    en_diagnostico: Number(rows[0]?.en_diagnostico || 0),
-    en_curso: Number(rows[0]?.en_curso || 0),
-    finalizados: Number(rows[0]?.finalizados || 0),
+    nuevos_30dias: Number(rows[0]?.nuevos_30dias || 0),
   };
 };
