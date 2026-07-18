@@ -38,10 +38,19 @@ const uploadToCloudinary = (buffer, pacienteId, fileName) => {
 export const uploadImages = async (req, res) => {
   try {
     const schema = await getSchema(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
+    if (!schema) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Business context required' 
+      });
+    }
 
-    const { paciente_id } = req.body;
+    const { paciente_id, ortodoncia_id } = req.body;
     
+    console.log('📦 [UPLOAD] paciente_id:', paciente_id);
+    console.log('📦 [UPLOAD] ortodoncia_id:', ortodoncia_id);
+    console.log('📦 [UPLOAD] files:', req.files ? req.files.length : 0);
+
     if (!paciente_id) {
       return res.status(400).json({
         success: false,
@@ -66,6 +75,7 @@ export const uploadImages = async (req, res) => {
       try {
         const result = await uploadToCloudinary(file.buffer, paciente_id, fileName);
         imageUrl = result.secure_url;
+        console.log('✅ Imagen subida a Cloudinary:', imageUrl);
       } catch (err) {
         console.error('❌ Error subiendo a Cloudinary:', err);
         // Fallback: guardar localmente
@@ -81,34 +91,57 @@ export const uploadImages = async (req, res) => {
       });
     }
 
-    // Obtener o crear registro de ortodoncia para este paciente
-    let ortodoncia = await ortodonciasService.getByPatientId(schema, paciente_id);
-    
-    if (ortodoncia) {
-      // Actualizar fotografías existentes
-      const fotosActuales = ortodoncia.fotografias || [];
-      const nuevasFotos = [...uploadedFiles, ...fotosActuales];
-      
-      ortodoncia = await ortodonciasService.update(schema, ortodoncia.id, {
-        fotografias: nuevasFotos,
-      });
+    console.log('📦 [UPLOAD] Archivos subidos:', uploadedFiles);
+
+    let ortodoncia;
+
+    // Si tenemos ortodoncia_id, usarlo directamente
+    if (ortodoncia_id) {
+      ortodoncia = await ortodonciasService.getById(schema, ortodoncia_id);
+      if (ortodoncia) {
+        const fotosActuales = ortodoncia.fotografias || [];
+        const nuevasFotos = [...uploadedFiles, ...fotosActuales];
+        ortodoncia = await ortodonciasService.update(schema, ortodoncia_id, {
+          fotografias: nuevasFotos,
+        });
+        console.log('✅ [UPLOAD] Ortodoncia actualizada con nuevas fotos (por ID)');
+      } else {
+        return res.status(404).json({
+          success: false,
+          error: 'Registro de ortodoncia no encontrado',
+        });
+      }
     } else {
-      // Crear nuevo registro con las fotos
-      ortodoncia = await ortodonciasService.create(schema, {
-        paciente_id,
-        requiere_tratamiento: false,
-        estado: 'diagnostico',
-        fotografias: uploadedFiles,
-        diagnostico: {},
-        trabajo: {},
-        tratamiento: {},
-        resumen: {},
-      });
+      // Buscar por paciente_id
+      ortodoncia = await ortodonciasService.getByPatientId(schema, paciente_id);
+      
+      if (ortodoncia) {
+        const fotosActuales = ortodoncia.fotografias || [];
+        const nuevasFotos = [...uploadedFiles, ...fotosActuales];
+        ortodoncia = await ortodonciasService.update(schema, ortodoncia.id, {
+          fotografias: nuevasFotos,
+        });
+        console.log('✅ [UPLOAD] Ortodoncia actualizada con nuevas fotos');
+      } else {
+        // Crear nuevo registro con las fotos
+        ortodoncia = await ortodonciasService.create(schema, {
+          paciente_id,
+          requiere_tratamiento: false,
+          estado: 'diagnostico',
+          fotografias: uploadedFiles,
+          diagnostico: {},
+          trabajo: {},
+          tratamiento: {},
+          resumen: {},
+        });
+        console.log('✅ [UPLOAD] Nueva ortodoncia creada con fotos');
+      }
     }
 
     res.json({
       success: true,
       data: uploadedFiles,
+      ortodoncia_id: ortodoncia?.id,
       message: 'Imágenes subidas exitosamente',
     });
   } catch (error) {

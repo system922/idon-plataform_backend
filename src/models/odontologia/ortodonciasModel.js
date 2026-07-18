@@ -2,37 +2,7 @@
 import { query } from '../../config/database.js';
 
 // ============================================================
-// LISTAR TODOS
-// ============================================================
-export const findAll = async (schema) => {
-  const sql = `
-    SELECT 
-      o.id,
-      o.paciente_id,
-      o.requiere_tratamiento,
-      o.estado,
-      o.diagnostico,
-      o.trabajo,
-      o.tratamiento,
-      o.resumen,
-      o.doctor,
-      o.fecha_inicio,
-      o.fecha_fin,
-      o.created_at,
-      o.updated_at,
-      CONCAT(p.first_name, ' ', p.last_name) as paciente_nombre,
-      p.document_number as paciente_documento
-    FROM "${schema}".ortodoncias o
-    LEFT JOIN "${schema}".pacientes p ON o.paciente_id = p.id
-    WHERE o.deleted_at IS NULL
-    ORDER BY o.created_at DESC
-  `;
-  const { rows } = await query(sql);
-  return rows;
-};
-
-// ============================================================
-// OBTENER POR ID DE PACIENTE
+// OBTENER POR PACIENTE
 // ============================================================
 export const findByPatientId = async (schema, patientId) => {
   const sql = `
@@ -45,6 +15,7 @@ export const findByPatientId = async (schema, patientId) => {
       trabajo,
       tratamiento,
       resumen,
+      fotografias,
       doctor,
       fecha_inicio,
       fecha_fin,
@@ -56,6 +27,22 @@ export const findByPatientId = async (schema, patientId) => {
     LIMIT 1
   `;
   const { rows } = await query(sql, [patientId]);
+  
+  if (rows.length > 0) {
+    // Parsear fotografias si es string
+    if (typeof rows[0].fotografias === 'string') {
+      try {
+        rows[0].fotografias = JSON.parse(rows[0].fotografias);
+      } catch (e) {
+        rows[0].fotografias = [];
+      }
+    }
+    // Asegurar que es un array
+    if (!Array.isArray(rows[0].fotografias)) {
+      rows[0].fotografias = [];
+    }
+  }
+  
   return rows[0] || null;
 };
 
@@ -73,6 +60,7 @@ export const findById = async (schema, id) => {
       trabajo,
       tratamiento,
       resumen,
+      fotografias,
       doctor,
       fecha_inicio,
       fecha_fin,
@@ -82,41 +70,20 @@ export const findById = async (schema, id) => {
     WHERE id = $1 AND deleted_at IS NULL
   `;
   const { rows } = await query(sql, [id]);
-  return rows[0] || null;
-};
-
-// ============================================================
-// INSERTAR
-// ============================================================
-export const insert = async (schema, data) => {
-  const sql = `
-    INSERT INTO "${schema}".ortodoncias (
-      paciente_id,
-      requiere_tratamiento,
-      estado,
-      diagnostico,
-      trabajo,
-      tratamiento,
-      resumen,
-      doctor,
-      fecha_inicio,
-      fecha_fin
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-    RETURNING *
-  `;
   
-  const { rows } = await query(sql, [
-    data.paciente_id,
-    data.requiere_tratamiento || false,
-    data.estado || (data.requiere_tratamiento ? 'diagnostico' : 'no_requiere'),
-    data.diagnostico || {},
-    data.trabajo || {},
-    data.tratamiento || {},
-    data.resumen || {},
-    data.doctor || null,
-    data.fecha_inicio || null,
-    data.fecha_fin || null,
-  ]);
+  if (rows.length > 0) {
+    if (typeof rows[0].fotografias === 'string') {
+      try {
+        rows[0].fotografias = JSON.parse(rows[0].fotografias);
+      } catch (e) {
+        rows[0].fotografias = [];
+      }
+    }
+    if (!Array.isArray(rows[0].fotografias)) {
+      rows[0].fotografias = [];
+    }
+  }
+  
   return rows[0] || null;
 };
 
@@ -135,6 +102,7 @@ export const updateById = async (schema, id, data) => {
     'trabajo',
     'tratamiento',
     'resumen',
+    'fotografias',
     'doctor',
     'fecha_inicio',
     'fecha_fin'
@@ -143,7 +111,12 @@ export const updateById = async (schema, id, data) => {
   fields.forEach(field => {
     if (data[field] !== undefined) {
       updates.push(`${field} = $${idx++}`);
-      values.push(data[field]);
+      // Si es fotografias, asegurar que es JSON
+      if (field === 'fotografias' && typeof data[field] === 'object') {
+        values.push(JSON.stringify(data[field]));
+      } else {
+        values.push(data[field]);
+      }
     }
   });
 
@@ -162,41 +135,72 @@ export const updateById = async (schema, id, data) => {
   `;
   
   const { rows } = await query(sql, values);
+  
+  if (rows.length > 0) {
+    if (typeof rows[0].fotografias === 'string') {
+      try {
+        rows[0].fotografias = JSON.parse(rows[0].fotografias);
+      } catch (e) {
+        rows[0].fotografias = [];
+      }
+    }
+    if (!Array.isArray(rows[0].fotografias)) {
+      rows[0].fotografias = [];
+    }
+  }
+  
   return rows[0] || null;
 };
 
 // ============================================================
-// ELIMINAR (SOFT DELETE)
+// INSERTAR
 // ============================================================
-export const softDelete = async (schema, id) => {
+export const insert = async (schema, data) => {
   const sql = `
-    UPDATE "${schema}".ortodoncias 
-    SET deleted_at = NOW(), updated_at = NOW()
-    WHERE id = $1 AND deleted_at IS NULL
-    RETURNING id
+    INSERT INTO "${schema}".ortodoncias (
+      paciente_id,
+      requiere_tratamiento,
+      estado,
+      diagnostico,
+      trabajo,
+      tratamiento,
+      resumen,
+      fotografias,
+      doctor,
+      fecha_inicio,
+      fecha_fin
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    RETURNING *
   `;
-  const { rows } = await query(sql, [id]);
+  
+  const fotografiasJson = data.fotografias ? JSON.stringify(data.fotografias) : '[]';
+  
+  const { rows } = await query(sql, [
+    data.paciente_id,
+    data.requiere_tratamiento || false,
+    data.estado || (data.requiere_tratamiento ? 'diagnostico' : 'no_requiere'),
+    data.diagnostico || {},
+    data.trabajo || {},
+    data.tratamiento || {},
+    data.resumen || {},
+    fotografiasJson,
+    data.doctor || null,
+    data.fecha_inicio || null,
+    data.fecha_fin || null,
+  ]);
+  
+  if (rows.length > 0) {
+    if (typeof rows[0].fotografias === 'string') {
+      try {
+        rows[0].fotografias = JSON.parse(rows[0].fotografias);
+      } catch (e) {
+        rows[0].fotografias = [];
+      }
+    }
+    if (!Array.isArray(rows[0].fotografias)) {
+      rows[0].fotografias = [];
+    }
+  }
+  
   return rows[0] || null;
-};
-
-// ============================================================
-// ESTADÍSTICAS
-// ============================================================
-export const getStats = async (schema) => {
-  const sql = `
-    SELECT 
-      COUNT(*) AS total,
-      COUNT(CASE WHEN requiere_tratamiento = true THEN 1 END) AS requieren_tratamiento,
-      COUNT(CASE WHEN requiere_tratamiento = false THEN 1 END) AS no_requieren,
-      COUNT(CASE WHEN created_at >= NOW() - INTERVAL '30 days' THEN 1 END) AS nuevos_30dias
-    FROM "${schema}".ortodoncias
-    WHERE deleted_at IS NULL
-  `;
-  const { rows } = await query(sql);
-  return {
-    total: Number(rows[0]?.total || 0),
-    requieren_tratamiento: Number(rows[0]?.requieren_tratamiento || 0),
-    no_requieren: Number(rows[0]?.no_requieren || 0),
-    nuevos_30dias: Number(rows[0]?.nuevos_30dias || 0),
-  };
 };
