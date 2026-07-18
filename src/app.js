@@ -88,6 +88,7 @@ import ortodonciasRoutes from './routes/odontologia/ortodonciasRoutes.js';
 import ortodonciasUploadRoutes from './routes/odontologia/ortodonciasUploadRoutes.js';
 import periodontogramasRoutes from './routes/odontologia/periodontogramasRoutes.js';
 import planPagosOrtodonciaRoutes from './routes/odontologia/planPagosOrtodonciaRoutes.js';
+import cuotasOrtodonciaRoutes from './routes/odontologia/cuotasOrtodonciaRoutes.js';
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 import { authMiddleware, businessContextMiddleware, adminMiddleware } from './middleware/auth.js';
@@ -196,6 +197,7 @@ app.use('/api/odontologia/periodontogramas', periodontogramasRoutes);
 app.use('/api/odontologia/ortodoncias', ...authBusiness, ortodonciasRoutes);
 app.use('/api/odontologia/ortodoncias/upload', ...authBusiness, ortodonciasUploadRoutes);
 app.use('/api/odontologia/plan-pagos', ...authBusiness, planPagosOrtodonciaRoutes);
+app.use('/api/odontologia/cuotas-ortodoncia', ...authBusiness, cuotasOrtodonciaRoutes);
 
 
 // ─── Rutas de admin (una por sección del sidebar) ─────────────────────────────
