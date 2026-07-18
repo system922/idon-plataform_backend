@@ -54,7 +54,7 @@ export const getActiveByPatient = async (schema, patientId) => {
 };
 
 // ============================================================
-// CREAR PLAN CON CUOTAS
+// CREAR PLAN CON CUOTAS (CORREGIDO)
 // ============================================================
 export const create = async (schema, data) => {
   try {
@@ -95,20 +95,22 @@ export const create = async (schema, data) => {
 
     const plan = await planModel.insert(schema, planData);
 
-    // Generar cuotas
+    // ============================================================
+    // 🔥 GENERAR CUOTAS AUTOMÁTICAMENTE
+    // ============================================================
     const cuotas = [];
     const fechaInicio = data.fecha_inicio ? new Date(data.fecha_inicio) : new Date();
 
     for (let i = 0; i < data.numero_cuotas; i++) {
       const fechaVencimiento = new Date(fechaInicio);
-      fechaVencimiento.setMonth(fechaVencimiento.getMonth() + i);
+      fechaVencimiento.setMonth(fechaVencimiento.getMonth() + i + 1); // +1 para que la primera cuota sea al mes
 
       cuotas.push({
         plan_id: plan.id,
         numero_cuota: i + 1,
         monto: montoMensual,
         fecha_vencimiento: fechaVencimiento,
-        estado: 'pendiente',
+        estado: i === 0 && data.abono_inicial > 0 ? 'pagado' : 'pendiente',
         notas: `Cuota ${i + 1} de ${data.numero_cuotas}`,
         created_at: new Date(),
       });
@@ -120,10 +122,17 @@ export const create = async (schema, data) => {
       cuotas[0].fecha_pago = new Date();
     }
 
-    await cuotasModel.insertMany(schema, cuotas);
+    // Insertar todas las cuotas
+    const cuotasInsertadas = await cuotasModel.insertMany(schema, cuotas);
+    console.log(`✅ [PlanPagos] ${cuotasInsertadas.length} cuotas generadas para el plan ${plan.id}`);
 
-    return plan;
+    // Obtener el plan con las cuotas
+    const planCompleto = await planModel.findById(schema, plan.id);
+    planCompleto.cuotas = cuotasInsertadas;
+
+    return planCompleto;
   } catch (error) {
+    console.error('❌ Error en create:', error);
     throw new Error(`Error al crear plan: ${error.message}`);
   }
 };
@@ -176,7 +185,6 @@ export const registrarPago = async (schema, planId, cuotaId, monto, metodoPago, 
     if (cuota.estado === 'pagado') throw new Error('Esta cuota ya fue pagada');
 
     // Registrar en la tabla de pagos (si existe) o simplemente actualizar la cuota
-    // Aquí se puede integrar con la tabla de pagos general
 
     // Actualizar cuota
     await cuotasModel.updateEstado(schema, cuotaId, 'pagado');
@@ -220,7 +228,7 @@ export const generarCuotas = async (schema, planId) => {
 
     for (let i = 0; i < plan.numero_cuotas; i++) {
       const fechaVencimiento = new Date(fechaInicio);
-      fechaVencimiento.setMonth(fechaVencimiento.getMonth() + i);
+      fechaVencimiento.setMonth(fechaVencimiento.getMonth() + i + 1);
 
       cuotas.push({
         plan_id: plan.id,
@@ -233,7 +241,10 @@ export const generarCuotas = async (schema, planId) => {
       });
     }
 
-    return await cuotasModel.insertMany(schema, cuotas);
+    const cuotasInsertadas = await cuotasModel.insertMany(schema, cuotas);
+    console.log(`✅ [PlanPagos] ${cuotasInsertadas.length} cuotas regeneradas para el plan ${plan.id}`);
+
+    return cuotasInsertadas;
   } catch (error) {
     throw new Error(`Error al generar cuotas: ${error.message}`);
   }
