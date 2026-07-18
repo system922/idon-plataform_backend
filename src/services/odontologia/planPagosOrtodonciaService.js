@@ -2,6 +2,7 @@
 import { query } from '../../config/database.js';
 import * as planModel from '../../models/odontologia/planPagosOrtodonciaModel.js';
 import * as cuotasModel from '../../models/odontologia/cuotasOrtodonciaModel.js';
+import { v4 as uuidv4 } from 'uuid';
 
 // ============================================================
 // LISTAR PLANES POR PACIENTE
@@ -54,7 +55,7 @@ export const getActiveByPatient = async (schema, patientId) => {
 };
 
 // ============================================================
-// CREAR PLAN CON CUOTAS (CORREGIDO)
+// CREAR PLAN CON CUOTAS
 // ============================================================
 export const create = async (schema, data) => {
   try {
@@ -184,16 +185,24 @@ export const registrarPago = async (schema, planId, cuotaId, monto, metodoPago, 
     if (!cuota) throw new Error('Cuota no encontrada');
     if (cuota.estado === 'pagado') throw new Error('Esta cuota ya fue pagada');
 
-    // Registrar en la tabla de pagos (si existe) o simplemente actualizar la cuota
+    // ✅ Generar un UUID para el pago
+    const pagoId = uuidv4();
+    
+    console.log('📦 [registrarPago] pagoId generado:', pagoId);
+    console.log('📦 [registrarPago] cuotaId:', cuotaId);
+    console.log('📦 [registrarPago] monto:', monto);
 
-    // Actualizar cuota
-    await cuotasModel.updateEstado(schema, cuotaId, 'pagado');
+    // ✅ Actualizar cuota con el pagoId generado
+    await cuotasModel.updateEstado(schema, cuotaId, 'pagado', pagoId);
 
-    // Actualizar saldo del plan
-    await planModel.updateSaldo(schema, planId, monto);
+    // ✅ Actualizar saldo del plan
+    const montoNum = parseFloat(monto);
+    await planModel.updateSaldo(schema, planId, montoNum);
 
+    // ✅ Obtener el plan actualizado
     return await planModel.findById(schema, planId);
   } catch (error) {
+    console.error('❌ Error en registrarPago:', error);
     throw new Error(`Error al registrar pago: ${error.message}`);
   }
 };

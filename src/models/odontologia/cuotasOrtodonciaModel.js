@@ -117,20 +117,35 @@ export const insertMany = async (schema, cuotas) => {
 };
 
 // ============================================================
-// ACTUALIZAR ESTADO DE CUOTA
+// ACTUALIZAR ESTADO DE CUOTA - CORREGIDO
 // ============================================================
 export const updateEstado = async (schema, id, estado, pagoId = null) => {
+  // ✅ Si pagoId es null o undefined, usar null
+  // ✅ Si es un UUID válido, pasarlo como string
+  const pagoIdValue = pagoId || null;
+  
+  // ✅ Usar $1::text para estado y $2::uuid para pago_id
+  // ✅ Así PostgreSQL sabe exactamente qué tipo es cada parámetro
   const sql = `
     UPDATE "${schema}".cuotas_ortodoncia 
     SET 
-      estado = $1,
-      pago_id = COALESCE($2, pago_id),
-      fecha_pago = CASE WHEN $1 = 'pagado' THEN NOW() ELSE fecha_pago END,
+      estado = $1::text,
+      pago_id = $2::uuid,
+      fecha_pago = CASE WHEN $1::text = 'pagado' THEN NOW() ELSE fecha_pago END,
       updated_at = NOW()
-    WHERE id = $3 AND deleted_at IS NULL
+    WHERE id = $3::uuid AND deleted_at IS NULL
     RETURNING *
   `;
-  const { rows } = await query(sql, [estado, pagoId, id]);
+  
+  console.log('📦 [updateEstado] Parámetros:', { 
+    estado, 
+    pagoId: pagoIdValue, 
+    id,
+    tipoPagoId: typeof pagoIdValue,
+    esNull: pagoIdValue === null
+  });
+  
+  const { rows } = await query(sql, [estado, pagoIdValue, id]);
   return rows[0] || null;
 };
 
@@ -140,18 +155,20 @@ export const updateEstado = async (schema, id, estado, pagoId = null) => {
 export const updateManyEstado = async (schema, cuotaIds, estado, pagoId = null) => {
   if (!cuotaIds || cuotaIds.length === 0) return [];
 
+  const pagoIdValue = pagoId || null;
   const placeholders = cuotaIds.map((_, i) => `$${i + 1}`).join(', ');
+  
   const sql = `
     UPDATE "${schema}".cuotas_ortodoncia 
     SET 
-      estado = $${cuotaIds.length + 1},
-      pago_id = COALESCE($${cuotaIds.length + 2}, pago_id),
-      fecha_pago = CASE WHEN $${cuotaIds.length + 1} = 'pagado' THEN NOW() ELSE fecha_pago END,
+      estado = $${cuotaIds.length + 1}::text,
+      pago_id = $${cuotaIds.length + 2}::uuid,
+      fecha_pago = CASE WHEN $${cuotaIds.length + 1}::text = 'pagado' THEN NOW() ELSE fecha_pago END,
       updated_at = NOW()
     WHERE id IN (${placeholders}) AND deleted_at IS NULL
     RETURNING *
   `;
-  const { rows } = await query(sql, [...cuotaIds, estado, pagoId]);
+  const { rows } = await query(sql, [...cuotaIds, estado, pagoIdValue]);
   return rows;
 };
 
@@ -162,7 +179,7 @@ export const softDelete = async (schema, id) => {
   const sql = `
     UPDATE "${schema}".cuotas_ortodoncia 
     SET deleted_at = NOW(), updated_at = NOW()
-    WHERE id = $1 AND deleted_at IS NULL
+    WHERE id = $1::uuid AND deleted_at IS NULL
     RETURNING id
   `;
   const { rows } = await query(sql, [id]);
@@ -176,7 +193,7 @@ export const softDeleteByPlan = async (schema, planId) => {
   const sql = `
     UPDATE "${schema}".cuotas_ortodoncia 
     SET deleted_at = NOW(), updated_at = NOW()
-    WHERE plan_id = $1 AND deleted_at IS NULL
+    WHERE plan_id = $1::uuid AND deleted_at IS NULL
     RETURNING id
   `;
   const { rows } = await query(sql, [planId]);
