@@ -134,6 +134,10 @@ app.use('/api/security',        securityRoutes);
 app.use('/api/audit-log',       auditLogRoutes);
 app.use('/api/business-owners', businessOwnersRoutes);
 
+
+// ─── Ruta de negocio por WhatsApp ─────────────────────────────────────────────
+app.use('/api/business', businessByWhatsappRoutes);
+
 // ─── Ruta de configureación fiscal ─────────────────────────────────────────────────
 app.use('/api/fiscal', fiscalRoutes);
 
@@ -224,10 +228,6 @@ app.use('/api/notifications-admin',   ...authAdmin, notificationsAdminRoutes);
 // Push + scheduled — must be AFTER admin routes so /api/admin/* isn't intercepted by businessContextMiddleware
 app.use('/api',                       ...authBusiness, pushRoutes);
 app.use('/api',                       ...authBusiness, scheduledNotificationsRoutes);
-
-
-// ─── Rutas de negocio por WhatsApp ─────────────────────────────────────────────
-app.use('/api/business', businessByWhatsappRoutes);
 
 
 
