@@ -3,6 +3,10 @@ import cors from 'cors';
 import env from './config/env.js';
 import logger from './utils/logger.js';
 
+
+// Ruta para obtener negocio por número de WhatsApp
+import businessByWhatsappRoutes from './routes/businessByWhatsapp.js';
+
 // ─── Routes ──────────────────────────────────────────────────────────────────
 import fiscalRoutes          from './routes/fiscalRoutes.js';
 import auditLogRoutes        from './routes/auditLogRoutes.js';
@@ -95,9 +99,6 @@ import { authMiddleware, businessContextMiddleware, adminMiddleware } from './mi
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 
 
-// Ruta para obtener negocio por número de WhatsApp
-import businessByWhatsappRoutes from './routes/businessByWhatsapp.js';
-
 const app = express();
 
 // ─── Core middleware ──────────────────────────────────────────────────────────
@@ -133,11 +134,8 @@ app.use('/api/business-types',  businessTypeRoutes_r);
 app.use('/api/security',        securityRoutes);
 app.use('/api/audit-log',       auditLogRoutes);
 app.use('/api/business-owners', businessOwnersRoutes);
-app.use('/api/business',        businessRoutes);
-
-
-// ─── Ruta de negocio por WhatsApp ─────────────────────────────────────────────
-app.use('/api/business', businessByWhatsappRoutes);
+// ─── Rutas de negocio por WhatsApp ─────────────────────────────────────────────
+app.use('/api/business_ws', businessByWhatsappRoutes);
 
 // ─── Ruta de configureación fiscal ─────────────────────────────────────────────────
 app.use('/api/fiscal', fiscalRoutes);
@@ -177,6 +175,7 @@ app.use('/api/notifications',         ...authBusiness, notificationsEmailRoutes)
 app.use('/api/reports',             ...authBusiness, reportsRoutes);
 app.use('/api/print',               ...authBusiness, printRoutes);
 app.use('/api/einvoicing',          ...authBusiness, einvoicingRoutes);
+app.use('/api/business',            ...authBusiness, businessRoutes);
 app.use('/api/sales',               ...authBusiness, salesRouter);
 app.use('/api/purchases',           ...authBusiness, purchasesRouter);
 app.use('/api/expenses',            ...authBusiness, expensesRoutes);
