@@ -1,5 +1,5 @@
 import express from 'express';
-import { db } from '../config/database.js';
+import { query } from '../config/database.js';
 
 const router = express.Router();
 
@@ -23,8 +23,8 @@ router.get('/by-whatsapp/:whatsapp', async (req, res) => {
     
     console.log(`🔍 Buscando negocio para WhatsApp: ${cleanWhatsapp}`);
     
-    // business_registration_requests
-    const result = await db.query(
+    // ✅ CORREGIDO: usar query en lugar de db.query
+    const result = await query(
       `SELECT 
         brr.id,
         brr.slug,
@@ -42,7 +42,6 @@ router.get('/by-whatsapp/:whatsapp', async (req, res) => {
       LIMIT 1`,
       [cleanWhatsapp]
     );
-    
     
     if (result.rows.length === 0) {
       return res.status(404).json({
@@ -94,7 +93,8 @@ router.get('/by-whatsapp/:whatsapp/tenant', async (req, res) => {
       });
     }
     
-    const result = await db.query(
+    // ✅ CORREGIDO: usar query en lugar de db.query
+    const result = await query(
       `SELECT 
         brr.schema_name,
         brr.slug,
