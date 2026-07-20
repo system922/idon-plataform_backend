@@ -7,6 +7,9 @@ import logger from './utils/logger.js';
 // Ruta para obtener negocio por número de WhatsApp
 import businessByWhatsappRoutes from './routes/businessByWhatsapp.js';
 
+// RUTAS PÚBLICAS (sin autenticación)
+import publicRoutes from './routes/publicRoutes.js';
+
 // ─── Routes ──────────────────────────────────────────────────────────────────
 import fiscalRoutes          from './routes/fiscalRoutes.js';
 import auditLogRoutes        from './routes/auditLogRoutes.js';
@@ -136,6 +139,8 @@ app.use('/api/audit-log',       auditLogRoutes);
 app.use('/api/business-owners', businessOwnersRoutes);
 // ─── Rutas de negocio por WhatsApp ─────────────────────────────────────────────
 app.use('/api/business_ws', businessByWhatsappRoutes);
+
+app.use('/api/public', publicRoutes);
 
 // ─── Ruta de configureación fiscal ─────────────────────────────────────────────────
 app.use('/api/fiscal', fiscalRoutes);
