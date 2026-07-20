@@ -94,6 +94,10 @@ import cuotasOrtodonciaRoutes from './routes/odontologia/cuotasOrtodonciaRoutes.
 import { authMiddleware, businessContextMiddleware, adminMiddleware } from './middleware/auth.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 
+
+// Ruta para obtener negocio por número de WhatsApp
+import businessByWhatsappRoutes from './routes/businessByWhatsapp.js';
+
 const app = express();
 
 // ─── Core middleware ──────────────────────────────────────────────────────────
@@ -220,6 +224,12 @@ app.use('/api/notifications-admin',   ...authAdmin, notificationsAdminRoutes);
 // Push + scheduled — must be AFTER admin routes so /api/admin/* isn't intercepted by businessContextMiddleware
 app.use('/api',                       ...authBusiness, pushRoutes);
 app.use('/api',                       ...authBusiness, scheduledNotificationsRoutes);
+
+
+// ─── Rutas de negocio por WhatsApp ─────────────────────────────────────────────
+app.use('/api/business', businessByWhatsappRoutes);
+
+
 
 // ─── Error handlers ───────────────────────────────────────────────────────────
 app.use(notFoundHandler);
