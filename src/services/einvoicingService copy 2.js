@@ -28,14 +28,14 @@ function pad(n, len) {
   return String(n).padStart(len, '0');
 }
 
+
 function ivaCode(rate) {
   const rateNum = Number(rate);
-  // Mapeo de códigos SRI para cada tasa
-  if (rateNum === 0) return 0;   // IVA 0%
-  if (rateNum === 5) return 5;   // IVA 5%
-  if (rateNum === 8) return 6;   // IVA 8%
-  if (rateNum === 12) return 2;  // IVA 12%
-  if (rateNum === 15) return 4;  // IVA 15%
+  if (rateNum === 0) return 0;
+  if (rateNum === 5) return 5;
+  if (rateNum === 8) return 8;
+  if (rateNum === 12) return 2;
+  if (rateNum === 15) return 4;
   return 4; // default 15%
 }
 
@@ -119,7 +119,7 @@ export async function saveSignatureFile(schema, buffer) {
   }
 }
 
-// ------------------- CORE: Emisión (CON SUBTOTALES POR TASA Y DESCUENTOS) -------------------
+// ------------------- CORE: Emisión (USANDO VALORES DEL FRONTEND) -------------------
 export async function emitInvoice(schema, opts) {
   const cfg = await getConfig(schema);
   if (!cfg) throw new Error('Configuración de facturación electrónica no encontrada');
@@ -150,90 +150,63 @@ export async function emitInvoice(schema, opts) {
     const idComprador = customer.ruc || '9999999999';
     const razonComprador = customer.name || 'CONSUMIDOR FINAL';
     
-    // 🔥 OBTENER VALORES DEL FRONTEND
+    // 🔥 USAR LOS VALORES QUE YA VIENEN DEL FRONTEND
     const totalDescuento = parseFloat(opts.descuento || 0);
+    const subtotalConDescuento = parseFloat(opts.subtotal || 0);
     const ivaAmountTotal = parseFloat(opts.iva_amount || 0);
     const totalFactura = parseFloat(opts.total || 0);
-    const items = opts.items || [];
 
     console.log('💰💰💰 VALORES RECIBIDOS DEL FRONTEND:', {
-      totalDescuento,
+      subtotalConDescuento,
       ivaAmountTotal,
       totalFactura,
-      itemsCount: items.length
+      totalDescuento,
+      itemsCount: opts.items?.length
     });
 
-    // 🔥 PROCESAR ITEMS Y CALCULAR SUBTOTALES POR TASA
-    // Inicializar acumuladores para cada tasa
-    const subtotalByRate = {
-      0: 0,   // IVA 0%
-      5: 0,   // IVA 5%
-      8: 0,   // IVA 8%
-      12: 0,  // IVA 12%
-      15: 0,  // IVA 15%
-    };
-    
-    const ivaByRate = {
-      0: 0,
-      5: 0,
-      8: 0,
-      12: 0,
-      15: 0,
-    };
+    // 🔥 Agrupar por tasa IVA para totales
+    const ivaGroupsForTotal = {};  // { tasa: { base: 0, valor: 0 } }
 
-    // Mapeo de códigos SRI para cada tasa
-    const codigoPorcentajeMap = {
-      0: 0,   // IVA 0%
-      5: 5,   // IVA 5%
-      8: 6,   // IVA 8%
-      12: 2,  // IVA 12%
-      15: 4,  // IVA 15%
-    };
-
-    // Procesar cada item
-    const detalleItems = items.map((item) => {
+    const detalleItems = (opts.items || []).map((item) => {
       const qty = parseFloat(item.qty || item.quantity || 1);
       const unitPrice = parseFloat(item.unit_price || 0);
-      const subtotalItem = parseFloat(item.subtotal || (qty * unitPrice));
+      const subtotalItem = parseFloat(item.subtotal || 0);
       const ivaItem = parseFloat(item.iva_amount || 0);
       
-      // Obtener la tasa de IVA del item
-      let tasaIVA = parseFloat(item.iva_rate_pct || item.is_taxable || 0);
+      // 🔥 OBTENER LA TASA IVA DEL ITEM (puede ser 0, 5, 8, 12, 15)
+      let itemIvaRate = parseFloat(item.iva_rate_pct || 0);
       
-      // Si la tasa es 0 pero tiene IVA > 0, inferir la tasa
-      if (tasaIVA === 0 && ivaItem > 0 && subtotalItem > 0) {
+      // Si no viene tasa explícita pero tiene IVA > 0, usar la tasa que corresponda
+      if (itemIvaRate === 0 && ivaItem > 0 && subtotalItem > 0) {
+        // Inferir la tasa del monto de IVA y la base
         const inferredRate = Math.round((ivaItem / subtotalItem) * 100);
         if ([0, 5, 8, 12, 15].includes(inferredRate)) {
-          tasaIVA = inferredRate;
+          itemIvaRate = inferredRate;
         } else if (ivaItem > 0) {
-          tasaIVA = 15; // default
+          itemIvaRate = 15; // default
         }
       }
       
-      // Si tiene IVA 0 y subtotal > 0 pero ivaItem = 0, asegurar tasa 0
-      if (ivaItem === 0 && tasaIVA !== 0) {
-        tasaIVA = 0;
+      // 🔥 Para items con IVA 0, asegurar que la tasa sea 0
+      if (ivaItem === 0 && itemIvaRate !== 0) {
+        itemIvaRate = 0;
       }
+      
+      console.log(`📦 Item: ${item.description || item.name}, tasa: ${itemIvaRate}%, IVA: ${ivaItem}, subtotal: ${subtotalItem}`);
 
-      // Acumular por tasa
-      if (subtotalByRate[tasaIVA] !== undefined) {
-        subtotalByRate[tasaIVA] += subtotalItem;
-        ivaByRate[tasaIVA] += ivaItem;
-      } else {
-        // Si no reconoce la tasa, usar 15%
-        subtotalByRate[15] += subtotalItem;
-        ivaByRate[15] += ivaItem;
-        tasaIVA = 15;
+      // 🔥 Acumular para totalConImpuestos por tasa
+      if (!ivaGroupsForTotal[itemIvaRate]) {
+        ivaGroupsForTotal[itemIvaRate] = { base: 0, valor: 0 };
       }
-
-      console.log(`📦 ${item.description}: tasa=${tasaIVA}%, subtotal=${subtotalItem.toFixed(2)}, iva=${ivaItem.toFixed(2)}`);
+      ivaGroupsForTotal[itemIvaRate].base  += subtotalItem;
+      ivaGroupsForTotal[itemIvaRate].valor += ivaItem;
 
       // Descuento proporcional por item
       let descuentoItem = 0;
-      const totalGlobal = subtotalItem + ivaItem;
-      if (totalDescuento > 0 && totalFactura > 0) {
-        const ratio = totalGlobal / totalFactura;
-        descuentoItem = Math.round((totalDescuento * ratio) * 100) / 100;
+      const totalGlobal = subtotalConDescuento + ivaAmountTotal + totalDescuento;
+      if (totalDescuento > 0 && totalGlobal > 0) {
+        const totalItem = subtotalItem + ivaItem;
+        descuentoItem = totalDescuento * (totalItem / totalGlobal);
       }
 
       return {
@@ -242,13 +215,13 @@ export async function emitInvoice(schema, opts) {
         descripcion: item.description || item.name || 'Producto',
         cantidad: qty,
         precioUnitario: unitPrice,
-        descuento: descuentoItem,
+        descuento: Math.round(descuentoItem * 100) / 100,
         precioTotalSinImpuesto: subtotalItem,
         impuestos: {
           impuesto: [{
             codigo: 2,
-            codigoPorcentaje: ivaCode(tasaIVA),
-            tarifa: tasaIVA,
+            codigoPorcentaje: ivaCode(itemIvaRate),
+            tarifa: itemIvaRate,
             baseImponible: subtotalItem,
             valor: ivaItem,
           }],
@@ -256,63 +229,32 @@ export async function emitInvoice(schema, opts) {
       };
     });
 
-    // Calcular totales por tasa
-    const subtotalSinIVA = subtotalByRate[0] || 0;
-    const subtotalConIVA = Object.entries(subtotalByRate)
-      .filter(([rate]) => Number(rate) > 0)
-      .reduce((sum, [_, val]) => sum + val, 0);
-    const subtotalTotal = subtotalSinIVA + subtotalConIVA;
-    
-    // Calcular IVA total desde los items
-    const ivaTotal = Object.values(ivaByRate).reduce((sum, val) => sum + val, 0);
+    // 🔥 Construir totalConImpuestos con todas las tasas encontradas
+    const totalImpuestoArray = Object.entries(ivaGroupsForTotal)
+      .filter(([_, g]) => g.base > 0 || g.valor > 0)  // Solo tasas con valores
+      .map(([rate, g]) => ({
+        codigo: 2,
+        codigoPorcentaje: ivaCode(Number(rate)),
+        baseImponible: Math.round(g.base * 100) / 100,
+        valor: Math.round(g.valor * 100) / 100,
+      }));
 
-    console.log('📊 SUBTOTALES POR TASA:', {
-      'IVA 0%': subtotalByRate[0].toFixed(2),
-      'IVA 5%': subtotalByRate[5].toFixed(2),
-      'IVA 8%': subtotalByRate[8].toFixed(2),
-      'IVA 12%': subtotalByRate[12].toFixed(2),
-      'IVA 15%': subtotalByRate[15].toFixed(2),
-      'SUBTOTAL TOTAL': subtotalTotal.toFixed(2),
-      'IVA TOTAL': ivaTotal.toFixed(2),
-      'TOTAL FACTURA': (subtotalTotal + ivaTotal - totalDescuento).toFixed(2)
-    });
+    // 🔥 Ordenar por tasa descendente para mejor legibilidad
+    totalImpuestoArray.sort((a, b) => b.codigoPorcentaje - a.codigoPorcentaje);
 
-    // 🔥 CONSTRUIR totalConImpuestos con todas las tasas encontradas
-    const totalImpuestoArray = [];
-    
-    // Tasas que tienen valor
-    const tasasConValor = Object.keys(subtotalByRate)
-      .filter(rate => subtotalByRate[rate] > 0)
-      .map(Number)
-      .sort((a, b) => b - a);
+    console.log('📊 TOTALES POR TASA IVA:', totalImpuestoArray);
+    console.log('📊 IVA GROUPS:', ivaGroupsForTotal);
 
-    tasasConValor.forEach(rate => {
-      const subtotal = subtotalByRate[rate];
-      const iva = ivaByRate[rate];
-      
-      if (subtotal > 0 || iva > 0) {
-        totalImpuestoArray.push({
-          codigo: 2,
-          codigoPorcentaje: codigoPorcentajeMap[rate] || 4,
-          baseImponible: Math.round(subtotal * 100) / 100,
-          valor: Math.round(iva * 100) / 100,
-        });
-      }
-    });
-
-    // Si no hay ningún impuesto, agregar bloque con tasa 0
+    // Si no hay ningún grupo, agregar bloque con tasa 0
     if (totalImpuestoArray.length === 0) {
       totalImpuestoArray.push({
         codigo: 2,
         codigoPorcentaje: 0,
-        baseImponible: subtotalTotal,
+        baseImponible: subtotalConDescuento,
         valor: 0,
       });
     }
 
-    console.log('📊 TOTAL IMPUESTOS ARRAY:', totalImpuestoArray);
-
-    // 🔥 CONSTRUIR EL COMPROBANTE
     const comprobante = {
       infoTributaria: {
         ruc: cfg.ruc,
@@ -332,22 +274,18 @@ export async function emitInvoice(schema, opts) {
         tipoIdentificacionComprador: tipoId,
         razonSocialComprador: razonComprador,
         identificacionComprador: idComprador,
-        
-        // ✅ IMPORTANTE: totalSinImpuestos = subtotal de productos con IVA 0% solamente
-        totalSinImpuestos: Math.round(subtotalSinIVA * 100) / 100,
-        
-        totalDescuento: Math.round(totalDescuento * 100) / 100,
+        totalSinImpuestos: subtotalConDescuento,
+        totalDescuento: totalDescuento,
         propina: 0,
-        importeTotal: Math.round((subtotalTotal + ivaTotal - totalDescuento) * 100) / 100,
+        importeTotal: totalFactura,
         moneda: 'USD',
-        
         totalConImpuestos: {
           totalImpuesto: totalImpuestoArray,
         },
         pagos: {
           pago: [{
             formaPago: opts.forma_pago || '01',
-            total: Math.round((subtotalTotal + ivaTotal - totalDescuento) * 100) / 100,
+            total: totalFactura,
           }],
         },
       },
@@ -378,19 +316,17 @@ export async function emitInvoice(schema, opts) {
 
     const phone = customer.phone || opts.customer_phone || null;
 
-    // Asegurar columnas necesarias
     try {
       await client.query(`ALTER TABLE "${schema}".einvoices ADD COLUMN IF NOT EXISTS discount_amount NUMERIC(10,2) DEFAULT 0`);
     } catch { }
     
     console.log('💾 GUARDANDO EN DB:', {
-      subtotal: subtotalTotal.toFixed(2),
-      iva_amount: ivaTotal.toFixed(2),
-      total: (subtotalTotal + ivaTotal - totalDescuento).toFixed(2),
+      subtotalConDescuento: subtotalConDescuento.toFixed(2),
+      ivaAmountTotal: ivaAmountTotal.toFixed(2),
+      totalFactura: totalFactura.toFixed(2),
       totalDescuento: totalDescuento.toFixed(2)
     });
 
-    // 🔥 GUARDAR EN BASE DE DATOS
     const { rows } = await client.query(
       `INSERT INTO "${schema}".einvoices
          (order_id, invoice_number, access_key, auth_number,
@@ -402,9 +338,7 @@ export async function emitInvoice(schema, opts) {
       [
         opts.order_id || null, invoiceNumber, claveAcceso, null,
         customer.id || null, razonComprador, idComprador, customer.email || null, phone,
-        subtotalTotal.toFixed(2),  // subtotal TOTAL (suma de todos los productos)
-        ivaTotal.toFixed(2),       // IVA total
-        (subtotalTotal + ivaTotal - totalDescuento).toFixed(2), // total
+        subtotalConDescuento.toFixed(2), ivaAmountTotal.toFixed(2), totalFactura.toFixed(2),
         JSON.stringify(opts.items || []),
         totalDescuento.toFixed(2),
         signedXml,
@@ -695,7 +629,7 @@ async function parseFacturaFromXml(xmlText) {
     tipoIdComprador: str(inf?.tipoIdentificacionComprador),
     razonComprador: str(inf?.razonSocialComprador),
     idComprador: str(inf?.identificacionComprador),
-    subtotal: totalSinImpuestos + Object.values(subtotalByRate).reduce((a, b) => a + b, 0),
+    subtotal: totalSinImpuestos,
     totalDescuento: totalDescuento,
     iva: ivaTotal,
     total: importeTotal,
@@ -703,8 +637,6 @@ async function parseFacturaFromXml(xmlText) {
     items,
     subtotalByRate,
     ivaByRate,
-    subtotal0: subtotalByRate[0] || 0,
-    subtotal15: subtotalByRate[15] || 0,
   };
 }
 
@@ -716,7 +648,9 @@ async function generateBarcode(text) {
   } catch { return null; }
 }
 
-// ------------------- GENERACIÓN PDF (CON SUBTOTALES POR TASA) -------------------
+// ------------------- PDF NOTA DE CRÉDITO -------------------
+// ------------------- GENERACIÓN PDF (CON DESCUENTO) -------------------
+// ------------------- GENERACIÓN PDF (CON DESCUENTO) -------------------
 export async function generateInvoicePdf(schema, invoiceId) {
   const { rows: invRows } = await query(
     `SELECT * FROM "${schema}".einvoices WHERE id = $1`, [invoiceId]
@@ -742,6 +676,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
   const nroFactura = inv.invoice_number || `${d.estab}-${d.ptoEmi}-${d.secuencial}`;
   const esProduccion = d.ambiente === '2';
 
+  const subtotal = d.subtotal || parseFloat(inv.subtotal || 0);
   const totalDescuento = d.totalDescuento || parseFloat(inv.discount_amount || 0);
   const total = d.total || parseFloat(inv.total || 0);
 
@@ -886,7 +821,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
 
     y = M + hH + 4;
 
-    // ==================== CLIENTE ====================
+    // ==================== CLIENTE (CON INFORMACIÓN COMPLETA) ====================
     const razonComp = d.razonComprador || inv.customer_name || 'CONSUMIDOR FINAL';
     const idComp = d.idComprador || inv.customer_ruc || '-';
     const fechaEmDisplay = d.fechaEmision
@@ -927,6 +862,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
     y += cliH + 2;
 
     // ==================== TABLA DE ITEMS ====================
+    // 🔥 COLUMNAS AJUSTADAS: más ancho para código, menos para descripción
     const COLS = [
       { h: 'Código', w: 0.14, a: 'left' },
       { h: 'Cant', w: 0.06, a: 'right' },
@@ -960,6 +896,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
       const precioUnitario = item.unitPrice;
       const precioTotal = item.lineTotal;
       
+      // Limpiar código: eliminar "PROD-" si es solo eso
       let codigo = item.codigoPrincipal || '';
       if (codigo === 'PROD-' || codigo === 'PROD') codigo = '';
       
@@ -1002,19 +939,15 @@ export async function generateInvoicePdf(schema, invoiceId) {
 
     const totRows = [];
     
-    // 🔥 MOSTRAR SUBTOTALES POR TASA
-    const tasasOrdenadas = Object.keys(subtotalByRate)
-      .map(Number)
-      .sort((a, b) => b - a);
-
-    for (const rate of tasasOrdenadas) {
+    for (const rate of ivaRates) {
       const subtotalRate = subtotalByRate[rate] || 0;
       if (subtotalRate > 0) {
         totRows.push([`SUBTOTAL ${rate}%`, subtotalRate.toFixed(2)]);
       }
     }
     
-    // Descuento
+    totRows.push(['SUBTOTAL SIN IMPUESTOS', subtotal.toFixed(2)]);
+    
     if (totalDescuento > 0) {
       totRows.push(['TOTAL DESCUENTO', `-${totalDescuento.toFixed(2)}`]);
     } else {
@@ -1023,13 +956,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
     
     totRows.push(['ICE', '0.00']);
     
-    // IVA por tasa
-    const tasasConIVA = Object.keys(ivaByRate)
-      .filter(rate => ivaByRate[rate] > 0)
-      .map(Number)
-      .sort((a, b) => b - a);
-    
-    for (const rate of tasasConIVA) {
+    for (const rate of ivaRates) {
       const ivaAmount = ivaByRate[rate] || 0;
       if (ivaAmount > 0) {
         totRows.push([`IVA ${rate}%`, ivaAmount.toFixed(2)]);
@@ -1049,8 +976,6 @@ export async function generateInvoicePdf(schema, invoiceId) {
          .text(val, totX + 4, ty + 2, { width: totW - 8, align: 'right' });
       ty += totRowH;
     }
-    
-    // TOTAL FINAL
     fill(totX, ty, totW, 14, BK);
     doc.fillColor(WHT).fontSize(8).font('Helvetica-Bold')
        .text('VALOR TOTAL', totX + 4, ty + 3, { width: totW * 0.65 })
@@ -1080,69 +1005,6 @@ export async function generateInvoicePdf(schema, invoiceId) {
 
     doc.fillColor(GR).fontSize(7).font('Helvetica')
        .text('Página 1 de 1', M, y, { width: W, align: 'center' });
-
-    doc.end();
-  });
-}
-
-// ------------------- NOTA DE CRÉDITO PDF -------------------
-export async function generateCreditNotePdf(schema, creditNoteId) {
-  const { rows } = await query(
-    `SELECT * FROM "${schema}".credit_notes WHERE id = $1`, [creditNoteId]
-  );
-  const cn = rows[0];
-  if (!cn) throw new Error('Nota de crédito no encontrada');
-
-  const cfg = await getConfig(schema);
-  const bizName = cfg?.razon_social || cfg?.nombre_comercial || 'EMPRESA';
-  const ruc = cfg?.ruc || '-';
-
-  return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', margin: 50 });
-    const chunks = [];
-    doc.on('data', c => chunks.push(c));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
-    doc.on('error', reject);
-
-    doc.fontSize(16).font('Helvetica-Bold')
-       .text('NOTA DE CRÉDITO', { align: 'center' });
-    doc.moveDown();
-    doc.fontSize(12).font('Helvetica')
-       .text(`Número: ${cn.reference_invoice || cn.id}`)
-       .text(`Fecha: ${new Date(cn.created_at).toLocaleDateString('es-EC')}`)
-       .text(`Cliente: ${cn.customer_name || 'CONSUMIDOR FINAL'}`)
-       .text(`RUC/CI: ${cn.customer_ruc || '9999999999'}`)
-       .text(`Motivo: ${cn.reason || 'Sin motivo especificado'}`);
-    doc.moveDown();
-
-    // Tabla de ítems
-    const items = cn.items || [];
-    if (items.length > 0) {
-      doc.fontSize(10).font('Helvetica-Bold')
-         .text('Detalle:', { underline: true });
-      doc.moveDown(0.5);
-      
-      items.forEach(item => {
-        const qty = item.qty || 1;
-        const desc = item.description || item.name || 'Producto';
-        const price = item.unit_price || 0;
-        const subtotal = item.subtotal || (qty * price);
-        doc.fontSize(9).font('Helvetica')
-           .text(`${qty}x ${desc} - ${price.toFixed(2)} = ${subtotal.toFixed(2)}`);
-      });
-    }
-
-    doc.moveDown();
-    doc.fontSize(10).font('Helvetica-Bold')
-       .text(`Subtotal: $${parseFloat(cn.subtotal).toFixed(2)}`)
-       .text(`IVA: $${parseFloat(cn.iva_amount).toFixed(2)}`)
-       .text(`TOTAL: $${parseFloat(cn.total).toFixed(2)}`)
-       .text(`Saldo disponible: $${parseFloat(cn.remaining_balance).toFixed(2)}`);
-
-    doc.moveDown(2);
-    doc.fontSize(9).font('Helvetica')
-       .text('Firma del responsable:', { align: 'right' })
-       .text('_________________________', { align: 'right' });
 
     doc.end();
   });
