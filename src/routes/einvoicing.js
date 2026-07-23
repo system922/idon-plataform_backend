@@ -243,6 +243,36 @@ router.post('/invoices/:id/email', authMiddleware, requireInvoicingModule, async
   }
 });
 
+
+// GET /api/einvoicing/invoices/:id
+router.get('/invoices/:id', authMiddleware, requireInvoicingModule, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { rows } = await query(
+      `SELECT id, invoice_number, access_key, auth_number,
+              customer_id, customer_name, customer_ruc, customer_email, customer_phone,
+              subtotal, iva_amount, total, discount_amount, items,
+              COALESCE(credited_amount, 0) AS credited_amount,
+              status, sri_message, sri_json,
+              emission_date, auth_date, created_at,
+              (signed_xml IS NOT NULL AND signed_xml <> '') AS has_signed_xml
+         FROM "${schema}".einvoices
+         WHERE id = $1`,
+      [req.params.id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Factura no encontrada' });
+    }
+
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── CREDIT NOTES ─────────────────────────────────────────────────────────────
 
 async function ensureCreditNotesTable(schema) {
