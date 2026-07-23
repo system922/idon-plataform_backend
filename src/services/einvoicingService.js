@@ -164,13 +164,12 @@ export async function emitInvoice(schema, opts) {
     });
 
     // 🔥 PROCESAR ITEMS Y CALCULAR SUBTOTALES POR TASA
-    // Inicializar acumuladores para cada tasa
     const subtotalByRate = {
-      0: 0,   // IVA 0%
-      5: 0,   // IVA 5%
-      8: 0,   // IVA 8%
-      12: 0,  // IVA 12%
-      15: 0,  // IVA 15%
+      0: 0,
+      5: 0,
+      8: 0,
+      12: 0,
+      15: 0,
     };
     
     const ivaByRate = {
@@ -181,46 +180,39 @@ export async function emitInvoice(schema, opts) {
       15: 0,
     };
 
-    // Mapeo de códigos SRI para cada tasa
     const codigoPorcentajeMap = {
-      0: 0,   // IVA 0%
-      5: 5,   // IVA 5%
-      8: 6,   // IVA 8%
-      12: 2,  // IVA 12%
-      15: 4,  // IVA 15%
+      0: 0,
+      5: 5,
+      8: 6,
+      12: 2,
+      15: 4,
     };
 
-    // Procesar cada item
     const detalleItems = items.map((item) => {
       const qty = parseFloat(item.qty || item.quantity || 1);
       const unitPrice = parseFloat(item.unit_price || 0);
       const subtotalItem = parseFloat(item.subtotal || (qty * unitPrice));
       const ivaItem = parseFloat(item.iva_amount || 0);
       
-      // Obtener la tasa de IVA del item
       let tasaIVA = parseFloat(item.iva_rate_pct || item.is_taxable || 0);
       
-      // Si la tasa es 0 pero tiene IVA > 0, inferir la tasa
       if (tasaIVA === 0 && ivaItem > 0 && subtotalItem > 0) {
         const inferredRate = Math.round((ivaItem / subtotalItem) * 100);
         if ([0, 5, 8, 12, 15].includes(inferredRate)) {
           tasaIVA = inferredRate;
         } else if (ivaItem > 0) {
-          tasaIVA = 15; // default
+          tasaIVA = 15;
         }
       }
       
-      // Si tiene IVA 0 y subtotal > 0 pero ivaItem = 0, asegurar tasa 0
       if (ivaItem === 0 && tasaIVA !== 0) {
         tasaIVA = 0;
       }
 
-      // Acumular por tasa
       if (subtotalByRate[tasaIVA] !== undefined) {
         subtotalByRate[tasaIVA] += subtotalItem;
         ivaByRate[tasaIVA] += ivaItem;
       } else {
-        // Si no reconoce la tasa, usar 15%
         subtotalByRate[15] += subtotalItem;
         ivaByRate[15] += ivaItem;
         tasaIVA = 15;
@@ -228,7 +220,6 @@ export async function emitInvoice(schema, opts) {
 
       console.log(`📦 ${item.description}: tasa=${tasaIVA}%, subtotal=${subtotalItem.toFixed(2)}, iva=${ivaItem.toFixed(2)}`);
 
-      // Descuento proporcional por item
       let descuentoItem = 0;
       const totalGlobal = subtotalItem + ivaItem;
       if (totalDescuento > 0 && totalFactura > 0) {
@@ -256,14 +247,12 @@ export async function emitInvoice(schema, opts) {
       };
     });
 
-    // Calcular totales por tasa
     const subtotalSinIVA = subtotalByRate[0] || 0;
     const subtotalConIVA = Object.entries(subtotalByRate)
       .filter(([rate]) => Number(rate) > 0)
       .reduce((sum, [_, val]) => sum + val, 0);
     const subtotalTotal = subtotalSinIVA + subtotalConIVA;
     
-    // Calcular IVA total desde los items
     const ivaTotal = Object.values(ivaByRate).reduce((sum, val) => sum + val, 0);
 
     console.log('📊 SUBTOTALES POR TASA:', {
@@ -277,10 +266,8 @@ export async function emitInvoice(schema, opts) {
       'TOTAL FACTURA': (subtotalTotal + ivaTotal - totalDescuento).toFixed(2)
     });
 
-    // 🔥 CONSTRUIR totalConImpuestos con todas las tasas encontradas
     const totalImpuestoArray = [];
     
-    // Tasas que tienen valor
     const tasasConValor = Object.keys(subtotalByRate)
       .filter(rate => subtotalByRate[rate] > 0)
       .map(Number)
@@ -300,7 +287,6 @@ export async function emitInvoice(schema, opts) {
       }
     });
 
-    // Si no hay ningún impuesto, agregar bloque con tasa 0
     if (totalImpuestoArray.length === 0) {
       totalImpuestoArray.push({
         codigo: 2,
@@ -312,7 +298,7 @@ export async function emitInvoice(schema, opts) {
 
     console.log('📊 TOTAL IMPUESTOS ARRAY:', totalImpuestoArray);
 
-    // 🔥 CONSTRUIR EL COMPROBANTE
+    // 🔥 CONSTRUIR EL COMPROBANTE - CORREGIDO
     const comprobante = {
       infoTributaria: {
         ruc: cfg.ruc,
@@ -333,8 +319,8 @@ export async function emitInvoice(schema, opts) {
         razonSocialComprador: razonComprador,
         identificacionComprador: idComprador,
         
-        // ✅ IMPORTANTE: totalSinImpuestos = subtotal de productos con IVA 0% solamente
-        totalSinImpuestos: Math.round(subtotalSinIVA * 100) / 100,
+        // ✅ CORREGIDO: totalSinImpuestos = subtotal de TODOS los productos (sin IVA)
+        totalSinImpuestos: Math.round(subtotalTotal * 100) / 100,
         
         totalDescuento: Math.round(totalDescuento * 100) / 100,
         propina: 0,
@@ -378,7 +364,6 @@ export async function emitInvoice(schema, opts) {
 
     const phone = customer.phone || opts.customer_phone || null;
 
-    // Asegurar columnas necesarias
     try {
       await client.query(`ALTER TABLE "${schema}".einvoices ADD COLUMN IF NOT EXISTS discount_amount NUMERIC(10,2) DEFAULT 0`);
     } catch { }
@@ -390,7 +375,6 @@ export async function emitInvoice(schema, opts) {
       totalDescuento: totalDescuento.toFixed(2)
     });
 
-    // 🔥 GUARDAR EN BASE DE DATOS
     const { rows } = await client.query(
       `INSERT INTO "${schema}".einvoices
          (order_id, invoice_number, access_key, auth_number,
@@ -402,9 +386,9 @@ export async function emitInvoice(schema, opts) {
       [
         opts.order_id || null, invoiceNumber, claveAcceso, null,
         customer.id || null, razonComprador, idComprador, customer.email || null, phone,
-        subtotalTotal.toFixed(2),  // subtotal TOTAL (suma de todos los productos)
-        ivaTotal.toFixed(2),       // IVA total
-        (subtotalTotal + ivaTotal - totalDescuento).toFixed(2), // total
+        subtotalTotal.toFixed(2),
+        ivaTotal.toFixed(2),
+        (subtotalTotal + ivaTotal - totalDescuento).toFixed(2),
         JSON.stringify(opts.items || []),
         totalDescuento.toFixed(2),
         signedXml,
@@ -416,7 +400,6 @@ export async function emitInvoice(schema, opts) {
     await client.query('COMMIT');
     const savedInvoice = rows[0];
 
-    // Enviar a autorización SRI en segundo plano
     _authorizeSriBackground(schema, savedInvoice, signedXml, claveAcceso, envStr).catch((err) => {
       console.error('Error en autorización SRI background:', err);
     });
