@@ -6,6 +6,33 @@ import { authMiddleware } from '../middleware/auth.js';
 
 const router = express.Router();
 
+// Validation function
+const validateEmployeeData = (data, isUpdate = false) => {
+  const errors = [];
+  
+  // For create: check required fields
+  if (!isUpdate) {
+    if (!data.full_name || !data.full_name.trim()) {
+      errors.push('full_name is required');
+    }
+    if (!data.email || !data.email.trim()) {
+      errors.push('email is required');
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)) {
+      errors.push('email is invalid');
+    }
+    if (!data.position || !data.position.trim()) {
+      errors.push('position is required');
+    }
+  } else {
+    // For update: if fields are provided, validate them
+    if (data.email !== undefined && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)) {
+      errors.push('email is invalid');
+    }
+  }
+  
+  return errors;
+};
+
 /**
  * GET /api/employees
  * List all employees (optionally filter by active, etc)
@@ -59,6 +86,11 @@ router.post('/', authMiddleware, async (req, res) => {
     if (!schema)
       return res.status(400).json({ error: 'Business context required' });
 
+    const validationErrors = validateEmployeeData(req.body);
+    if (validationErrors.length > 0) {
+      return res.status(400).json({ errors: validationErrors });
+    }
+
     const {
       user_id,
       full_name,
@@ -106,6 +138,12 @@ router.put('/:id', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
+    
+    const validationErrors = validateEmployeeData(req.body, true);
+    if (validationErrors.length > 0) {
+      return res.status(400).json({ errors: validationErrors });
+    }
+
     const { id } = req.params;
     const {
       user_id,
