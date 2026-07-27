@@ -9,6 +9,7 @@ const router = express.Router();
 /**
  * POST /api/ordenes
  * Crea una nueva orden POS con numeración diaria (USANDO FUNCIÓN DE BD)
+ * Guarda todos los datos del item en pos_order_items (unit_price, tax_rate, iva_amount, line_total, product_name)
  */
 router.post('/', authMiddleware, async (req, res) => {
   const client = await getClient();
@@ -44,14 +45,13 @@ router.post('/', authMiddleware, async (req, res) => {
       )
     `);
 
-    // 🔥🔥🔥 USAR LA FUNCIÓN DE BASE DE DATOS - SIMPLE, SEGURA Y CON HORA ECUADOR 🔥🔥🔥
-    // La función get_next_order_number() obtiene la fecha de Ecuador automáticamente
+    // Obtener siguiente número
     const counterResult = await client.query(`
       SELECT ${schema}.get_next_order_number() as next_number
     `);
     
     const dailyNumber = counterResult.rows[0].next_number;
-    const datePrefix = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' }).replace(/-/g, '').slice(2); // "260512"
+    const datePrefix = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' }).replace(/-/g, '').slice(2);
     const orderNumber = customOrderNumber || `${datePrefix}-${String(dailyNumber).padStart(3, '0')}`;
 
     console.log(`📊 Orden #${orderNumber} generada con función de BD`);
@@ -65,32 +65,18 @@ router.post('/', authMiddleware, async (req, res) => {
       customerName = cRes.rows[0]?.name || null;
     }
 
-    // Calcular totales y validar productos
+    // Calcular totales desde los items enviados (el frontend envía unit_price, tax_rate)
     let calculatedSubtotal = 0;
     let calculatedTax = 0;
     let calculatedTotal = 0;
-    const productosData = [];
 
     for (const item of items) {
-      const productRes = await client.query(
-        `SELECT id, name, selling_price, tax_rate FROM "${schema}".products WHERE id = $1`,
-        [item.product_id]
-      );
-
-      if (productRes.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: `Producto no encontrado: ${item.product_id}` });
-      }
-
-      const product = productRes.rows[0];
-      const quantity = item.quantity || 1;
-      const itemSubtotal = product.selling_price * quantity;
-      const itemTax = product.tax_rate * quantity;
-
-      calculatedSubtotal += itemSubtotal;
-      calculatedTax += itemTax;
-      calculatedTotal += itemSubtotal + itemTax;
-      productosData.push({ ...product, quantity, notes: item.notes || null });
+      const unitPrice = Number(item.unit_price) || 0;
+      const taxRate = Number(item.tax_rate) || 0;
+      const quantity = Number(item.quantity) || 1;
+      calculatedSubtotal += unitPrice * quantity;
+      calculatedTax += taxRate * quantity;
+      calculatedTotal += (unitPrice + taxRate) * quantity;
     }
 
     // Insertar orden con el número diario
@@ -116,10 +102,9 @@ router.post('/', authMiddleware, async (req, res) => {
 
     const pedido = insertRes.rows[0];
 
-    // Insertar items con todos los campos
+    // Insertar items con todos los campos (unit_price, tax_rate, iva_amount, line_total, product_name)
     const insertedItems = [];
     for (const item of items) {
-      // El frontend envía: product_id, product_name, quantity, unit_price, line_total, tax_rate, iva_amount, notes
       const unitPrice = Number(item.unit_price) || 0;
       const taxRate = Number(item.tax_rate) || 0;
       const quantity = Number(item.quantity) || 1;
@@ -161,7 +146,6 @@ router.post('/', authMiddleware, async (req, res) => {
     await client.query('ROLLBACK');
     console.error('Error al crear orden:', err);
     
-    // Manejar error de duplicado (por si acaso)
     if (err.code === '23505') {
       return res.status(409).json({ 
         error: 'Conflicto al generar número de orden. Por favor intente nuevamente.',
@@ -177,7 +161,7 @@ router.post('/', authMiddleware, async (req, res) => {
 
 /**
  * GET /api/ordenes
- * Lista órdenes con sus items (todo desde products mediante JOIN)
+ * Lista órdenes con sus items (usando los campos guardados en pos_order_items)
  * Parámetros: status, date (YYYY-MM-DD), limit
  */
 router.get('/', authMiddleware, async (req, res) => {
@@ -190,7 +174,6 @@ router.get('/', authMiddleware, async (req, res) => {
     let conditions = '';
     let params = [];
 
-    // 🔥 NUEVO: Agregar soporte para filtro por fecha
     if (date) {
       conditions = `WHERE DATE(o.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Guayaquil') = $1`;
       params.push(date);
@@ -218,7 +201,6 @@ router.get('/', authMiddleware, async (req, res) => {
         conditions = `WHERE (o.status IN ('pending', 'sent', 'completed') OR o.status IS NULL)`;
         params = [];
       } else if (status === 'active') {
-        // Todo excepto paid y draft
         conditions = `WHERE o.status NOT IN ('paid', 'draft') OR o.status IS NULL`;
         params = [];
       } else {
@@ -245,10 +227,13 @@ router.get('/', authMiddleware, async (req, res) => {
              json_build_object(
                'id',           i.id,
                'product_id',   i.product_id,
-               'product_name', p.name,
+               'product_name', COALESCE(i.product_name, p.name),
                'quantity',     i.quantity,
-               'selling_price', p.selling_price,
-               'tax_rate',     p.tax_rate,
+               'unit_price',   i.unit_price,
+               'selling_price', i.unit_price, -- ← de la orden, no de products
+               'tax_rate',     i.tax_rate,    -- ← de la orden
+               'iva_amount',   i.iva_amount,
+               'line_total',   i.line_total,
                'notes',        i.notes,
                'paid',         COALESCE(i.paid, false)
              ) ORDER BY i.created_at
@@ -296,7 +281,7 @@ router.get('/unprinted', authMiddleware, async (req, res) => {
              json_build_object(
                'id',           i.id,
                'product_id',   i.product_id,
-               'product_name', p.name,
+               'product_name', COALESCE(i.product_name, p.name),
                'quantity',     i.quantity,
                'notes',        i.notes,
                'paid',         COALESCE(i.paid, false)
@@ -340,7 +325,6 @@ router.post('/mark-printed', authMiddleware, async (req, res) => {
       ADD COLUMN IF NOT EXISTS printed BOOLEAN NOT NULL DEFAULT FALSE
     `);
 
-    // Atomic claim: solo actualiza si aún NO está impresa → evita doble impresión entre pestañas
     const result = await query(
       `UPDATE "${schema}".pos_orders SET printed = TRUE
        WHERE id = ANY($1::uuid[]) AND printed = FALSE
@@ -357,7 +341,7 @@ router.post('/mark-printed', authMiddleware, async (req, res) => {
 
 /**
  * GET /api/ordenes/:id
- * Obtiene una orden específica con sus items
+ * Obtiene una orden específica con sus items (usando campos guardados)
  */
 router.get('/:id', authMiddleware, async (req, res) => {
   try {
@@ -375,10 +359,13 @@ router.get('/:id', authMiddleware, async (req, res) => {
              json_build_object(
                'id',           i.id,
                'product_id',   i.product_id,
-               'product_name', p.name,
+               'product_name', COALESCE(i.product_name, p.name),
                'quantity',     i.quantity,
-               'selling_price', p.selling_price,
-               'tax_rate',     p.tax_rate,
+               'unit_price',   i.unit_price,
+               'selling_price', i.unit_price,
+               'tax_rate',     i.tax_rate,
+               'iva_amount',   i.iva_amount,
+               'line_total',   i.line_total,
                'notes',        i.notes,
                'paid',         COALESCE(i.paid, false)
              ) ORDER BY i.created_at
@@ -707,6 +694,7 @@ router.post('/:id/kitchen-ready', authMiddleware, async (req, res) => {
  * PATCH /api/ordenes/:id
  * Actualiza los items de una orden (edición desde historial)
  * Body: { items: [{ product_id, quantity, notes }], subtotal, tax_amount, total }
+ * También actualiza los campos en pos_order_items con los precios actuales.
  */
 router.patch('/:id', authMiddleware, async (req, res) => {
   const client = await getClient();
@@ -731,37 +719,64 @@ router.patch('/:id', authMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'Orden no encontrada' });
     }
 
-    // Recalcular totales desde BD (igual que POST)
+    // Recalcular totales desde los items enviados (el frontend envía unit_price, tax_rate)
     let calculatedSubtotal = 0;
     let calculatedTax = 0;
     let calculatedTotal = 0;
     const productosData = [];
 
     for (const item of items) {
-      const productRes = await client.query(
-        `SELECT id, name, selling_price, tax_rate FROM "${schema}".products WHERE id = $1`,
-        [item.product_id]
-      );
-      if (productRes.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: `Producto no encontrado: ${item.product_id}` });
+      // Si el item no tiene unit_price/tax_rate, obtener de products
+      let unitPrice = Number(item.unit_price) || 0;
+      let taxRate = Number(item.tax_rate) || 0;
+      let productName = item.product_name || 'Producto';
+
+      if (unitPrice === 0 && taxRate === 0) {
+        const productRes = await client.query(
+          `SELECT id, name, selling_price, tax_rate FROM "${schema}".products WHERE id = $1`,
+          [item.product_id]
+        );
+        if (productRes.rows.length === 0) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: `Producto no encontrado: ${item.product_id}` });
+        }
+        const product = productRes.rows[0];
+        unitPrice = Number(product.selling_price) || 0;
+        taxRate = Number(product.tax_rate) || 0;
+        productName = product.name;
       }
-      const product = productRes.rows[0];
-      const quantity        = Number(item.quantity) || 1;
-      const sellingPrice    = Number(product.selling_price) || 0;
-      const taxRate         = Number(product.tax_rate)      || 0;
-      calculatedSubtotal   += sellingPrice * quantity;
-      calculatedTax        += taxRate      * quantity;
-      calculatedTotal      += (sellingPrice + taxRate) * quantity;
-      productosData.push({ ...product, quantity, notes: item.notes || null });
+
+      const quantity = Number(item.quantity) || 1;
+      const itemSubtotal = unitPrice * quantity;
+      const itemTax = taxRate * quantity;
+      calculatedSubtotal += itemSubtotal;
+      calculatedTax += itemTax;
+      calculatedTotal += (unitPrice + taxRate) * quantity;
+      productosData.push({ 
+        product_id: item.product_id,
+        productName,
+        quantity,
+        unitPrice,
+        taxRate,
+        notes: item.notes || null 
+      });
     }
 
+    // Eliminar items antiguos y insertar nuevos
     await client.query(`DELETE FROM "${schema}".pos_order_items WHERE order_id = $1`, [id]);
     for (const prod of productosData) {
       await client.query(
-        `INSERT INTO "${schema}".pos_order_items (order_id, product_id, quantity, notes)
-         VALUES ($1, $2, $3, $4)`,
-        [id, prod.id, prod.quantity, prod.notes]
+        `INSERT INTO "${schema}".pos_order_items
+          (order_id, product_id, product_name, quantity,
+            unit_price, tax_rate, iva_amount, line_total, notes)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [
+          id, prod.product_id, prod.productName, prod.quantity,
+          prod.unitPrice, prod.taxRate,
+          prod.taxRate * prod.quantity,
+          (prod.unitPrice + prod.taxRate) * prod.quantity,
+          prod.notes
+        ]
       );
     }
 
