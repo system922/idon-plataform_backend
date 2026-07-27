@@ -517,6 +517,8 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
 /**
  * POST /api/ordenes/:id/pay-items
  * Cobra SOLO algunos items de la orden (Split Payment)
+ * Marca paid=true en los items y actualiza status de la orden a 'paid' si todos los items están pagados.
+ * NO modifica subtotal, tax_amount, total de pos_orders.
  */
 router.post('/:id/pay-items', authMiddleware, async (req, res) => {
   const client = await getClient();
@@ -525,20 +527,22 @@ router.post('/:id/pay-items', authMiddleware, async (req, res) => {
     if (!schema) return res.status(400).json({ error: 'Business context required' });
 
     const { id } = req.params;
-    const { item_ids = [], amount_paid, payment_method = 'cash', cliente_id, notes } = req.body;
+    const { item_ids = [], payment_method = 'cash' } = req.body;
 
     console.log('=== pay-items request ===');
     console.log('order_id:', id);
     console.log('item_ids recibidos:', item_ids);
-    console.log('tipo primer item_id:', typeof item_ids[0]);
 
     if (!item_ids.length) {
       return res.status(400).json({ error: 'Debe enviar items a cobrar' });
     }
 
-    // Verificar existencia de items
+    await client.query('BEGIN');
+
+    // 1. Verificar que los items existan y no estén pagados
     const checkExist = await client.query(
-      `SELECT id, paid FROM "${schema}".pos_order_items WHERE id = ANY($1::uuid[]) AND order_id = $2`,
+      `SELECT id, paid FROM "${schema}".pos_order_items 
+       WHERE id = ANY($1::uuid[]) AND order_id = $2`,
       [item_ids, id]
     );
     if (checkExist.rows.length === 0) {
@@ -553,25 +557,17 @@ router.post('/:id/pay-items', authMiddleware, async (req, res) => {
     }
     const realItemIds = itemsPorPagar.map(row => row.id);
 
-    await client.query('BEGIN');
-
-    // Obtener precios
+    // 2. Obtener precios desde pos_order_items (unit_price, tax_rate)
     const itemsRes = await client.query(
-      `SELECT i.id, i.quantity, p.selling_price, p.tax_rate
-       FROM "${schema}".pos_order_items i
-       LEFT JOIN "${schema}".products p ON i.product_id = p.id
-       WHERE i.id = ANY($1::uuid[]) AND i.order_id = $2`,
+      `SELECT id, quantity, unit_price, tax_rate
+       FROM "${schema}".pos_order_items
+       WHERE id = ANY($1::uuid[]) AND order_id = $2`,
       [realItemIds, id]
     );
 
-    if (itemsRes.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'No se pudieron obtener los detalles de los items' });
-    }
-
     let subtotal = 0, taxTotal = 0, total = 0;
     for (const i of itemsRes.rows) {
-      const price = i.selling_price || 0;
+      const price = i.unit_price || 0;
       const tax = i.tax_rate || 0;
       const qty = i.quantity || 1;
       subtotal += price * qty;
@@ -579,7 +575,7 @@ router.post('/:id/pay-items', authMiddleware, async (req, res) => {
       total += (price + tax) * qty;
     }
 
-    // Insertar pago
+    // 3. Registrar el pago en pos_payments
     await client.query(
       `INSERT INTO "${schema}".pos_payments
        (order_id, payment_method, amount, status, paid_at)
@@ -587,62 +583,43 @@ router.post('/:id/pay-items', authMiddleware, async (req, res) => {
       [id, payment_method, total]
     );
 
-    // Marcar items como pagados
-    const updateRes = await client.query(
-      `UPDATE "${schema}".pos_order_items SET paid = TRUE WHERE id = ANY($1::uuid[]) RETURNING id`,
+    // 4. Marcar los items como pagados
+    await client.query(
+      `UPDATE "${schema}".pos_order_items SET paid = TRUE WHERE id = ANY($1::uuid[])`,
       [realItemIds]
     );
-    console.log(`✅ Items marcados como pagados: ${updateRes.rowCount}`);
+    console.log(`✅ Items marcados como pagados: ${realItemIds.length}`);
 
-    // Calcular restantes
+    // 5. Verificar si quedan items sin pagar en la orden
     const remainingRes = await client.query(
-      `SELECT
-         COALESCE(SUM(p.selling_price * i.quantity), 0) as subtotal,
-         COALESCE(SUM(p.tax_rate * i.quantity), 0) as tax,
-         COALESCE(SUM((p.selling_price + p.tax_rate) * i.quantity), 0) as total
-       FROM "${schema}".pos_order_items i
-       LEFT JOIN "${schema}".products p ON i.product_id = p.id
-       WHERE i.order_id = $1 AND COALESCE(i.paid, false) = false`,
+      `SELECT COUNT(*) AS pending_count
+       FROM "${schema}".pos_order_items
+       WHERE order_id = $1 AND COALESCE(paid, false) = false`,
       [id]
     );
+    const pendingCount = parseInt(remainingRes.rows[0].pending_count, 10);
 
-    const remainingSubtotal = parseFloat(remainingRes.rows[0].subtotal);
-    const remainingTax = parseFloat(remainingRes.rows[0].tax);
-    const remainingTotal = parseFloat(remainingRes.rows[0].total);
-    const newStatus = remainingTotal === 0 ? 'paid' : 'pending';
-
-    // Actualizar la orden
-    if (newStatus === 'paid') {
+    // 6. Si no quedan items pendientes, cambiar status de la orden a 'paid'
+    if (pendingCount === 0) {
       await client.query(
         `UPDATE "${schema}".pos_orders
-         SET subtotal = $1,
-             tax_amount = $2,
-             total = $3,
-             status = $4,
-             updated_at = NOW()
-         WHERE id = $5`,
-        [remainingSubtotal, remainingTax, remainingTotal, newStatus, id]
+         SET status = 'paid', updated_at = NOW()
+         WHERE id = $1`,
+        [id]
       );
+      console.log(`✅ Orden ${id} marcada como paid (todos los items pagados)`);
     } else {
-      await client.query(
-        `UPDATE "${schema}".pos_orders
-         SET subtotal = $1,
-             tax_amount = $2,
-             total = $3,
-             updated_at = NOW()
-         WHERE id = $4`,
-        [remainingSubtotal, remainingTax, remainingTotal, id]
-      );
+      // Si quedan items pendientes, mantener estado (no cambiar)
+      console.log(`⏳ Quedan ${pendingCount} items pendientes, orden sigue en estado actual`);
     }
 
     await client.query('COMMIT');
-    console.log(`Transacción completada. Estado de la orden: ${newStatus}`);
 
     res.json({
       success: true,
       paid: { subtotal, tax: taxTotal, total },
-      remaining: { subtotal: remainingSubtotal, tax: remainingTax, total: remainingTotal },
-      status: newStatus
+      remaining_items: pendingCount,
+      status: pendingCount === 0 ? 'paid' : 'pending'
     });
 
   } catch (err) {
