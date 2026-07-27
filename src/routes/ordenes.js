@@ -116,22 +116,28 @@ router.post('/', authMiddleware, async (req, res) => {
 
     const pedido = insertRes.rows[0];
 
-    // Insertar items
+    // Insertar items con todos los campos
     const insertedItems = [];
-    for (const prod of productosData) {
+    for (const item of items) {
+      // El frontend envía: product_id, product_name, quantity, unit_price, line_total, tax_rate, iva_amount, notes
+      const unitPrice = Number(item.unit_price) || 0;
+      const taxRate = Number(item.tax_rate) || 0;
+      const quantity = Number(item.quantity) || 1;
+      const ivaAmount = Number(item.iva_amount) || (taxRate * quantity);
+      const lineTotal = Number(item.line_total) || ((unitPrice + taxRate) * quantity);
+      const productName = item.product_name || 'Producto';
+      const notes = item.notes || null;
+
       const itemRes = await client.query(
         `INSERT INTO "${schema}".pos_order_items
-           (order_id, product_id, quantity, notes)
-         VALUES ($1, $2, $3, $4)
-         RETURNING *`,
-        [pedido.id, prod.id, prod.quantity, prod.notes]
+          (order_id, product_id, product_name, quantity,
+            unit_price, tax_rate, iva_amount, line_total, notes)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING *`,
+        [pedido.id, item.product_id, productName, quantity,
+        unitPrice, taxRate, ivaAmount, lineTotal, notes]
       );
-      insertedItems.push({
-        ...itemRes.rows[0],
-        product_name:  prod.name,
-        selling_price: prod.selling_price,
-        tax_rate:      prod.tax_rate,
-      });
+      insertedItems.push(itemRes.rows[0]);
     }
 
     await client.query('COMMIT');
