@@ -128,4 +128,52 @@ router.delete('/:id', authMiddleware, async (req, res) => {
   }
 });
 
+router.post('/composite', authMiddleware, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const schema = await getSchemaName(req);
+    const { code, name, description, unit, unit_cost, recipe } = req.body;
+    
+    await client.query('BEGIN');
+    
+    // 1. Crear la receta
+    const recipeResult = await client.query(`
+      INSERT INTO "${schema}".recipes 
+        (description, yield_qty, yield_unit, is_active)
+      VALUES ($1, $2, $3, true)
+      RETURNING id
+    `, [recipe.description, recipe.yield_qty, recipe.yield_unit]);
+    
+    const recipeId = recipeResult.rows[0].id;
+    
+    // 2. Crear la materia prima compuesta
+    const materialResult = await client.query(`
+      INSERT INTO "${schema}".raw_materials
+        (code, name, description, unit, unit_cost, is_composite, recipe_id, is_active)
+      VALUES ($1, $2, $3, $4, $5, true, $6, true)
+      RETURNING id
+    `, [code, name, description, unit, unit_cost, recipeId]);
+    
+    const materialId = materialResult.rows[0].id;
+    
+    // 3. Agregar los ingredientes a la receta
+    for (const ing of recipe.ingredients) {
+      await client.query(`
+        INSERT INTO "${schema}".recipe_ingredients
+          (recipe_id, raw_material_id, quantity, unit, unit_cost, total_cost)
+        VALUES ($1, $2, $3, $4, $5, $6)
+      `, [recipeId, ing.raw_material_id, ing.quantity, ing.unit, ing.unit_cost, ing.total_cost]);
+    }
+    
+    await client.query('COMMIT');
+    res.status(201).json({ success: true, id: materialId });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('❌ Error en POST /raw-materials/composite:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
 export default router;
