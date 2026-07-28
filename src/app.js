@@ -17,7 +17,7 @@ import securityRoutes        from './routes/security.js';
 import usersRoutes           from './routes/users.js';
 import cashRegisterRoutes    from './routes/cashRegister.js';
 import businessStatusRoutes  from './routes/businessStatus.js';
-import businessTypeRoutes_r  from './routes/businessTypeRoutes.js'; // alias para ruta pública
+import businessTypeRoutes_r  from './routes/businessTypeRoutes.js';
 import authRoutes            from './routes/auth.js';
 import registerRoutes        from './routes/register.js';
 
@@ -62,6 +62,7 @@ import graphRoutes           from './routes/graphRoutes.js';
 import inventoryRoutes       from './routes/inventoryRoutes.js';
 import suppliersRoutes       from './routes/suppliersRoutes.js';
 import recipesRoutes         from './routes/recipesRoutes.js';
+import rawMateriaPrimaRoutes from './routes/rawMaterials.js';
 import employeesRoutes       from './routes/employeesRoutes.js';
 import attendanceRoutes      from './routes/attendanceRoutes.js';
 import payrollRoutes         from './routes/payrollRoutes.js';
@@ -164,6 +165,7 @@ app.use('/api/graphs',              ...authBusiness, graphRoutes);
 app.use('/api/inventory',           ...authBusiness, inventoryRoutes);
 app.use('/api/suppliers',           ...authBusiness, suppliersRoutes);
 app.use('/api/recipes',             ...authBusiness, recipesRoutes);
+app.use('/api/raw-materials',       ...authBusiness, rawMateriaPrimaRoutes);
 app.use('/api/employees',           ...authBusiness, employeesRoutes);
 app.use('/api/attendance',          ...authBusiness, attendanceRoutes);
 app.use('/api/payroll',             ...authBusiness, payrollRoutes);
