@@ -11,9 +11,10 @@ router.get('/', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     const result = await query(`
-      SELECT r.*, c.name AS category_name
+      SELECT r.*, c.name AS category_name, p.name AS product_name
       FROM "${schema}".recipes r
       LEFT JOIN "${schema}".categories c ON c.id = r.category_id
+      LEFT JOIN "${schema}".products p ON p.id = r.product_id
       WHERE r.is_active = true
       ORDER BY r.name
     `);
@@ -26,13 +27,13 @@ router.get('/', authMiddleware, async (req, res) => {
 router.post('/', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    const { name, description, category_id, yield_qty, yield_unit } = req.body;
+    const { name, description, category_id, product_id, yield_qty, yield_unit } = req.body;
     if (!name) return res.status(400).json({ error: 'El nombre es requerido' });
     const { rows } = await query(`
-      INSERT INTO "${schema}".recipes (name, description, category_id, yield_qty, yield_unit)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO "${schema}".recipes (name, description, category_id, product_id, yield_qty, yield_unit)
+      VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING *
-    `, [name, description || null, category_id || null, yield_qty || 1, yield_unit || 'unidad']);
+    `, [name, description || null, category_id || null, product_id || null, yield_qty || 1, yield_unit || 'unidad']);
     res.status(201).json(rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -42,14 +43,14 @@ router.post('/', authMiddleware, async (req, res) => {
 router.put('/:id', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    const { name, description, category_id, yield_qty, yield_unit } = req.body;
+    const { name, description, category_id, product_id, yield_qty, yield_unit } = req.body;
     if (!name) return res.status(400).json({ error: 'El nombre es requerido' });
     const { rows } = await query(`
       UPDATE "${schema}".recipes
-      SET name=$1, description=$2, category_id=$3, yield_qty=$4, yield_unit=$5, updated_at=NOW()
-      WHERE id=$6
+      SET name=$1, description=$2, category_id=$3, product_id=$4, yield_qty=$5, yield_unit=$6, updated_at=NOW()
+      WHERE id=$7
       RETURNING *
-    `, [name, description || null, category_id || null, yield_qty || 1, yield_unit || 'unidad', req.params.id]);
+    `, [name, description || null, category_id || null, product_id || null, yield_qty || 1, yield_unit || 'unidad', req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Receta no encontrada' });
     res.json(rows[0]);
   } catch (err) {
