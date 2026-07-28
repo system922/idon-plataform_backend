@@ -7,8 +7,6 @@ const pool = new Pool({
   connectionString: env.database.connectionString,
 });
 
-// Establece zona horaria Ecuador en cada conexión del pool.
-// Así NOW() y CURRENT_TIMESTAMP devuelven hora Ecuador y DATE() opera correctamente.
 pool.on('connect', (client) => {
   client.query("SET timezone = 'America/Guayaquil'").catch((err) => {
     console.error('Error setting timezone on DB connection:', err.message);
@@ -22,30 +20,11 @@ pool.on('error', (err) => {
 export default pool;
 
 export const query = async (text, params) => {
-  const start = Date.now();
   try {
     const result = await pool.query(text, params);
-    const duration = Date.now() - start;
-    
-    // LOG detallado para is_taxable
-    if (text.includes('is_taxable')) {
-      console.log('📋 QUERY CON is_taxable:', {
-        sql: text.substring(0, 200),
-        params,
-        rowCount: result.rowCount,
-        primerRow: result.rows[0] ? {
-          name: result.rows[0].name,
-          is_taxable: result.rows[0].is_taxable,
-          is_taxable_type: typeof result.rows[0].is_taxable,
-          is_taxable_json: JSON.stringify(result.rows[0].is_taxable)
-        } : null
-      });
-    }
-    
-    console.log('Executed query', { text: text.substring(0, 100), duration, rows: result.rowCount });
     return result;
   } catch (error) {
-    console.error('Database error', { text, error });
+    console.error('Database error:', error.message);
     throw error;
   }
 };
