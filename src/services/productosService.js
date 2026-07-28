@@ -110,13 +110,13 @@ export const update = async (schema, id, body) => {
     category_id = body.category_id === '' ? null : body.category_id;
   }
 
-  // ✅ Leer is_active del body y asignar a "isActive" (camelCase)
   const isActive = toBool(
     body.active ?? body.estado ?? body.is_active ?? currentProduct.is_active,
     currentProduct.is_active
   );
 
-  // ✅ El modelo espera "isActive" (camelCase)
+  console.log('🔍 VALOR DE isActive A ACTUALIZAR:', isActive);
+
   const result = await productModel.updateById(schema, id, {
     name: toText(body.name || body.nombre) || currentProduct.name,
     description: toText(body.description || body.descripcion) || currentProduct.description,
@@ -124,7 +124,7 @@ export const update = async (schema, id, body) => {
     unit_cost: toNum(body.unit_cost ?? body.costo, currentProduct.unit_cost),
     taxRate: taxValue,
     isTaxable: taxRateSelected,
-    isActive: isActive,                  // ← camelCase
+    isActive: isActive,
     stock: toNum(body.stock, currentProduct.stock),
     category_id,
     sku: toText(body.sku) || currentProduct.sku,
@@ -132,7 +132,7 @@ export const update = async (schema, id, body) => {
     min_stock: toNum(body.min_stock ?? body.minStock, currentProduct.min_stock),
   });
 
-  console.log('✅ Producto actualizado:', { ...result, is_active: result.is_active });
+  console.log('✅ Producto actualizado (servicio):', { ...result, is_active: result.is_active });
   return result;
 };
 
