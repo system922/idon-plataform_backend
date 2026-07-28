@@ -302,4 +302,56 @@ async function recalcCost(schema, recipeId) {
   `, [recipeId]);
 }
 
+// routes/recipes.js - Agregar endpoints para sub-recetas
+
+import { getRecipeIngredientsFlat, calculateRecipeTotalCost, getRecipeTree } from '../services/recipeService.js';
+
+// Obtener ingredientes planos de una receta (incluyendo sub-recetas)
+router.get('/:id/ingredients-flat', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    const { multiplier = 1 } = req.query;
+    
+    const ingredients = await getRecipeIngredientsFlat(schema, req.params.id, Number(multiplier));
+    const totalCost = ingredients.reduce((sum, ing) => sum + Number(ing.total_cost), 0);
+    
+    res.json({
+      recipe_id: req.params.id,
+      ingredients,
+      total_cost: totalCost,
+      ingredient_count: ingredients.length
+    });
+  } catch (err) {
+    console.error('❌ Error en GET /recipes/:id/ingredients-flat:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Obtener árbol de receta (estructura anidada)
+router.get('/:id/tree', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    const tree = await getRecipeTree(schema, req.params.id);
+    if (!tree) {
+      return res.status(404).json({ error: 'Receta no encontrada' });
+    }
+    res.json(tree);
+  } catch (err) {
+    console.error('❌ Error en GET /recipes/:id/tree:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Recalcular costo de una receta (incluyendo sub-recetas)
+router.post('/:id/recalculate', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    const result = await calculateRecipeTotalCost(schema, req.params.id);
+    res.json(result);
+  } catch (err) {
+    console.error('❌ Error en POST /recipes/:id/recalculate:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;
