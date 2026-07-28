@@ -12,29 +12,24 @@ const router = express.Router();
 // Obtener certificado desde archivo o variable
 const getCert = () => {
   try {
-    // 1. Verificar si existe QZ_CERT (variable de entorno)
     if (process.env.QZ_CERT) {
       console.log('[QZ] ✅ Usando QZ_CERT desde variable de entorno');
       return process.env.QZ_CERT;
     }
 
-    // 2. Verificar si existe QZ_CERT_PATH
     const CERT_PATH = process.env.QZ_CERT_PATH || path.resolve(__dirname, '../credentials/override.crt');
     console.log('[QZ] 📂 Intentando leer certificado desde:', CERT_PATH);
 
-    // 3. Verificar si el archivo existe
     if (!fs.existsSync(CERT_PATH)) {
       console.error('[QZ] ❌ El archivo NO existe en:', CERT_PATH);
       throw new Error(`Archivo no encontrado: ${CERT_PATH}`);
     }
 
-    // 4. Leer el archivo
     const cert = fs.readFileSync(CERT_PATH, 'utf8');
     console.log('[QZ] 📄 Tamaño del archivo:', cert.length, 'bytes');
     console.log('[QZ] 📄 Inicio (50 chars):', cert.substring(0, 50));
     console.log('[QZ] 📄 Fin (50 chars):', cert.substring(cert.length - 50));
     
-    // 5. Verificar que sea un certificado válido
     if (!cert.includes('-----BEGIN CERTIFICATE-----') || !cert.includes('-----END CERTIFICATE-----')) {
       console.error('[QZ] ❌ El archivo no parece ser un certificado válido');
       throw new Error('Formato de certificado inválido');
@@ -71,7 +66,6 @@ const getPrivateKey = () => {
   }
 };
 
-// Ruta pública para el certificado
 router.get('/cert', (req, res) => {
   try {
     const cert = getCert();
@@ -83,7 +77,7 @@ router.get('/cert', (req, res) => {
   }
 });
 
-// Ruta para firmar (con autenticación)
+// Ruta para firmar - USANDO RSA-SHA512 en lugar de SHA512
 router.post('/sign', (req, res) => {
   try {
     const data = req.body.data;
@@ -91,13 +85,15 @@ router.post('/sign', (req, res) => {
       return res.status(400).json({ error: 'Missing data to sign' });
     }
 
-    console.log('[QZ] ✍️ Firmando datos...');
+    console.log('[QZ] ✍️ Firmando datos:', data);
     const privateKey = getPrivateKey();
-    const sign = crypto.createSign('SHA512');
+    
+    // 🔥 CAMBIO IMPORTANTE: Usar RSA-SHA512 en lugar de SHA512
+    const sign = crypto.createSign('RSA-SHA512');
     sign.update(data);
     sign.end();
     const signature = sign.sign(privateKey, 'base64');
-    console.log('[QZ] ✅ Firma generada');
+    console.log('[QZ] ✅ Firma generada, longitud:', signature.length);
     res.json({ signature });
   } catch (e) {
     console.error('[QZ] ❌ Error al firmar:', e.message);
