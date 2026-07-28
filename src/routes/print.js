@@ -12,7 +12,7 @@ const getCert = () => {
   // Fallback a archivo (para desarrollo local)
   const fs = require('fs');
   const path = require('path');
-  const CERT_PATH = process.env.QZ_CERT_PATH || path.resolve(__dirname, './credentials/override.crt');
+  const CERT_PATH = process.env.QZ_CERT_PATH || path.resolve(__dirname, '../credentials/override.crt');
   return fs.readFileSync(CERT_PATH, 'utf8');
 };
 
@@ -24,7 +24,7 @@ const getPrivateKey = () => {
   // Fallback a archivo (para desarrollo local)
   const fs = require('fs');
   const path = require('path');
-  const KEY_PATH = process.env.QZ_KEY_PATH || path.resolve(__dirname, './credentials/server.key');
+  const KEY_PATH = process.env.QZ_KEY_PATH || path.resolve(__dirname, '../credentials/server.key');
   return fs.readFileSync(KEY_PATH, 'utf8');
 };
 
