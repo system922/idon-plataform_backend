@@ -11,16 +11,19 @@ const router = express.Router();
 router.get('/', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
+    
+    // CORRECCIÓN: Verificar qué columnas existen en la tabla recipes
+    // Si no tiene category_id, no lo incluyas en el SELECT
     const result = await query(`
-      SELECT r.*, c.name AS category_name, p.name AS product_name, p.product_type
+      SELECT r.*, p.name AS product_name, p.product_type
       FROM "${schema}".recipes r
-      LEFT JOIN "${schema}".categories c ON c.id = r.category_id
       LEFT JOIN "${schema}".products p ON p.id = r.product_id
       WHERE r.is_active = true
       ORDER BY r.name
     `);
     res.json(result.rows);
   } catch (err) {
+    console.error('❌ Error en GET /recipes:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -28,30 +31,33 @@ router.get('/', authMiddleware, async (req, res) => {
 router.post('/', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    const { name, description, category_id, product_id, yield_qty, yield_unit } = req.body;
+    const { name, description, product_id, yield_qty, yield_unit } = req.body;
+    
     if (!name) return res.status(400).json({ error: 'El nombre es requerido' });
+    if (!product_id) return res.status(400).json({ error: 'Debes seleccionar un producto' });
     
     // Verificar que el producto existe y es MANUFACTURED
-    if (product_id) {
-      const productCheck = await query(
-        `SELECT product_type FROM "${schema}".products WHERE id = $1 AND is_active = true`,
-        [product_id]
-      );
-      if (productCheck.rows.length === 0) {
-        return res.status(400).json({ error: 'El producto seleccionado no existe o está inactivo' });
-      }
-      if (productCheck.rows[0].product_type !== 'MANUFACTURED') {
-        return res.status(400).json({ error: 'Solo se pueden crear recetas para productos de tipo MANUFACTURED' });
-      }
+    const productCheck = await query(
+      `SELECT product_type FROM "${schema}".products WHERE id = $1 AND is_active = true`,
+      [product_id]
+    );
+    if (productCheck.rows.length === 0) {
+      return res.status(400).json({ error: 'El producto seleccionado no existe o está inactivo' });
+    }
+    if (productCheck.rows[0].product_type !== 'MANUFACTURED') {
+      return res.status(400).json({ error: 'Solo se pueden crear recetas para productos de tipo MANUFACTURED' });
     }
     
+    // CORRECCIÓN: No incluir category_id si no existe en la tabla
     const { rows } = await query(`
-      INSERT INTO "${schema}".recipes (name, description, category_id, product_id, yield_qty, yield_unit)
-      VALUES ($1, $2, $3, $4, $5, $6)
+      INSERT INTO "${schema}".recipes (name, description, product_id, yield_qty, yield_unit)
+      VALUES ($1, $2, $3, $4, $5)
       RETURNING *
-    `, [name, description || null, category_id || null, product_id || null, yield_qty || 1, yield_unit || 'unidad']);
+    `, [name, description || null, product_id, yield_qty || 1, yield_unit || 'unidad']);
+    
     res.status(201).json(rows[0]);
   } catch (err) {
+    console.error('❌ Error en POST /recipes:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -59,32 +65,35 @@ router.post('/', authMiddleware, async (req, res) => {
 router.put('/:id', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    const { name, description, category_id, product_id, yield_qty, yield_unit } = req.body;
+    const { name, description, product_id, yield_qty, yield_unit } = req.body;
+    
     if (!name) return res.status(400).json({ error: 'El nombre es requerido' });
+    if (!product_id) return res.status(400).json({ error: 'Debes seleccionar un producto' });
     
     // Verificar que el producto existe y es MANUFACTURED
-    if (product_id) {
-      const productCheck = await query(
-        `SELECT product_type FROM "${schema}".products WHERE id = $1 AND is_active = true`,
-        [product_id]
-      );
-      if (productCheck.rows.length === 0) {
-        return res.status(400).json({ error: 'El producto seleccionado no existe o está inactivo' });
-      }
-      if (productCheck.rows[0].product_type !== 'MANUFACTURED') {
-        return res.status(400).json({ error: 'Solo se pueden crear recetas para productos de tipo MANUFACTURED' });
-      }
+    const productCheck = await query(
+      `SELECT product_type FROM "${schema}".products WHERE id = $1 AND is_active = true`,
+      [product_id]
+    );
+    if (productCheck.rows.length === 0) {
+      return res.status(400).json({ error: 'El producto seleccionado no existe o está inactivo' });
+    }
+    if (productCheck.rows[0].product_type !== 'MANUFACTURED') {
+      return res.status(400).json({ error: 'Solo se pueden crear recetas para productos de tipo MANUFACTURED' });
     }
     
+    // CORRECCIÓN: No incluir category_id si no existe en la tabla
     const { rows } = await query(`
       UPDATE "${schema}".recipes
-      SET name=$1, description=$2, category_id=$3, product_id=$4, yield_qty=$5, yield_unit=$6, updated_at=NOW()
-      WHERE id=$7
+      SET name=$1, description=$2, product_id=$3, yield_qty=$4, yield_unit=$5, updated_at=NOW()
+      WHERE id=$6
       RETURNING *
-    `, [name, description || null, category_id || null, product_id || null, yield_qty || 1, yield_unit || 'unidad', req.params.id]);
+    `, [name, description || null, product_id, yield_qty || 1, yield_unit || 'unidad', req.params.id]);
+    
     if (!rows.length) return res.status(404).json({ error: 'Receta no encontrada' });
     res.json(rows[0]);
   } catch (err) {
+    console.error('❌ Error en PUT /recipes:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -97,6 +106,7 @@ router.delete('/:id', authMiddleware, async (req, res) => {
     `, [req.params.id]);
     res.json({ success: true });
   } catch (err) {
+    console.error('❌ Error en DELETE /recipes:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -107,7 +117,7 @@ router.get('/:id/ingredients', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     const result = await query(`
-      SELECT ri.*, rm.name AS raw_material_name
+      SELECT ri.*, rm.name AS ingredient_name, rm.code, rm.unit
       FROM "${schema}".recipe_ingredients ri
       LEFT JOIN "${schema}".raw_materials rm ON rm.id = ri.raw_material_id
       WHERE ri.recipe_id = $1
@@ -115,6 +125,7 @@ router.get('/:id/ingredients', authMiddleware, async (req, res) => {
     `, [req.params.id]);
     res.json(result.rows);
   } catch (err) {
+    console.error('❌ Error en GET /ingredients:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -139,17 +150,19 @@ router.post('/:id/ingredients', authMiddleware, async (req, res) => {
     const material = materialCheck.rows[0];
     const finalUnitCost = unit_cost || material.unit_cost || 0;
     const totalCost = quantity * finalUnitCost;
+    const finalUnit = unit || material.unit || 'unidad';
     
     const { rows } = await query(`
       INSERT INTO "${schema}".recipe_ingredients
         (recipe_id, raw_material_id, quantity, unit, unit_cost, total_cost)
       VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING *
-    `, [req.params.id, raw_material_id, quantity, unit || null, finalUnitCost, totalCost]);
+    `, [req.params.id, raw_material_id, quantity, finalUnit, finalUnitCost, totalCost]);
     
     await recalcCost(schema, req.params.id);
     res.status(201).json(rows[0]);
   } catch (err) {
+    console.error('❌ Error en POST /ingredients:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -161,10 +174,10 @@ router.put('/:id/ingredients/:iid', authMiddleware, async (req, res) => {
     
     if (!quantity || quantity <= 0) return res.status(400).json({ error: 'La cantidad debe ser mayor a 0' });
     
-    // Verificar que la materia prima existe
+    // Si se cambia la materia prima, verificar que existe
     if (raw_material_id) {
       const materialCheck = await query(
-        `SELECT id, unit_cost FROM "${schema}".raw_materials WHERE id = $1 AND is_active = true`,
+        `SELECT id, name, unit_cost FROM "${schema}".raw_materials WHERE id = $1 AND is_active = true`,
         [raw_material_id]
       );
       if (materialCheck.rows.length === 0) {
@@ -173,29 +186,31 @@ router.put('/:id/ingredients/:iid', authMiddleware, async (req, res) => {
       const material = materialCheck.rows[0];
       const finalUnitCost = unit_cost || material.unit_cost || 0;
       const totalCost = quantity * finalUnitCost;
+      const finalUnit = unit || material.unit || 'unidad';
       
       const { rows } = await query(`
         UPDATE "${schema}".recipe_ingredients
         SET raw_material_id=$1, quantity=$2, unit=$3, unit_cost=$4, total_cost=$5
         WHERE id=$6
         RETURNING *
-      `, [raw_material_id, quantity, unit || null, finalUnitCost, totalCost, req.params.iid]);
+      `, [raw_material_id, quantity, finalUnit, finalUnitCost, totalCost, req.params.iid]);
       
       await recalcCost(schema, req.params.id);
-      res.json(rows[0]);
-    } else {
-      // Solo actualizar cantidad y unidad
-      const { rows } = await query(`
-        UPDATE "${schema}".recipe_ingredients
-        SET quantity=$1, unit=$2, total_cost=quantity * unit_cost
-        WHERE id=$3
-        RETURNING *
-      `, [quantity, unit || null, req.params.iid]);
-      
-      await recalcCost(schema, req.params.id);
-      res.json(rows[0]);
+      return res.json(rows[0]);
     }
+    
+    // Solo actualizar cantidad y unidad
+    const { rows } = await query(`
+      UPDATE "${schema}".recipe_ingredients
+      SET quantity=$1, unit=$2, total_cost=quantity * unit_cost
+      WHERE id=$3
+      RETURNING *
+    `, [quantity, unit || 'unidad', req.params.iid]);
+    
+    await recalcCost(schema, req.params.id);
+    res.json(rows[0]);
   } catch (err) {
+    console.error('❌ Error en PUT /ingredients:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -207,6 +222,7 @@ router.delete('/:id/ingredients/:iid', authMiddleware, async (req, res) => {
     await recalcCost(schema, req.params.id);
     res.json({ success: true });
   } catch (err) {
+    console.error('❌ Error en DELETE /ingredients:', err);
     res.status(500).json({ error: err.message });
   }
 });
