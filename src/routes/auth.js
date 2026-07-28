@@ -5,7 +5,6 @@ import { query } from '../config/database.js';
 import { successResponse, errorResponse } from '../utils/response.js';
 import logger from '../utils/logger.js';
 
-
 const router = express.Router();
 
 // ── POST /api/auth/register ─────────────────────────────────────
@@ -66,12 +65,6 @@ router.post('/register-business', async (req, res, next) => {
 
     res.status(201).json(successResponse(result, 'Business registration request created', 201));
 
-    console.log(`\n========================================`);
-    console.log(`[REGISTRO] Nuevo negocio: ${businessName}`);
-    console.log(`[REGISTRO] ownerPhone recibido: "${ownerPhone}"`);
-    console.log(`========================================\n`);
-
-
   } catch (error) {
     if (error.message.includes('already')) {
       return res.status(409).json(errorResponse(error.message, 409));
@@ -95,26 +88,14 @@ router.post('/login', async (req, res, next) => {
     const result = await authService.login(email, password);
     res.json(successResponse(result, 'Login successful'));
   } catch (error) {
-    console.error('❌ Error en login:', error.message);
-    
-    // Error de credenciales - siempre 401
     if (error.message === 'Invalid credentials' || error.message === 'User is inactive') {
       return res.status(401).json(errorResponse(error.message, 401));
     }
-    
-    // 🔥 NUEVO: Si es error de negocio suspendido, devolvemos 200 con el token de todos modos
-    // Pero el frontend debe saber que está suspendido por el campo businessStatus
     if (error.statusCode === 403 || 
         error.message.includes('suspendido') || 
         error.message.includes('pagos pendientes')) {
-      
-      // Aquí deberías llamar a una función que devuelva el token aunque esté suspendido
-      // Pero como authService.login ya no lanza error, este bloque no se ejecutará
-      // Si authService.login sigue lanzando error, modifícalo para que no lo haga
-      
       return res.status(403).json(errorResponse(error.message, 403));
     }
-    
     next(error);
   }
 });
@@ -131,17 +112,12 @@ router.post('/login-business', async (req, res, next) => {
     const result = await authService.loginBusiness(email, password, businessSlug);
     res.json(successResponse(result, 'Business login successful'));
   } catch (error) {
-    console.error('❌ Error en login-business:', error.message);
-    
     if (error.message.includes('Invalid credentials')) {
       return res.status(401).json(errorResponse(error.message, 401));
     }
-    
-    // 🔥 Error de negocio suspendido
     if (error.statusCode === 403 || error.message.includes('suspendido')) {
       return res.status(403).json(errorResponse(error.message, 403));
     }
-    
     next(error);
   }
 });
@@ -166,17 +142,12 @@ router.post('/select-business', async (req, res, next) => {
     const result = await authService.selectBusiness(decoded.userId, businessId);
     res.json(successResponse(result, 'Business selected'));
   } catch (error) {
-    console.error('❌ Error en select-business:', error.message);
-    
     if (error.message.includes('not found') || error.message.includes('denied')) {
       return res.status(403).json(errorResponse(error.message, 403));
     }
-    
-    // 🔥 Error de negocio suspendido
     if (error.statusCode === 403 || error.message.includes('suspendido')) {
       return res.status(403).json(errorResponse(error.message, 403));
     }
-    
     next(error);
   }
 });
@@ -368,7 +339,6 @@ router.post('/validate-jefe-caja', async (req, res) => {
       }
     });
   } catch (err) {
-    console.error('Error validando Jefe/a de Caja:', err);
     return res.status(500).json({ error: 'Error interno' });
   }
 });
