@@ -40,89 +40,102 @@ router.get('/', authMiddleware, async (req, res) => {
   }
 });
 
-router.post('/', authMiddleware, async (req, res) => {
+router.post('/:id/ingredients', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    const { product_id, description, yield_qty, yield_unit } = req.body;
+    const { raw_material_id, quantity, unit, unit_cost, conversion_factor, total_cost } = req.body;
     
-    if (!product_id) {
-      return res.status(400).json({ error: 'Debes seleccionar un producto' });
+    if (!raw_material_id) {
+      return res.status(400).json({ error: 'La materia prima es requerida' });
     }
     
-    // Verificar que el producto existe y es MANUFACTURED
-    const productCheck = await query(
-      `SELECT product_type FROM "${schema}".products WHERE id = $1 AND is_active = true`,
-      [product_id]
+    if (!quantity || quantity <= 0) {
+      return res.status(400).json({ error: 'La cantidad debe ser mayor a 0' });
+    }
+    
+    // Verificar que la materia prima existe
+    const materialCheck = await query(
+      `SELECT id, name, unit, unit_cost FROM "${schema}".raw_materials WHERE id = $1 AND is_active = true`,
+      [raw_material_id]
     );
     
-    if (productCheck.rows.length === 0) {
-      return res.status(400).json({ error: 'El producto seleccionado no existe o está inactivo' });
+    if (materialCheck.rows.length === 0) {
+      return res.status(400).json({ error: 'La materia prima seleccionada no existe o está inactiva' });
     }
     
-    if (productCheck.rows[0].product_type !== 'MANUFACTURED') {
-      return res.status(400).json({ error: 'Solo se pueden crear recetas para productos de tipo MANUFACTURED' });
-    }
-    
-    // Verificar que el producto no tenga ya una receta
-    const existingRecipe = await query(
-      `SELECT id FROM "${schema}".recipes WHERE product_id = $1 AND is_active = true`,
-      [product_id]
-    );
-    
-    if (existingRecipe.rows.length > 0) {
-      return res.status(400).json({ error: 'Este producto ya tiene una receta activa' });
-    }
+    const material = materialCheck.rows[0];
+    const finalUnitCost = unit_cost || material.unit_cost || 0;
+    const finalConversion = conversion_factor || 1;
+    const finalTotalCost = Number(quantity) * Number(finalConversion) * Number(finalUnitCost);
+    const finalUnit = unit || material.unit || 'unidad';
     
     const { rows } = await query(`
-      INSERT INTO "${schema}".recipes (product_id, description, yield_qty, yield_unit)
-      VALUES ($1, $2, $3, $4)
+      INSERT INTO "${schema}".recipe_ingredients
+        (recipe_id, raw_material_id, quantity, unit, unit_cost, conversion_factor, total_cost)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
       RETURNING *
-    `, [product_id, description || null, yield_qty || 1, yield_unit || 'unidad']);
+    `, [req.params.id, raw_material_id, quantity, finalUnit, finalUnitCost, finalConversion, finalTotalCost]);
     
+    await recalcCost(schema, req.params.id);
     res.status(201).json(rows[0]);
   } catch (err) {
-    console.error('❌ Error en POST /recipes:', err);
+    console.error('❌ Error en POST /ingredients:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-router.put('/:id', authMiddleware, async (req, res) => {
+router.put('/:id/ingredients/:iid', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    const { product_id, description, yield_qty, yield_unit } = req.body;
+    const { raw_material_id, quantity, unit, unit_cost, conversion_factor, total_cost } = req.body;
     
-    if (!product_id) {
-      return res.status(400).json({ error: 'Debes seleccionar un producto' });
+    if (!quantity || quantity <= 0) {
+      return res.status(400).json({ error: 'La cantidad debe ser mayor a 0' });
     }
     
-    // Verificar que el producto existe y es MANUFACTURED
-    const productCheck = await query(
-      `SELECT product_type FROM "${schema}".products WHERE id = $1 AND is_active = true`,
-      [product_id]
-    );
-    
-    if (productCheck.rows.length === 0) {
-      return res.status(400).json({ error: 'El producto seleccionado no existe o está inactivo' });
+    // Si se cambia la materia prima, verificar que existe
+    if (raw_material_id) {
+      const materialCheck = await query(
+        `SELECT id, name, unit, unit_cost FROM "${schema}".raw_materials WHERE id = $1 AND is_active = true`,
+        [raw_material_id]
+      );
+      
+      if (materialCheck.rows.length === 0) {
+        return res.status(400).json({ error: 'La materia prima seleccionada no existe o está inactiva' });
+      }
+      
+      const material = materialCheck.rows[0];
+      const finalUnitCost = unit_cost || material.unit_cost || 0;
+      const finalConversion = conversion_factor || 1;
+      const finalTotalCost = Number(quantity) * Number(finalConversion) * Number(finalUnitCost);
+      const finalUnit = unit || material.unit || 'unidad';
+      
+      const { rows } = await query(`
+        UPDATE "${schema}".recipe_ingredients
+        SET raw_material_id=$1, quantity=$2, unit=$3, unit_cost=$4, conversion_factor=$5, total_cost=$6
+        WHERE id=$7
+        RETURNING *
+      `, [raw_material_id, quantity, finalUnit, finalUnitCost, finalConversion, finalTotalCost, req.params.iid]);
+      
+      await recalcCost(schema, req.params.id);
+      return res.json(rows[0]);
     }
     
-    if (productCheck.rows[0].product_type !== 'MANUFACTURED') {
-      return res.status(400).json({ error: 'Solo se pueden crear recetas para productos de tipo MANUFACTURED' });
-    }
+    // Solo actualizar cantidad, unidad y factor de conversión
+    const finalConversion = conversion_factor || 1;
+    const finalTotalCost = Number(quantity) * Number(finalConversion) * Number(ingredientForm.unit_cost || 0);
     
     const { rows } = await query(`
-      UPDATE "${schema}".recipes
-      SET product_id=$1, description=$2, yield_qty=$3, yield_unit=$4, updated_at=NOW()
-      WHERE id=$5
+      UPDATE "${schema}".recipe_ingredients
+      SET quantity=$1, unit=$2, conversion_factor=$3, total_cost=quantity * conversion_factor * unit_cost
+      WHERE id=$4
       RETURNING *
-    `, [product_id, description || null, yield_qty || 1, yield_unit || 'unidad', req.params.id]);
+    `, [quantity, unit || 'unidad', finalConversion, req.params.iid]);
     
-    if (!rows.length) {
-      return res.status(404).json({ error: 'Receta no encontrada' });
-    }
-    
+    await recalcCost(schema, req.params.id);
     res.json(rows[0]);
   } catch (err) {
-    console.error('❌ Error en PUT /recipes:', err);
+    console.error('❌ Error en PUT /ingredients:', err);
     res.status(500).json({ error: err.message });
   }
 });
