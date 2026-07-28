@@ -50,7 +50,6 @@ export const create = async (schema, body) => {
 
   const code = body.code || `PROD-${Date.now().toString(36).toUpperCase()}`;
 
-  // ✅ El modelo espera "isActive" (camelCase), no "is_active"
   const result = await productModel.insert(schema, {
     code,
     name: toText(body.name || body.nombre),
@@ -60,10 +59,8 @@ export const create = async (schema, body) => {
     unitCost: toNum(body.unit_cost ?? body.costo, 0),
     taxRate: taxValue,
     isTaxable: taxRateSelected,
-    isActive: toBool(                                    // ← camelCase
-      body.active ?? body.estado ?? body.is_active ?? true,
-      true
-    ),
+    productType: body.product_type || 'COMMERCIAL',
+    isActive: toBool(body.active ?? body.estado ?? body.is_active ?? true, true),
     sku: toText(body.sku),
     barcode: toText(body.barcode || body.codigoBarras),
     stock: toNum(body.stock, 0),
@@ -115,7 +112,15 @@ export const update = async (schema, id, body) => {
     currentProduct.is_active
   );
 
+  // Determinar product_type
+  let productType = currentProduct.product_type || 'COMMERCIAL';
+  if (body.product_type !== undefined) {
+    const tiposPermitidos = ['COMMERCIAL', 'MANUFACTURED'];
+    productType = tiposPermitidos.includes(body.product_type) ? body.product_type : 'COMMERCIAL';
+  }
+
   console.log('🔍 VALOR DE isActive A ACTUALIZAR:', isActive);
+  console.log('🔍 VALOR DE productType A ACTUALIZAR:', productType);
 
   const result = await productModel.updateById(schema, id, {
     name: toText(body.name || body.nombre) || currentProduct.name,
@@ -124,6 +129,7 @@ export const update = async (schema, id, body) => {
     unit_cost: toNum(body.unit_cost ?? body.costo, currentProduct.unit_cost),
     taxRate: taxValue,
     isTaxable: taxRateSelected,
+    productType: productType,
     isActive: isActive,
     stock: toNum(body.stock, currentProduct.stock),
     category_id,

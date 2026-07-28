@@ -1,3 +1,4 @@
+// modelos/productosModel.js
 import { query } from '../config/database.js';
 
 const SELECT = `
@@ -6,6 +7,7 @@ const SELECT = `
   p.selling_price, p.unit_cost,
   p.tax_rate, 
   CAST(p.is_taxable AS NUMERIC(5,2)) as is_taxable,
+  p.product_type,
   p.is_active,
   p.sku, p.barcode, p.stock, p.min_stock,
   p.created_at, p.updated_at
@@ -22,17 +24,16 @@ const normalizeProduct = (row) => {
     is_taxable_type: typeof row.is_taxable,
     is_taxable_json: JSON.stringify(row.is_taxable),
     tax_rate_raw: row.tax_rate,
-    selling_price_raw: row.selling_price
+    selling_price_raw: row.selling_price,
+    product_type: row.product_type
   });
   
   // Convertir is_taxable: detectar si es booleano o número
   let isTaxableValue = 0;
   if (typeof row.is_taxable === 'boolean') {
-    // Si es booleano: true → 15%, false → 0%
     isTaxableValue = row.is_taxable ? 15 : 0;
     console.log('⚠️ normalizeProduct: is_taxable es BOOLEANO', row.is_taxable, '→', isTaxableValue);
   } else if (row.is_taxable !== null && row.is_taxable !== undefined) {
-    // Si es número, usarlo como está
     isTaxableValue = Number(Math.round(row.is_taxable));
     console.log('✅ normalizeProduct: is_taxable es NÚMERO', row.is_taxable, '→', isTaxableValue);
   } else {
@@ -47,12 +48,18 @@ const normalizeProduct = (row) => {
     isTaxableValue = 0;
   }
   
+  // Validar product_type
+  const productType = row.product_type || 'COMMERCIAL';
+  const tiposPermitidos = ['COMMERCIAL', 'MANUFACTURED'];
+  if (!tiposPermitidos.includes(productType)) {
+    console.warn(`❌ TIPO INVÁLIDO: ${productType}, usando COMMERCIAL`);
+  }
+  
   return {
     ...row,
     is_taxable: isTaxableValue,
-    // Convertir tax_rate a número decimal
+    product_type: tiposPermitidos.includes(productType) ? productType : 'COMMERCIAL',
     tax_rate: row.tax_rate ? Number(row.tax_rate) : 0,
-    // Convertir otros números
     selling_price: Number(row.selling_price) || 0,
     unit_cost: Number(row.unit_cost) || 0,
     stock: Number(row.stock) || 0,
@@ -142,7 +149,6 @@ export const getFiscalRates = async () => {
     );
     const row = rows[0] ?? {};
     
-    // ✅ CONVERSIÓN CRÍTICA: Si la tasa es > 1, es porcentaje (15 → 0.15)
     let ivaRate = Number(row.iva_rate ?? 0.15);
     let ivaRateReduced = Number(row.iva_rate_reduced ?? 0.05);
     
@@ -169,13 +175,14 @@ export const insert = async (schema, d) => {
   const { rows } = await query(
     `INSERT INTO "${schema}".products
      (code, name, description, category_id, selling_price, unit_cost,
-      tax_rate, is_taxable, is_active, sku, barcode, stock, min_stock)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      tax_rate, is_taxable, product_type, is_active, sku, barcode, stock, min_stock)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      RETURNING *`,
     [
       d.code || `PROD-${Date.now().toString(36).toUpperCase()}`,
       d.name, d.description, d.category_id,
       d.sellingPrice, d.unitCost, d.taxRate, d.isTaxable,
+      d.productType || 'COMMERCIAL',
       d.isActive !== false, d.sku, d.barcode || genEAN13(), d.stock || 0, d.minStock || 0,
     ]
   );
@@ -202,6 +209,10 @@ export const updateById = async (schema, id, d) => {
   if (d.isTaxable !== undefined && d.isTaxable !== null) {
     updates.push(`is_taxable = $${idx++}`);
     values.push(d.isTaxable);
+  }
+  if (d.productType !== undefined && d.productType !== null) {
+    updates.push(`product_type = $${idx++}`);
+    values.push(d.productType);
   }
   if (d.isActive !== undefined && d.isActive !== null) {
     updates.push(`is_active = $${idx++}`);

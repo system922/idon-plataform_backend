@@ -1,3 +1,4 @@
+// controllers/productosController.js
 import * as productService from '../services/productosService.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 import { emitToBusiness } from '../socket.js';
@@ -23,17 +24,12 @@ export const getAll = async (req, res) => {
       products.slice(0, 3).map(p => ({
         id: p.id,
         name: p.name,
+        product_type: p.product_type,
         is_taxable: p.is_taxable,
         tax_rate: p.tax_rate,
         selling_price: p.selling_price,
-        todos_campos: Object.keys(p).sort()
       }))
     );
-
-    console.log('📤 RESPUESTA JSON que se envia al frontend:', {
-      cantidad: products.length,
-      primer_producto_completo: products[0] ? JSON.stringify(products[0], null, 2) : null
-    });
 
     res.json(products);
   } catch (err) {
@@ -53,14 +49,11 @@ export const getById = async (req, res) => {
     console.log('✅ getById - PRODUCTO COMPLETO devuelto:', {
       id: product.id,
       name: product.name,
+      product_type: product.product_type,
       is_taxable: product.is_taxable,
-      tipo_is_taxable: typeof product.is_taxable,
       tax_rate: product.tax_rate,
       selling_price: product.selling_price,
-      todos_campos: Object.keys(product).sort()
     });
-
-    console.log('📤 JSON que se envia al frontend:', JSON.stringify(product, null, 2));
 
     res.json(product);
   } catch (err) {
