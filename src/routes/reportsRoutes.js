@@ -63,6 +63,120 @@ async function getSalesTotals(schema, periodo, startDate, endDate) {
 }
 
 /**
+ * GET /api/reports/sales/detail/:id
+ * Obtiene el detalle completo de una factura con sus items y datos de orden
+ */
+router.get('/sales/detail/:id', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { id } = req.params;
+
+    // Primero obtener la factura
+    const invoiceResult = await query(
+      `SELECT 
+        e.id,
+        e.invoice_number as numero_factura,
+        e.access_key as clave_acceso,
+        e.auth_number as numero_autorizacion,
+        e.customer_name as cliente_nombre,
+        e.customer_ruc as cliente_ruc,
+        e.customer_email as cliente_email,
+        e.customer_phone as cliente_telefono,
+        e.subtotal,
+        e.iva_amount as iva,
+        e.total,
+        e.discount_amount as descuento,
+        e.status as estado,
+        e.emission_date as fecha_emision,
+        e.auth_date as fecha_autorizacion,
+        e.created_at,
+        e.updated_at,
+        e.order_id,
+        e.credited_amount as monto_credito
+       FROM "${schema}".einvoices e
+       WHERE e.id = $1`,
+      [id]
+    );
+
+    if (invoiceResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Factura no encontrada' });
+    }
+
+    const invoice = invoiceResult.rows[0];
+
+    // Obtener los items de la factura
+    let items = [];
+    if (invoice.items) {
+      items = typeof invoice.items === 'string' ? JSON.parse(invoice.items) : invoice.items;
+    }
+
+    // Si tiene order_id, obtener datos de la orden
+    let orderData = null;
+    if (invoice.order_id) {
+      const orderResult = await query(
+        `SELECT 
+          o.id,
+          o.order_number as numero_orden,
+          o.order_type as tipo_orden,
+          o.status as estado_orden,
+          o.mesa_numero as mesa,
+          o.subtotal as orden_subtotal,
+          o.tax_rate as tasa_iva,
+          o.tax_amount as orden_iva,
+          o.total as orden_total,
+          o.discount_amount as orden_descuento,
+          o.notes as notas,
+          o.created_at as fecha_orden,
+          o.printed as impresa,
+          o.customer_name as cliente_nombre_orden
+         FROM "${schema}".pos_orders o
+         WHERE o.id = $1`,
+        [invoice.order_id]
+      );
+
+      if (orderResult.rows.length > 0) {
+        orderData = orderResult.rows[0];
+
+        // Obtener items de la orden
+        const itemsResult = await query(
+          `SELECT 
+            id,
+            product_id,
+            product_name,
+            code,
+            quantity,
+            unit_price,
+            tax_rate,
+            iva_amount,
+            line_total,
+            notes
+           FROM "${schema}".pos_order_items
+           WHERE order_id = $1
+           ORDER BY created_at ASC`,
+          [invoice.order_id]
+        );
+
+        orderData.items = itemsResult.rows;
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        factura: invoice,
+        items_factura: items,
+        orden: orderData
+      }
+    });
+  } catch (err) {
+    console.error('[SalesDetail] Error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
  * GET /api/reports/sales/summary
  */
 router.get('/sales/summary', authMiddleware, async (req, res) => {
