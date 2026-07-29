@@ -265,6 +265,29 @@ export const updateById = async (schema, id, d) => {
   return normalizeProduct(rows[0]);
 };
 
+// Agregar esta función para eliminar físicamente
+export const deleteProduct = async (schema, id) => {
+  // Verificar si el producto existe
+  const checkResult = await query(
+    `SELECT id FROM "${schema}".products WHERE id = $1`,
+    [id]
+  );
+  
+  if (checkResult.rows.length === 0) {
+    throw new Error('Producto no encontrado');
+  }
+  
+  // Eliminar físicamente
+  const { rows } = await query(
+    `DELETE FROM "${schema}".products WHERE id = $1 RETURNING id`,
+    [id]
+  );
+  
+  if (!rows.length) throw new Error('Producto no encontrado');
+  return rows[0];
+};
+
+// Soft delete (lo mantienes por si lo necesitas)
 export const softDelete = async (schema, id) => {
   const { rows } = await query(
     `UPDATE "${schema}".products SET is_active = false, updated_at = NOW()

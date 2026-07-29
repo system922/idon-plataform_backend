@@ -104,14 +104,24 @@ export const update = async (req, res) => {
   }
 };
 
+// controllers/productosController.js
+
 export const remove = async (req, res) => {
   try {
     const schema = getSchema(req, res);
     if (!schema) return;
 
+    // Verificar si el producto existe
+    const existingProduct = await productService.getById(schema, req.params.id);
+    if (!existingProduct) {
+      return res.status(404).json({ error: 'Producto no encontrado' });
+    }
+
+    // Eliminar físicamente
     await productService.remove(schema, req.params.id);
+    
     emitToBusiness(req.user.businessId, 'data_changed', { entity: 'products', action: 'deleted' });
-    res.json({ success: true });
+    res.json({ success: true, message: 'Producto eliminado exitosamente' });
   } catch (err) {
     console.error('Error en remove:', err);
     res.status(500).json({ error: err.message });

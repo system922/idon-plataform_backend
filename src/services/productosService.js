@@ -112,7 +112,6 @@ export const update = async (schema, id, body) => {
     currentProduct.is_active
   );
 
-  // Determinar product_type
   let productType = currentProduct.product_type || 'COMMERCIAL';
   if (body.product_type !== undefined) {
     const tiposPermitidos = ['COMMERCIAL', 'MANUFACTURED'];
@@ -142,4 +141,5 @@ export const update = async (schema, id, body) => {
   return result;
 };
 
-export const remove = (schema, id) => productModel.softDelete(schema, id);
+// 🔥 CAMBIO: Eliminar físicamente en lugar de soft delete
+export const remove = (schema, id) => productModel.deleteProduct(schema, id);
