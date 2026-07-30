@@ -148,16 +148,17 @@ router.get('/stats', async (req, res) => {
       console.error('Error al obtener gastos:', err);
     }
 
-    // ── Órdenes pendientes ──────────────────────────────────────────────────
+    // ── Órdenes pendientes SOLO DE HOY ──────────────────────────────────────
     let pendingCount = 0;
     try {
       const pendRes = await query(`
         SELECT COUNT(*)::INT AS count
         FROM "${schema}".pos_orders
         WHERE status IN ('pending', 'open', 'in_progress')
-      `);
+          AND DATE(created_at AT TIME ZONE 'America/Guayaquil') = $1
+      `, [today]);
       pendingCount = Number(pendRes.rows[0]?.count) || 0;
-      console.log('Órdenes pendientes:', pendingCount);
+      console.log('Órdenes pendientes hoy:', pendingCount);
     } catch (err) {
       console.error('Error al obtener pendientes:', err);
     }
