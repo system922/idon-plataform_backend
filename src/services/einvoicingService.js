@@ -491,9 +491,11 @@ async function _authorizeSriBackground(schema, invoice, signedXml, claveAcceso, 
   
   let lastError = null;
 
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
+  const maxAttempts = 4;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      console.log(`📤 PASO 1: Validando XML en SRI (intento ${attempt})...`);
+      console.log(`📤 PASO 1: Validando XML en SRI (intento ${attempt}/${maxAttempts})...`);
       const recResult = await validateXml({
         xml: new TextEncoder().encode(signedXml),
         env: envStr,
@@ -564,10 +566,14 @@ async function _authorizeSriBackground(schema, invoice, signedXml, claveAcceso, 
       lastError = sriErr;
       const normalized = normalizeSriError(sriErr);
 
-      if (attempt === 1 && normalized.status === 'pendiente' && isTransientSriError(sriErr)) {
-        console.warn('⚠️ Error transitorio del SRI. Reintentando en 5 segundos...');
+      const shouldRetry = attempt < maxAttempts && normalized.status === 'pendiente' && isTransientSriError(sriErr);
+
+      if (shouldRetry) {
+        const waitMs = 5000 * attempt;
+        console.warn(`⚠️ Error transitorio del SRI. Reintentando en ${waitMs / 1000} segundos...`);
         console.warn(sriErr.message || sriErr);
-        await delay(5000);
+        logger.warn({ attempt, waitMs, err: sriErr.message, stack: sriErr.stack }, 'SRI transient error, retrying');
+        await delay(waitMs);
         continue;
       }
 

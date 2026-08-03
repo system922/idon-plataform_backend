@@ -31,12 +31,14 @@ const shouldKeepConsoleLog = (...args) => {
   return BILLING_LOG_PATTERNS.some(pattern => pattern.test(text));
 };
 
-const originalConsoleLog = console.log.bind(console);
-console.log = (...args) => {
-  if (shouldKeepConsoleLog(...args)) {
-    originalConsoleLog(...args);
-  }
-};
+for (const method of ['log', 'info', 'warn', 'error', 'debug']) {
+  const originalMethod = console[method].bind(console);
+  console[method] = (...args) => {
+    if (shouldKeepConsoleLog(...args)) {
+      originalMethod(...args);
+    }
+  };
+}
 
 const logger = pino({
   level: process.env.LOG_LEVEL || (process.env.NODE_ENV === 'production' ? 'warn' : 'info'),
