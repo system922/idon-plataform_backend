@@ -51,11 +51,30 @@ function normalizeSriError(err) {
   const estado = err.estado || err.name || '';
   const message = err.messageSRI || err.mensajeSRI || err.message || 'Error en la autorización SRI';
 
+  if (isTransientSriError(err)) {
+    return {
+      status: 'pendiente',
+      message: 'El SRI no pudo validar el comprobante en este momento. La factura queda pendiente y se reintentará más tarde.',
+    };
+  }
+
   if (['NO AUTORIZADO', 'RECHAZADA', 'DEVUELTA', 'ERROR'].includes(estado)) {
     return { status: 'rechazada', message };
   }
 
   return { status: 'pendiente', message };
+}
+
+function isTransientSriError(err) {
+  const text = [err?.message, err?.messageSRI, err?.mensajeSRI, err?.name, err?.stack]
+    .filter(Boolean)
+    .join(' ');
+
+  return /(soap|persistenceexception|could not execute statement|genericjdbc|timeout|timed out|ECONNRESET|ETIMEDOUT|socket hang up|tempor|service unavailable|network)/i.test(text);
+}
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // ------------------- CONFIG Y SIGNATURE -------------------
@@ -475,88 +494,96 @@ async function _authorizeSriBackground(schema, invoice, signedXml, claveAcceso, 
   console.log('Env:', envStr);
   console.log('========================================');
   
-  try {
-    console.log('📤 PASO 1: Validando XML en SRI...');
-    const recResult = await validateXml({
-      xml: new TextEncoder().encode(signedXml),
-      env: envStr,
-    });
-    console.log('📥 RESPUESTA RECEPCIÓN:', JSON.stringify(recResult, null, 2));
-    logger.info({ recResult }, 'SRI recepción (bg)');
+  let lastError = null;
 
-    if (recResult?.estado === 'RECIBIDA') {
-      console.log('✅ XML RECIBIDO, PASO 2: Autorizando...');
-      
-      // Esperar un momento antes de autorizar
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      console.log('📤 Enviando a autorización con clave:', claveAcceso);
-      const authResult = await authorizeXml({ 
-        claveAcceso, 
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      console.log(`📤 PASO 1: Validando XML en SRI (intento ${attempt})...`);
+      const recResult = await validateXml({
+        xml: new TextEncoder().encode(signedXml),
         env: envStr,
-        timeout: 30000
       });
-      
-      console.log('📥 RESPUESTA AUTORIZACIÓN COMPLETA:');
-      console.log(JSON.stringify(authResult, null, 2));
-      logger.info({ authResult }, 'SRI autorización (bg)');
-      
-      // 🔥 GUARDAR LA RESPUESTA COMPLETA (pero sanitizada)
-      if (authResult) {
-        // Primero, guardar todo el objeto para debug
-        const authResultSanitizado = { ...authResult };
-        
-        // Eliminar campos con XML gigante (pero guardarlos en otro lado si es necesario)
-        if (authResultSanitizado.comprobante) {
-          // Guardar el XML en un campo separado si quieres
-          // O simplemente eliminarlo
-          delete authResultSanitizado.comprobante;
-        }
-        if (authResultSanitizado.comprobanteCrudo) {
-          delete authResultSanitizado.comprobanteCrudo;
-        }
-        
-        // Si hay mensajes, asegurar que sean strings
-        if (authResultSanitizado.mensajes && Array.isArray(authResultSanitizado.mensajes)) {
-          authResultSanitizado.mensajes = authResultSanitizado.mensajes.map(m => 
-            typeof m === 'string' ? m : (m.mensaje || m.message || String(m))
-          );
-        }
-        
-        sriJsonString = JSON.stringify(authResultSanitizado);
-        console.log('📊 SRI JSON SANITIZADO (tamaño):', sriJsonString.length, 'caracteres');
-        console.log('📊 SRI JSON CONTENIDO:', sriJsonString.substring(0, 500) + '...');
-      }
+      console.log('📥 RESPUESTA RECEPCIÓN:', JSON.stringify(recResult, null, 2));
+      logger.info({ recResult }, 'SRI recepción (bg)');
 
-      if (authResult?.estadoAutorizacion === 'AUTORIZADO') {
-        status = 'autorizada';
-        authNumber = authResult.numeroAutorizacion || authResult.claveAcceso || claveAcceso;
-        authDate = authResult.fechaAutorizacion ? new Date(authResult.fechaAutorizacion) : new Date();
-        console.log('✅ ✅ ✅ FACTURA AUTORIZADA ✅ ✅ ✅');
-        console.log('Número de autorización:', authNumber);
-        console.log('Fecha de autorización:', authDate);
+      if (recResult?.estado === 'RECIBIDA') {
+        console.log('✅ XML RECIBIDO, PASO 2: Autorizando...');
+
+        await delay(2000);
+
+        console.log('📤 Enviando a autorización con clave:', claveAcceso);
+        const authResult = await authorizeXml({
+          claveAcceso,
+          env: envStr,
+          timeout: 30000,
+        });
+
+        console.log('📥 RESPUESTA AUTORIZACIÓN COMPLETA:');
+        console.log(JSON.stringify(authResult, null, 2));
+        logger.info({ authResult }, 'SRI autorización (bg)');
+
+        if (authResult) {
+          const authResultSanitizado = { ...authResult };
+
+          if (authResultSanitizado.comprobante) {
+            delete authResultSanitizado.comprobante;
+          }
+          if (authResultSanitizado.comprobanteCrudo) {
+            delete authResultSanitizado.comprobanteCrudo;
+          }
+
+          if (authResultSanitizado.mensajes && Array.isArray(authResultSanitizado.mensajes)) {
+            authResultSanitizado.mensajes = authResultSanitizado.mensajes.map(m =>
+              typeof m === 'string' ? m : (m.mensaje || m.message || String(m))
+            );
+          }
+
+          sriJsonString = JSON.stringify(authResultSanitizado);
+          console.log('📊 SRI JSON SANITIZADO (tamaño):', sriJsonString.length, 'caracteres');
+          console.log('📊 SRI JSON CONTENIDO:', sriJsonString.substring(0, 500) + '...');
+        }
+
+        if (authResult?.estadoAutorizacion === 'AUTORIZADO') {
+          status = 'autorizada';
+          authNumber = authResult.numeroAutorizacion || authResult.claveAcceso || claveAcceso;
+          authDate = authResult.fechaAutorizacion ? new Date(authResult.fechaAutorizacion) : new Date();
+          console.log('✅ ✅ ✅ FACTURA AUTORIZADA ✅ ✅ ✅');
+          console.log('Número de autorización:', authNumber);
+          console.log('Fecha de autorización:', authDate);
+        } else {
+          status = 'rechazada';
+          sriMessage = (authResult?.mensajes || []).map(m =>
+            typeof m === 'string' ? m : (m.mensaje || m.message || String(m))
+          ).join(' | ') || authResult?.estadoAutorizacion || 'Rechazada por el SRI';
+          console.log('❌ FACTURA RECHAZADA:', sriMessage);
+        }
       } else {
         status = 'rechazada';
-        sriMessage = (authResult?.mensajes || []).map(m => 
-          typeof m === 'string' ? m : (m.mensaje || m.message || String(m))
-        ).join(' | ') || authResult?.estadoAutorizacion || 'Rechazada por el SRI';
-        console.log('❌ FACTURA RECHAZADA:', sriMessage);
+        sriMessage = recResult?.mensaje || 'No recibida por el SRI';
+        console.log('❌ NO RECIBIDA POR SRI:', sriMessage);
+        console.log('Respuesta recepción:', JSON.stringify(recResult, null, 2));
       }
-    } else {
-      status = 'rechazada';
-      sriMessage = recResult?.mensaje || 'No recibida por el SRI';
-      console.log('❌ NO RECIBIDA POR SRI:', sriMessage);
-      console.log('Respuesta recepción:', JSON.stringify(recResult, null, 2));
-    }
-  } catch (sriErr) {
-    console.error('❌ ❌ ❌ ERROR EN AUTORIZACIÓN SRI ❌ ❌ ❌');
-    console.error('Error:', sriErr);
-    console.error('Stack:', sriErr.stack);
-    logger.error({ err: sriErr.message, stack: sriErr.stack }, 'SRI background error');
 
-    const normalized = normalizeSriError(sriErr);
-    status = normalized.status;
-    sriMessage = normalized.message;
+      break;
+    } catch (sriErr) {
+      lastError = sriErr;
+      const normalized = normalizeSriError(sriErr);
+
+      if (attempt === 1 && normalized.status === 'pendiente' && isTransientSriError(sriErr)) {
+        console.warn('⚠️ Error transitorio del SRI. Reintentando en 5 segundos...');
+        console.warn(sriErr.message || sriErr);
+        await delay(5000);
+        continue;
+      }
+
+      console.warn('⚠️ Error al autorizar factura SRI. Se dejará pendiente.');
+      console.warn(sriErr.message || sriErr);
+      logger.warn({ err: sriErr.message, stack: sriErr.stack }, 'SRI background error (non-blocking)');
+
+      status = normalized.status;
+      sriMessage = normalized.message;
+      break;
+    }
   }
 
   console.log('========================================');
