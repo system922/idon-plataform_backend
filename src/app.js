@@ -1,7 +1,6 @@
 import express from 'express';
 import cors from 'cors';
 import env from './config/env.js';
-import logger from './utils/logger.js';
 
 
 // Ruta para obtener negocio por número de WhatsApp
@@ -120,7 +119,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'x-business-id', 'x-db-name'],
 }));
 app.options('*', cors());
-app.use((req, res, next) => { logger.info(`${req.method} ${req.path}`); next(); });
+app.use((req, res, next) => next());
 
 // ─── Middleware groups ────────────────────────────────────────────────────────
 const auth         = [authMiddleware];
