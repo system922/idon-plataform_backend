@@ -415,8 +415,18 @@ export async function emitInvoice(schema, opts) {
 }
 
 // ── Autorización SRI en background ────────────────────
+// ── Autorización SRI en background (VERSIÓN CORREGIDA) ────────────────────
 async function _authorizeSriBackground(schema, invoice, signedXml, claveAcceso, envStr) {
   let status = 'pendiente', authNumber = null, authDate = null, sriMessage = null, sriJson = null;
+  
+  console.log('📤 INICIANDO AUTORIZACIÓN SRI:', {
+    schema,
+    invoiceId: invoice.id,
+    invoiceNumber: invoice.invoice_number,
+    claveAcceso,
+    env: envStr
+  });
+  
   try {
     const recResult = await validateXml({
       xml: new TextEncoder().encode(signedXml),
@@ -425,27 +435,73 @@ async function _authorizeSriBackground(schema, invoice, signedXml, claveAcceso, 
     logger.info({ recResult }, 'SRI recepción (bg)');
 
     if (recResult?.estado === 'RECIBIDA') {
-      const authResult = await authorizeXml({ claveAcceso, env: envStr });
+      console.log('✅ RECIBIDA, ENVIANDO A AUTORIZACIÓN...');
+      
+      // Esperar un momento antes de autorizar
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      const authResult = await authorizeXml({ 
+        claveAcceso, 
+        env: envStr,
+        timeout: 30000
+      });
       logger.info({ authResult }, 'SRI autorización (bg)');
-      sriJson = authResult;
+      
+      // 🔥 SANITIZAR - Eliminar campos grandes que causan problemas en DB
+      if (authResult) {
+        // Crear una copia con solo lo esencial
+        sriJson = {
+          estadoAutorizacion: authResult.estadoAutorizacion,
+          numeroAutorizacion: authResult.numeroAutorizacion || authResult.claveAcceso || claveAcceso,
+          fechaAutorizacion: authResult.fechaAutorizacion,
+          ambiente: authResult.ambiente,
+          mensajes: authResult.mensajes || null
+        };
+        
+        // Si tiene mensajes, extraer solo el texto
+        if (sriJson.mensajes && Array.isArray(sriJson.mensajes)) {
+          sriJson.mensajes = sriJson.mensajes.map(m => 
+            typeof m === 'string' ? m : (m.mensaje || m)
+          );
+        }
+        
+        console.log('📊 SRI JSON SANITIZADO:', JSON.stringify(sriJson, null, 2));
+      }
 
       if (authResult?.estadoAutorizacion === 'AUTORIZADO') {
         status = 'autorizada';
-        authNumber = authResult.claveAcceso || claveAcceso;
+        authNumber = authResult.numeroAutorizacion || authResult.claveAcceso || claveAcceso;
         authDate = authResult.fechaAutorizacion ? new Date(authResult.fechaAutorizacion) : new Date();
+        console.log('✅ FACTURA AUTORIZADA:', authNumber);
       } else {
         status = 'rechazada';
-        sriMessage = (authResult?.mensajes || []).map(m => m.mensaje).join(' | ')
-                   || authResult?.estadoAutorizacion || 'Rechazada por el SRI';
+        sriMessage = (authResult?.mensajes || []).map(m => 
+          typeof m === 'string' ? m : (m.mensaje || m)
+        ).join(' | ') || authResult?.estadoAutorizacion || 'Rechazada por el SRI';
+        console.log('❌ FACTURA RECHAZADA:', sriMessage);
       }
     } else {
+      status = 'rechazada';
       sriMessage = recResult?.mensaje || 'No recibida por el SRI';
+      console.log('❌ NO RECIBIDA POR SRI:', sriMessage);
     }
   } catch (sriErr) {
-    logger.warn({ err: sriErr.message }, 'SRI background error');
+    console.error('❌ ERROR EN AUTORIZACIÓN SRI:', sriErr);
+    logger.warn({ err: sriErr.message, stack: sriErr.stack }, 'SRI background error');
     status = 'pendiente';
     sriMessage = sriErr.message;
   }
+
+  // 🔥 Convertir sriJson a string JSON (si existe)
+  const sriJsonString = sriJson ? JSON.stringify(sriJson) : null;
+  
+  console.log('💾 ACTUALIZANDO FACTURA EN DB:', {
+    id: invoice.id,
+    status,
+    authNumber,
+    sriMessage: sriMessage ? sriMessage.substring(0, 100) : null,
+    sriJsonLength: sriJsonString ? sriJsonString.length : 0
+  });
 
   const { rows: updated } = await query(
     `UPDATE "${schema}".einvoices
@@ -453,11 +509,21 @@ async function _authorizeSriBackground(schema, invoice, signedXml, claveAcceso, 
             sri_message = $4, sri_json = $5, updated_at = NOW()
       WHERE id = $6
       RETURNING *`,
-    [status, authNumber, authDate, sriMessage, sriJson ? JSON.stringify(sriJson) : null, invoice.id]
+    [status, authNumber, authDate, sriMessage, sriJsonString, invoice.id]
   );
 
   const updatedInvoice = updated[0];
-  if (!updatedInvoice) return;
+  if (!updatedInvoice) {
+    console.warn('⚠️ No se pudo actualizar factura en DB');
+    return;
+  }
+
+  console.log('📊 ESTADO FINAL FACTURA:', {
+    id: updatedInvoice.id,
+    status: updatedInvoice.status,
+    auth_number: updatedInvoice.auth_number,
+    invoice_number: updatedInvoice.invoice_number
+  });
 
   if (status === 'autorizada' && updatedInvoice.customer_email) {
     try {

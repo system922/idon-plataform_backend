@@ -55,10 +55,16 @@ router.put('/:id', authMiddleware, async (req, res) => {
 router.delete('/:id', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    await query(`
-      UPDATE "${schema}".suppliers SET is_active=false, updated_at=NOW() WHERE id=$1
+    const result = await query(`
+      DELETE FROM "${schema}".suppliers WHERE id=$1
+      RETURNING id
     `, [req.params.id]);
-    res.json({ success: true });
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Proveedor no encontrado' });
+    }
+    
+    res.json({ success: true, message: 'Proveedor eliminado correctamente' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
