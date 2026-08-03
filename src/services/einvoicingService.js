@@ -415,7 +415,7 @@ export async function emitInvoice(schema, opts) {
 }
 
 // ── Autorización SRI en background ────────────────────
-// ── Autorización SRI en background (VERSIÓN CORREGIDA) ────────────────────
+// ── Autorización SRI en background ────────────────────
 async function _authorizeSriBackground(schema, invoice, signedXml, claveAcceso, envStr) {
   let status = 'pendiente', authNumber = null, authDate = null, sriMessage = null, sriJson = null;
   
@@ -447,9 +447,10 @@ async function _authorizeSriBackground(schema, invoice, signedXml, claveAcceso, 
       });
       logger.info({ authResult }, 'SRI autorización (bg)');
       
-      // 🔥 SANITIZAR - Eliminar campos grandes que causan problemas en DB
+      console.log('📥 RESPUESTA COMPLETA SRI:', JSON.stringify(authResult, null, 2));
+      
+      // 🔥 SANITIZAR - Guardar solo lo esencial
       if (authResult) {
-        // Crear una copia con solo lo esencial
         sriJson = {
           estadoAutorizacion: authResult.estadoAutorizacion,
           numeroAutorizacion: authResult.numeroAutorizacion || authResult.claveAcceso || claveAcceso,
@@ -458,7 +459,6 @@ async function _authorizeSriBackground(schema, invoice, signedXml, claveAcceso, 
           mensajes: authResult.mensajes || null
         };
         
-        // Si tiene mensajes, extraer solo el texto
         if (sriJson.mensajes && Array.isArray(sriJson.mensajes)) {
           sriJson.mensajes = sriJson.mensajes.map(m => 
             typeof m === 'string' ? m : (m.mensaje || m)
@@ -470,6 +470,7 @@ async function _authorizeSriBackground(schema, invoice, signedXml, claveAcceso, 
 
       if (authResult?.estadoAutorizacion === 'AUTORIZADO') {
         status = 'autorizada';
+        // 🔥 CORREGIDO: usar numeroAutorizacion
         authNumber = authResult.numeroAutorizacion || authResult.claveAcceso || claveAcceso;
         authDate = authResult.fechaAutorizacion ? new Date(authResult.fechaAutorizacion) : new Date();
         console.log('✅ FACTURA AUTORIZADA:', authNumber);
@@ -492,7 +493,6 @@ async function _authorizeSriBackground(schema, invoice, signedXml, claveAcceso, 
     sriMessage = sriErr.message;
   }
 
-  // 🔥 Convertir sriJson a string JSON (si existe)
   const sriJsonString = sriJson ? JSON.stringify(sriJson) : null;
   
   console.log('💾 ACTUALIZANDO FACTURA EN DB:', {
@@ -525,6 +525,7 @@ async function _authorizeSriBackground(schema, invoice, signedXml, claveAcceso, 
     invoice_number: updatedInvoice.invoice_number
   });
 
+  // ✅ Enviar email si está autorizada
   if (status === 'autorizada' && updatedInvoice.customer_email) {
     try {
       const cfg = await getConfig(schema);
