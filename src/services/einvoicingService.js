@@ -39,6 +39,25 @@ function ivaCode(rate) {
   return 4; // default 15%
 }
 
+function normalizeObligadoContabilidad(value) {
+  if (value === true || value === 'SI' || value === 'si' || value === 'S') return 'SI';
+  if (value === false || value === 'NO' || value === 'no' || value === 'N') return 'NO';
+  return 'NO';
+}
+
+function normalizeSriError(err) {
+  if (!err) return { status: 'pendiente', message: 'Error desconocido en autorización SRI' };
+
+  const estado = err.estado || err.name || '';
+  const message = err.messageSRI || err.mensajeSRI || err.message || 'Error en la autorización SRI';
+
+  if (['NO AUTORIZADO', 'RECHAZADA', 'DEVUELTA', 'ERROR'].includes(estado)) {
+    return { status: 'rechazada', message };
+  }
+
+  return { status: 'pendiente', message };
+}
+
 // ------------------- CONFIG Y SIGNATURE -------------------
 export async function getConfig(schema) {
   const { rows } = await query(`SELECT * FROM "${schema}".einvoice_config LIMIT 1`);
@@ -209,23 +228,28 @@ export async function emitInvoice(schema, opts) {
         tasaIVA = 0;
       }
 
-      if (subtotalByRate[tasaIVA] !== undefined) {
-        subtotalByRate[tasaIVA] += subtotalItem;
-        ivaByRate[tasaIVA] += ivaItem;
-      } else {
-        subtotalByRate[15] += subtotalItem;
-        ivaByRate[15] += ivaItem;
-        tasaIVA = 15;
-      }
-
-      console.log(`📦 ${item.description}: tasa=${tasaIVA}%, subtotal=${subtotalItem.toFixed(2)}, iva=${ivaItem.toFixed(2)}`);
-
       let descuentoItem = 0;
-      const totalGlobal = subtotalItem + ivaItem;
-      if (totalDescuento > 0 && totalFactura > 0) {
+      const totalGlobal = subtotalItem + (ivaItem || 0);
+      if (totalDescuento > 0 && totalFactura > 0 && totalGlobal > 0) {
         const ratio = totalGlobal / totalFactura;
         descuentoItem = Math.round((totalDescuento * ratio) * 100) / 100;
       }
+
+      const precioBase = Math.max(0, subtotalItem - descuentoItem);
+      const ivaCalculado = tasaIVA > 0 && ivaItem === 0
+        ? Math.round((precioBase * tasaIVA / 100) * 100) / 100
+        : ivaItem;
+
+      if (subtotalByRate[tasaIVA] !== undefined) {
+        subtotalByRate[tasaIVA] += precioBase;
+        ivaByRate[tasaIVA] += ivaCalculado;
+      } else {
+        subtotalByRate[15] += precioBase;
+        ivaByRate[15] += ivaCalculado;
+        tasaIVA = 15;
+      }
+
+      console.log(`📦 ${item.description}: tasa=${tasaIVA}%, base=${precioBase.toFixed(2)}, iva=${ivaCalculado.toFixed(2)}`);
 
       return {
         codigoPrincipal: item.code || item.codigo || 'PROD',
@@ -234,14 +258,14 @@ export async function emitInvoice(schema, opts) {
         cantidad: qty,
         precioUnitario: unitPrice,
         descuento: descuentoItem,
-        precioTotalSinImpuesto: subtotalItem,
+        precioTotalSinImpuesto: precioBase,
         impuestos: {
           impuesto: [{
             codigo: 2,
             codigoPorcentaje: ivaCode(tasaIVA),
             tarifa: tasaIVA,
-            baseImponible: subtotalItem,
-            valor: ivaItem,
+            baseImponible: precioBase,
+            valor: ivaCalculado,
           }],
         },
       };
@@ -309,19 +333,19 @@ export async function emitInvoice(schema, opts) {
         secuencial: pad(secuencial, 9),
         razonSocial: cfg.razon_social,
         ...(cfg.nombre_comercial ? { nombreComercial: cfg.nombre_comercial } : {}),
+        ...(cfg.agente_retencion ? { agenteRetencion: String(cfg.agente_retencion) } : {}),
+        ...(cfg.contribuyente_rimpe ? { contribuyenteRimpe: cfg.contribuyente_rimpe } : {}),
       },
       infoFactura: {
         fechaEmision: now,
         dirEstablecimiento: cfg.direccion_establecimiento || cfg.direccion_matriz || 'Ecuador',
         ...(cfg.contribuyente_especial ? { contribuyenteEspecial: cfg.contribuyente_especial } : {}),
-        obligadoContabilidad: cfg.obligado_contabilidad ? 'SI' : 'NO',
+        obligadoContabilidad: normalizeObligadoContabilidad(cfg.obligado_contabilidad),
         tipoIdentificacionComprador: tipoId,
         razonSocialComprador: razonComprador,
         identificacionComprador: idComprador,
         
-        // ✅ CORREGIDO: totalSinImpuestos = subtotal de TODOS los productos (sin IVA)
         totalSinImpuestos: Math.round(subtotalTotal * 100) / 100,
-        
         totalDescuento: Math.round(totalDescuento * 100) / 100,
         propina: 0,
         importeTotal: Math.round((subtotalTotal + ivaTotal - totalDescuento) * 100) / 100,
@@ -334,6 +358,8 @@ export async function emitInvoice(schema, opts) {
           pago: [{
             formaPago: opts.forma_pago || '01',
             total: Math.round((subtotalTotal + ivaTotal - totalDescuento) * 100) / 100,
+            ...(opts.plazo ? { plazo: Number(opts.plazo) } : {}),
+            ...(opts.unidad_tiempo ? { unidadTiempo: opts.unidad_tiempo } : {}),
           }],
         },
       },
@@ -527,8 +553,10 @@ async function _authorizeSriBackground(schema, invoice, signedXml, claveAcceso, 
     console.error('Error:', sriErr);
     console.error('Stack:', sriErr.stack);
     logger.error({ err: sriErr.message, stack: sriErr.stack }, 'SRI background error');
-    status = 'pendiente';
-    sriMessage = sriErr.message;
+
+    const normalized = normalizeSriError(sriErr);
+    status = normalized.status;
+    sriMessage = normalized.message;
   }
 
   console.log('========================================');
