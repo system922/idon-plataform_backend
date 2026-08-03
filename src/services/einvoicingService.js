@@ -400,11 +400,32 @@ export async function emitInvoice(schema, opts) {
     await client.query('COMMIT');
     const savedInvoice = rows[0];
 
-    _authorizeSriBackground(schema, savedInvoice, signedXml, claveAcceso, envStr).catch((err) => {
-      console.error('Error en autorización SRI background:', err);
+    // 🔥🔥🔥 ESPERAR LA AUTORIZACIÓN SRI (SÍNCRONO) 🔥🔥🔥
+    console.log('⏳ Esperando autorización SRI...');
+    try {
+      await _authorizeSriBackground(schema, savedInvoice, signedXml, claveAcceso, envStr);
+      console.log('✅ Autorización SRI completada');
+    } catch (err) {
+      console.error('❌ Error en autorización SRI:', err);
+      // No lanzar el error para no romper el flujo
+      // La factura ya está guardada como 'pendiente'
+    }
+
+    // 🔥 RECARGAR LA FACTURA PARA OBTENER EL ESTADO ACTUALIZADO
+    const { rows: updatedRows } = await client.query(
+      `SELECT * FROM "${schema}".einvoices WHERE id = $1`,
+      [savedInvoice.id]
+    );
+    const updatedInvoice = updatedRows[0] || savedInvoice;
+
+    console.log('📊 FACTURA FINAL:', {
+      id: updatedInvoice.id,
+      invoice_number: updatedInvoice.invoice_number,
+      status: updatedInvoice.status,
+      auth_number: updatedInvoice.auth_number
     });
 
-    return savedInvoice;
+    return updatedInvoice;
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Error en emitInvoice:', err);
@@ -415,69 +436,83 @@ export async function emitInvoice(schema, opts) {
 }
 
 // ── Autorización SRI en background ────────────────────
-// ── Autorización SRI en background ────────────────────
 async function _authorizeSriBackground(schema, invoice, signedXml, claveAcceso, envStr) {
-  let status = 'pendiente', authNumber = null, authDate = null, sriMessage = null, sriJson = null;
+  let status = 'pendiente', authNumber = null, authDate = null, sriMessage = null;
+  let sriJsonString = null;
   
-  console.log('📤 INICIANDO AUTORIZACIÓN SRI:', {
-    schema,
-    invoiceId: invoice.id,
-    invoiceNumber: invoice.invoice_number,
-    claveAcceso,
-    env: envStr
-  });
+  console.log('========================================');
+  console.log('📤 INICIANDO AUTORIZACIÓN SRI');
+  console.log('Schema:', schema);
+  console.log('Invoice ID:', invoice.id);
+  console.log('Invoice Number:', invoice.invoice_number);
+  console.log('Clave Acceso:', claveAcceso);
+  console.log('Env:', envStr);
+  console.log('========================================');
   
   try {
+    console.log('📤 PASO 1: Validando XML en SRI...');
     const recResult = await validateXml({
       xml: new TextEncoder().encode(signedXml),
       env: envStr,
     });
+    console.log('📥 RESPUESTA RECEPCIÓN:', JSON.stringify(recResult, null, 2));
     logger.info({ recResult }, 'SRI recepción (bg)');
 
     if (recResult?.estado === 'RECIBIDA') {
-      console.log('✅ RECIBIDA, ENVIANDO A AUTORIZACIÓN...');
+      console.log('✅ XML RECIBIDO, PASO 2: Autorizando...');
       
       // Esperar un momento antes de autorizar
       await new Promise(resolve => setTimeout(resolve, 2000));
       
+      console.log('📤 Enviando a autorización con clave:', claveAcceso);
       const authResult = await authorizeXml({ 
         claveAcceso, 
         env: envStr,
         timeout: 30000
       });
+      
+      console.log('📥 RESPUESTA AUTORIZACIÓN COMPLETA:');
+      console.log(JSON.stringify(authResult, null, 2));
       logger.info({ authResult }, 'SRI autorización (bg)');
       
-      console.log('📥 RESPUESTA COMPLETA SRI:', JSON.stringify(authResult, null, 2));
-      
-      // 🔥 SANITIZAR - Guardar solo lo esencial
+      // 🔥 GUARDAR LA RESPUESTA COMPLETA (pero sanitizada)
       if (authResult) {
-        sriJson = {
-          estadoAutorizacion: authResult.estadoAutorizacion,
-          numeroAutorizacion: authResult.numeroAutorizacion || authResult.claveAcceso || claveAcceso,
-          fechaAutorizacion: authResult.fechaAutorizacion,
-          ambiente: authResult.ambiente,
-          mensajes: authResult.mensajes || null
-        };
+        // Primero, guardar todo el objeto para debug
+        const authResultSanitizado = { ...authResult };
         
-        if (sriJson.mensajes && Array.isArray(sriJson.mensajes)) {
-          sriJson.mensajes = sriJson.mensajes.map(m => 
-            typeof m === 'string' ? m : (m.mensaje || m)
+        // Eliminar campos con XML gigante (pero guardarlos en otro lado si es necesario)
+        if (authResultSanitizado.comprobante) {
+          // Guardar el XML en un campo separado si quieres
+          // O simplemente eliminarlo
+          delete authResultSanitizado.comprobante;
+        }
+        if (authResultSanitizado.comprobanteCrudo) {
+          delete authResultSanitizado.comprobanteCrudo;
+        }
+        
+        // Si hay mensajes, asegurar que sean strings
+        if (authResultSanitizado.mensajes && Array.isArray(authResultSanitizado.mensajes)) {
+          authResultSanitizado.mensajes = authResultSanitizado.mensajes.map(m => 
+            typeof m === 'string' ? m : (m.mensaje || m.message || String(m))
           );
         }
         
-        console.log('📊 SRI JSON SANITIZADO:', JSON.stringify(sriJson, null, 2));
+        sriJsonString = JSON.stringify(authResultSanitizado);
+        console.log('📊 SRI JSON SANITIZADO (tamaño):', sriJsonString.length, 'caracteres');
+        console.log('📊 SRI JSON CONTENIDO:', sriJsonString.substring(0, 500) + '...');
       }
 
       if (authResult?.estadoAutorizacion === 'AUTORIZADO') {
         status = 'autorizada';
-        // 🔥 CORREGIDO: usar numeroAutorizacion
         authNumber = authResult.numeroAutorizacion || authResult.claveAcceso || claveAcceso;
         authDate = authResult.fechaAutorizacion ? new Date(authResult.fechaAutorizacion) : new Date();
-        console.log('✅ FACTURA AUTORIZADA:', authNumber);
+        console.log('✅ ✅ ✅ FACTURA AUTORIZADA ✅ ✅ ✅');
+        console.log('Número de autorización:', authNumber);
+        console.log('Fecha de autorización:', authDate);
       } else {
         status = 'rechazada';
         sriMessage = (authResult?.mensajes || []).map(m => 
-          typeof m === 'string' ? m : (m.mensaje || m)
+          typeof m === 'string' ? m : (m.mensaje || m.message || String(m))
         ).join(' | ') || authResult?.estadoAutorizacion || 'Rechazada por el SRI';
         console.log('❌ FACTURA RECHAZADA:', sriMessage);
       }
@@ -485,56 +520,67 @@ async function _authorizeSriBackground(schema, invoice, signedXml, claveAcceso, 
       status = 'rechazada';
       sriMessage = recResult?.mensaje || 'No recibida por el SRI';
       console.log('❌ NO RECIBIDA POR SRI:', sriMessage);
+      console.log('Respuesta recepción:', JSON.stringify(recResult, null, 2));
     }
   } catch (sriErr) {
-    console.error('❌ ERROR EN AUTORIZACIÓN SRI:', sriErr);
-    logger.warn({ err: sriErr.message, stack: sriErr.stack }, 'SRI background error');
+    console.error('❌ ❌ ❌ ERROR EN AUTORIZACIÓN SRI ❌ ❌ ❌');
+    console.error('Error:', sriErr);
+    console.error('Stack:', sriErr.stack);
+    logger.error({ err: sriErr.message, stack: sriErr.stack }, 'SRI background error');
     status = 'pendiente';
     sriMessage = sriErr.message;
   }
 
-  const sriJsonString = sriJson ? JSON.stringify(sriJson) : null;
-  
-  console.log('💾 ACTUALIZANDO FACTURA EN DB:', {
-    id: invoice.id,
-    status,
-    authNumber,
-    sriMessage: sriMessage ? sriMessage.substring(0, 100) : null,
-    sriJsonLength: sriJsonString ? sriJsonString.length : 0
-  });
+  console.log('========================================');
+  console.log('💾 ACTUALIZANDO FACTURA EN DB');
+  console.log('ID:', invoice.id);
+  console.log('Status:', status);
+  console.log('Auth Number:', authNumber);
+  console.log('sriJsonString length:', sriJsonString ? sriJsonString.length : 0);
+  console.log('========================================');
 
-  const { rows: updated } = await query(
-    `UPDATE "${schema}".einvoices
-        SET status = $1, auth_number = $2, auth_date = $3,
-            sri_message = $4, sri_json = $5, updated_at = NOW()
-      WHERE id = $6
-      RETURNING *`,
-    [status, authNumber, authDate, sriMessage, sriJsonString, invoice.id]
-  );
+  try {
+    const { rows: updated } = await query(
+      `UPDATE "${schema}".einvoices
+          SET status = $1, auth_number = $2, auth_date = $3,
+              sri_message = $4, sri_json = $5, updated_at = NOW()
+        WHERE id = $6
+        RETURNING *`,
+      [status, authNumber, authDate, sriMessage, sriJsonString, invoice.id]
+    );
 
-  const updatedInvoice = updated[0];
-  if (!updatedInvoice) {
-    console.warn('⚠️ No se pudo actualizar factura en DB');
-    return;
-  }
-
-  console.log('📊 ESTADO FINAL FACTURA:', {
-    id: updatedInvoice.id,
-    status: updatedInvoice.status,
-    auth_number: updatedInvoice.auth_number,
-    invoice_number: updatedInvoice.invoice_number
-  });
-
-  // ✅ Enviar email si está autorizada
-  if (status === 'autorizada' && updatedInvoice.customer_email) {
-    try {
-      const cfg = await getConfig(schema);
-      const bizName = cfg?.nombre_comercial || cfg?.razon_social || 'Empresa';
-      const pdfBuf = await generateInvoicePdf(schema, updatedInvoice.id);
-      await sendInvoiceEmail(updatedInvoice, pdfBuf, updatedInvoice.customer_email, bizName);
-    } catch (e) {
-      logger.warn({ err: e.message }, 'Email send failed (non-blocking)');
+    const updatedInvoice = updated[0];
+    if (!updatedInvoice) {
+      console.error('⚠️ No se pudo actualizar factura en DB - no rows returned');
+      return;
     }
+
+    console.log('✅ FACTURA ACTUALIZADA EN DB:');
+    console.log('  ID:', updatedInvoice.id);
+    console.log('  Status:', updatedInvoice.status);
+    console.log('  Auth Number:', updatedInvoice.auth_number);
+    console.log('  sri_json exists:', !!updatedInvoice.sri_json);
+    console.log('========================================');
+
+    // ✅ Enviar email si está autorizada
+    if (status === 'autorizada' && updatedInvoice.customer_email) {
+      try {
+        console.log('📧 Enviando email a:', updatedInvoice.customer_email);
+        const cfg = await getConfig(schema);
+        const bizName = cfg?.nombre_comercial || cfg?.razon_social || 'Empresa';
+        const pdfBuf = await generateInvoicePdf(schema, updatedInvoice.id);
+        await sendInvoiceEmail(updatedInvoice, pdfBuf, updatedInvoice.customer_email, bizName);
+        console.log('✅ Email enviado');
+      } catch (e) {
+        console.error('❌ Error enviando email:', e.message);
+        logger.warn({ err: e.message }, 'Email send failed (non-blocking)');
+      }
+    }
+  } catch (dbErr) {
+    console.error('❌ ❌ ❌ ERROR ACTUALIZANDO DB ❌ ❌ ❌');
+    console.error('Error:', dbErr);
+    console.error('Stack:', dbErr.stack);
+    logger.error({ err: dbErr.message, stack: dbErr.stack }, 'DB update error');
   }
 }
 
