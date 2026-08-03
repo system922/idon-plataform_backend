@@ -445,32 +445,27 @@ export async function emitInvoice(schema, opts) {
     await client.query('COMMIT');
     const savedInvoice = rows[0];
 
-    // 🔥🔥🔥 ESPERAR LA AUTORIZACIÓN SRI (SÍNCRONO) 🔥🔥🔥
-    console.log('⏳ Esperando autorización SRI...');
-    try {
-      await _authorizeSriBackground(schema, savedInvoice, signedXml, claveAcceso, envStr);
-      console.log('✅ Autorización SRI completada');
-    } catch (err) {
-      console.error('❌ Error en autorización SRI:', err);
-      // No lanzar el error para no romper el flujo
-      // La factura ya está guardada como 'pendiente'
-    }
-
-    // 🔥 RECARGAR LA FACTURA PARA OBTENER EL ESTADO ACTUALIZADO
-    const { rows: updatedRows } = await client.query(
-      `SELECT * FROM "${schema}".einvoices WHERE id = $1`,
-      [savedInvoice.id]
-    );
-    const updatedInvoice = updatedRows[0] || savedInvoice;
-
-    console.log('📊 FACTURA FINAL:', {
-      id: updatedInvoice.id,
-      invoice_number: updatedInvoice.invoice_number,
-      status: updatedInvoice.status,
-      auth_number: updatedInvoice.auth_number
+    setImmediate(async () => {
+      try {
+        console.log('🚀 Iniciando autorización SRI en segundo plano...');
+        await _authorizeSriBackground(schema, savedInvoice, signedXml, claveAcceso, envStr);
+        console.log('✅ Autorización SRI terminada');
+      } catch (err) {
+        logger.error(
+          { err: err?.message, stack: err?.stack },
+          'Background SRI authorization failed'
+        );
+      }
     });
 
-    return updatedInvoice;
+    console.log('📊 FACTURA FINAL:', {
+      id: savedInvoice.id,
+      invoice_number: savedInvoice.invoice_number,
+      status: savedInvoice.status,
+      auth_number: savedInvoice.auth_number
+    });
+
+    return savedInvoice;
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Error en emitInvoice:', err);
