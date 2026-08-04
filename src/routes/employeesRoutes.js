@@ -1,8 +1,7 @@
-// routes/employees.js
+// routes/employeesRoutes.js
 import express from 'express';
 import { query } from '../config/database.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
-import { authMiddleware } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -34,11 +33,42 @@ const validarEmail = (email) => {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 };
 
-/**
- * GET /api/employees/check-exists
- * Check if employee exists by document_number or email
- */
-router.get('/check-exists', authMiddleware, async (req, res) => {
+/* ─── GET /api/employees ─────────────────────────────────────────────────── */
+router.get('/', async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
+    const { status } = req.query;
+    let whereClause = '';
+    let params = [];
+
+    if (status) {
+      whereClause = 'WHERE status = $1';
+      params.push(status);
+    }
+
+    const q = `
+      SELECT 
+        id, user_id, full_name, email, phone, position, department, 
+        document_number, salary, hired_at, status, created_at, updated_at
+      FROM "${schema}".employees
+      ${whereClause}
+      ORDER BY created_at DESC
+    `;
+    const result = await query(q, params);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error in GET /:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ─── GET /api/employees/check-exists ───────────────────────────────────── */
+/* ⚠️  DEBE ir antes de /:id para que no sea interceptada como parámetro    */
+router.get('/check-exists', async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     if (!schema) {
@@ -67,7 +97,6 @@ router.get('/check-exists', authMiddleware, async (req, res) => {
       paramIndex++;
     }
 
-    // Si se proporciona exclude_id, excluir ese registro
     if (exclude_id) {
       conditions.push(`id != $${paramIndex}`);
       params.push(exclude_id);
@@ -100,11 +129,9 @@ router.get('/check-exists', authMiddleware, async (req, res) => {
   }
 });
 
-/**
- * GET /api/employees/by-document
- * Get employee by document_number
- */
-router.get('/by-document', authMiddleware, async (req, res) => {
+/* ─── GET /api/employees/by-document ────────────────────────────────────── */
+/* ⚠️  DEBE ir antes de /:id para que no sea interceptada como parámetro    */
+router.get('/by-document', async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     if (!schema) {
@@ -136,47 +163,9 @@ router.get('/by-document', authMiddleware, async (req, res) => {
   }
 });
 
-/**
- * GET /api/employees
- * List all employees
- */
-router.get('/', authMiddleware, async (req, res) => {
-  try {
-    const schema = await getSchemaName(req);
-    if (!schema) {
-      return res.status(400).json({ error: 'Business context required' });
-    }
-
-    const { status } = req.query;
-    let whereClause = '';
-    let params = [];
-
-    if (status) {
-      whereClause = 'WHERE status = $1';
-      params.push(status);
-    }
-
-    const q = `
-      SELECT 
-        id, user_id, full_name, email, phone, position, department, 
-        document_number, salary, hired_at, status, created_at, updated_at
-      FROM "${schema}".employees
-      ${whereClause}
-      ORDER BY created_at DESC
-    `;
-    const result = await query(q, params);
-    res.json(result.rows);
-  } catch (err) {
-    console.error('Error in GET /:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/**
- * GET /api/employees/:id
- * Get one employee by id
- */
-router.get('/:id', authMiddleware, async (req, res) => {
+/* ─── GET /api/employees/:id ────────────────────────────────────────────── */
+/* ⚠️  DEBE ir DESPUÉS de las rutas específicas                             */
+router.get('/:id', async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     if (!schema) {
@@ -198,11 +187,8 @@ router.get('/:id', authMiddleware, async (req, res) => {
   }
 });
 
-/**
- * POST /api/employees
- * Create new employee
- */
-router.post('/', authMiddleware, async (req, res) => {
+/* ─── POST /api/employees ────────────────────────────────────────────────── */
+router.post('/', async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     if (!schema) {
@@ -267,7 +253,7 @@ router.post('/', authMiddleware, async (req, res) => {
       }
     }
 
-    // ── Verificar duplicados (CRÍTICO) ──────────────────────────────────
+    // ── Verificar duplicados ──────────────────────────────────────────────
     if (document_number) {
       const checkDoc = await query(
         `SELECT id, full_name FROM "${schema}".employees WHERE document_number = $1`,
@@ -277,8 +263,7 @@ router.post('/', authMiddleware, async (req, res) => {
         return res.status(400).json({ 
           error: `Ya existe un colaborador con la cédula ${document_number}`,
           field: 'document_number',
-          code: 'DUPLICATE_DOCUMENT',
-          existing: checkDoc.rows[0]
+          code: 'DUPLICATE_DOCUMENT'
         });
       }
     }
@@ -292,8 +277,7 @@ router.post('/', authMiddleware, async (req, res) => {
         return res.status(400).json({ 
           error: `Ya existe un colaborador con el correo ${email}`,
           field: 'email',
-          code: 'DUPLICATE_EMAIL',
-          existing: checkEmail.rows[0]
+          code: 'DUPLICATE_EMAIL'
         });
       }
     }
@@ -325,7 +309,6 @@ router.post('/', authMiddleware, async (req, res) => {
   } catch (err) {
     console.error('Error in POST /:', err);
     
-    // ── Capturar errores de unique constraint ─────────────────────────────
     if (err.message && err.message.includes('duplicate key')) {
       if (err.message.includes('document_number')) {
         return res.status(400).json({ 
@@ -347,11 +330,8 @@ router.post('/', authMiddleware, async (req, res) => {
   }
 });
 
-/**
- * PUT /api/employees/:id
- * Update employee
- */
-router.put('/:id', authMiddleware, async (req, res) => {
+/* ─── PUT /api/employees/:id ────────────────────────────────────────────── */
+router.put('/:id', async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     if (!schema) {
@@ -406,8 +386,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
         return res.status(400).json({ 
           error: `Ya existe otro colaborador con la cédula ${document_number}`,
           field: 'document_number',
-          code: 'DUPLICATE_DOCUMENT',
-          existing: checkDoc.rows[0]
+          code: 'DUPLICATE_DOCUMENT'
         });
       }
     }
@@ -421,8 +400,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
         return res.status(400).json({ 
           error: `Ya existe otro colaborador con el correo ${email}`,
           field: 'email',
-          code: 'DUPLICATE_EMAIL',
-          existing: checkEmail.rows[0]
+          code: 'DUPLICATE_EMAIL'
         });
       }
     }
@@ -473,7 +451,6 @@ router.put('/:id', authMiddleware, async (req, res) => {
   } catch (err) {
     console.error('Error in PUT /:id:', err);
     
-    // ── Capturar errores de unique constraint ─────────────────────────────
     if (err.message && err.message.includes('duplicate key')) {
       if (err.message.includes('document_number')) {
         return res.status(400).json({ 
@@ -495,11 +472,8 @@ router.put('/:id', authMiddleware, async (req, res) => {
   }
 });
 
-/**
- * DELETE /api/employees/:id
- * Delete an employee
- */
-router.delete('/:id', authMiddleware, async (req, res) => {
+/* ─── DELETE /api/employees/:id ─────────────────────────────────────────── */
+router.delete('/:id', async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     if (!schema) {
