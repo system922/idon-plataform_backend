@@ -34,31 +34,6 @@ const validarEmail = (email) => {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 };
 
-// ── Validar datos del empleado ──────────────────────────────────────────
-const validateEmployeeData = (data, isUpdate = false) => {
-  const errors = [];
-  
-  if (!isUpdate) {
-    if (!data.full_name || !data.full_name.trim()) {
-      errors.push({ field: 'full_name', message: 'full_name is required' });
-    }
-    if (!data.email || !data.email.trim()) {
-      errors.push({ field: 'email', message: 'email is required' });
-    } else if (!validarEmail(data.email)) {
-      errors.push({ field: 'email', message: 'email is invalid' });
-    }
-    if (!data.position || !data.position.trim()) {
-      errors.push({ field: 'position', message: 'position is required' });
-    }
-  } else {
-    if (data.email !== undefined && !validarEmail(data.email)) {
-      errors.push({ field: 'email', message: 'email is invalid' });
-    }
-  }
-  
-  return errors;
-};
-
 /**
  * GET /api/employees/check-exists
  * Check if employee exists by document_number or email
@@ -70,7 +45,7 @@ router.get('/check-exists', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Business context required' });
     }
 
-    const { document_number, email } = req.query;
+    const { document_number, email, exclude_id } = req.query;
     
     if (!document_number && !email) {
       return res.status(400).json({ error: 'document_number or email is required' });
@@ -92,10 +67,17 @@ router.get('/check-exists', authMiddleware, async (req, res) => {
       paramIndex++;
     }
 
+    // Si se proporciona exclude_id, excluir ese registro
+    if (exclude_id) {
+      conditions.push(`id != $${paramIndex}`);
+      params.push(exclude_id);
+      paramIndex++;
+    }
+
     const q = `
       SELECT id, full_name, document_number, email 
       FROM "${schema}".employees 
-      WHERE ${conditions.join(' OR ')}
+      WHERE ${conditions.join(' AND ')}
       LIMIT 1
     `;
     
@@ -227,12 +209,6 @@ router.post('/', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Business context required' });
     }
 
-    // ── Validar datos básicos ─────────────────────────────────────────────
-    const validationErrors = validateEmployeeData(req.body);
-    if (validationErrors.length > 0) {
-      return res.status(400).json({ errors: validationErrors });
-    }
-
     const {
       user_id,
       full_name,
@@ -245,6 +221,35 @@ router.post('/', authMiddleware, async (req, res) => {
       hired_at,
       status
     } = req.body;
+
+    // ── Validar campos obligatorios ──────────────────────────────────────
+    if (!full_name || !full_name.trim()) {
+      return res.status(400).json({ 
+        error: 'El nombre completo es requerido',
+        field: 'full_name'
+      });
+    }
+
+    if (!email || !email.trim()) {
+      return res.status(400).json({ 
+        error: 'El correo electrónico es requerido',
+        field: 'email'
+      });
+    }
+
+    if (!validarEmail(email)) {
+      return res.status(400).json({ 
+        error: 'Correo electrónico inválido',
+        field: 'email'
+      });
+    }
+
+    if (!position || !position.trim()) {
+      return res.status(400).json({ 
+        error: 'El cargo es requerido',
+        field: 'position'
+      });
+    }
 
     // ── Validar cédula si se proporciona ──────────────────────────────────
     if (document_number) {
@@ -262,29 +267,33 @@ router.post('/', authMiddleware, async (req, res) => {
       }
     }
 
-    // ── Verificar duplicados ──────────────────────────────────────────────
+    // ── Verificar duplicados (CRÍTICO) ──────────────────────────────────
     if (document_number) {
       const checkDoc = await query(
-        `SELECT id FROM "${schema}".employees WHERE document_number = $1`,
+        `SELECT id, full_name FROM "${schema}".employees WHERE document_number = $1`,
         [document_number]
       );
       if (checkDoc.rows.length > 0) {
         return res.status(400).json({ 
-          error: 'Ya existe un colaborador con esta cédula',
-          field: 'document_number'
+          error: `Ya existe un colaborador con la cédula ${document_number}`,
+          field: 'document_number',
+          code: 'DUPLICATE_DOCUMENT',
+          existing: checkDoc.rows[0]
         });
       }
     }
 
     if (email) {
       const checkEmail = await query(
-        `SELECT id FROM "${schema}".employees WHERE email = $1`,
+        `SELECT id, full_name FROM "${schema}".employees WHERE email = $1`,
         [email]
       );
       if (checkEmail.rows.length > 0) {
         return res.status(400).json({ 
-          error: 'Ya existe un colaborador con este correo',
-          field: 'email'
+          error: `Ya existe un colaborador con el correo ${email}`,
+          field: 'email',
+          code: 'DUPLICATE_EMAIL',
+          existing: checkEmail.rows[0]
         });
       }
     }
@@ -300,7 +309,7 @@ router.post('/', authMiddleware, async (req, res) => {
     const params = [
       user_id || null,
       full_name.trim(),
-      email.trim(),
+      email.trim().toLowerCase(),
       phone || null,
       position.trim(),
       department || null,
@@ -321,13 +330,15 @@ router.post('/', authMiddleware, async (req, res) => {
       if (err.message.includes('document_number')) {
         return res.status(400).json({ 
           error: 'Ya existe un colaborador con esta cédula',
-          field: 'document_number'
+          field: 'document_number',
+          code: 'DUPLICATE_DOCUMENT'
         });
       }
       if (err.message.includes('email')) {
         return res.status(400).json({ 
           error: 'Ya existe un colaborador con este correo',
-          field: 'email'
+          field: 'email',
+          code: 'DUPLICATE_EMAIL'
         });
       }
     }
@@ -346,12 +357,6 @@ router.put('/:id', authMiddleware, async (req, res) => {
     if (!schema) {
       return res.status(400).json({ error: 'Business context required' });
     }
-    
-    // ── Validar datos ──────────────────────────────────────────────────────
-    const validationErrors = validateEmployeeData(req.body, true);
-    if (validationErrors.length > 0) {
-      return res.status(400).json({ errors: validationErrors });
-    }
 
     const { id } = req.params;
     const {
@@ -366,6 +371,14 @@ router.put('/:id', authMiddleware, async (req, res) => {
       hired_at,
       status
     } = req.body;
+
+    // ── Validar email si se proporciona ──────────────────────────────────
+    if (email && !validarEmail(email)) {
+      return res.status(400).json({ 
+        error: 'Correo electrónico inválido',
+        field: 'email'
+      });
+    }
 
     // ── Validar cédula si se proporciona ──────────────────────────────────
     if (document_number) {
@@ -386,26 +399,30 @@ router.put('/:id', authMiddleware, async (req, res) => {
     // ── Verificar duplicados excluyendo el registro actual ────────────────
     if (document_number) {
       const checkDoc = await query(
-        `SELECT id FROM "${schema}".employees WHERE document_number = $1 AND id != $2`,
+        `SELECT id, full_name FROM "${schema}".employees WHERE document_number = $1 AND id != $2`,
         [document_number, id]
       );
       if (checkDoc.rows.length > 0) {
         return res.status(400).json({ 
-          error: 'Ya existe otro colaborador con esta cédula',
-          field: 'document_number'
+          error: `Ya existe otro colaborador con la cédula ${document_number}`,
+          field: 'document_number',
+          code: 'DUPLICATE_DOCUMENT',
+          existing: checkDoc.rows[0]
         });
       }
     }
 
     if (email) {
       const checkEmail = await query(
-        `SELECT id FROM "${schema}".employees WHERE email = $1 AND id != $2`,
+        `SELECT id, full_name FROM "${schema}".employees WHERE email = $1 AND id != $2`,
         [email, id]
       );
       if (checkEmail.rows.length > 0) {
         return res.status(400).json({ 
-          error: 'Ya existe otro colaborador con este correo',
-          field: 'email'
+          error: `Ya existe otro colaborador con el correo ${email}`,
+          field: 'email',
+          code: 'DUPLICATE_EMAIL',
+          existing: checkEmail.rows[0]
         });
       }
     }
@@ -422,16 +439,16 @@ router.put('/:id', authMiddleware, async (req, res) => {
     // ── Actualizar ─────────────────────────────────────────────────────────
     const q = `
       UPDATE "${schema}".employees SET
-        user_id = $1,
-        full_name = $2,
-        email = $3,
-        phone = $4,
-        position = $5,
-        department = $6,
-        document_number = $7,
-        salary = $8,
-        hired_at = $9,
-        status = $10,
+        user_id = COALESCE($1, user_id),
+        full_name = COALESCE($2, full_name),
+        email = COALESCE($3, email),
+        phone = COALESCE($4, phone),
+        position = COALESCE($5, position),
+        department = COALESCE($6, department),
+        document_number = COALESCE($7, document_number),
+        salary = COALESCE($8, salary),
+        hired_at = COALESCE($9, hired_at),
+        status = COALESCE($10, status),
         updated_at = CURRENT_TIMESTAMP
       WHERE id = $11
       RETURNING *
@@ -439,7 +456,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
     const params = [
       user_id || null,
       full_name?.trim() || null,
-      email?.trim() || null,
+      email?.trim().toLowerCase() || null,
       phone || null,
       position?.trim() || null,
       department || null,
@@ -461,13 +478,15 @@ router.put('/:id', authMiddleware, async (req, res) => {
       if (err.message.includes('document_number')) {
         return res.status(400).json({ 
           error: 'Ya existe otro colaborador con esta cédula',
-          field: 'document_number'
+          field: 'document_number',
+          code: 'DUPLICATE_DOCUMENT'
         });
       }
       if (err.message.includes('email')) {
         return res.status(400).json({ 
           error: 'Ya existe otro colaborador con este correo',
-          field: 'email'
+          field: 'email',
+          code: 'DUPLICATE_EMAIL'
         });
       }
     }
@@ -500,10 +519,8 @@ router.delete('/:id', authMiddleware, async (req, res) => {
       });
     }
 
-    // ── Verificar si tiene relaciones (ej: ventas, pedidos, etc) ──────────
-    // Si tienes una tabla de ventas que referencia a employees
+    // ── Verificar si tiene relaciones ──────────────────────────────────────
     try {
-      // Verificar si existe tabla de órdenes o ventas
       const tablesCheck = await query(`
         SELECT EXISTS (
           SELECT 1 FROM information_schema.tables 
@@ -518,7 +535,6 @@ router.delete('/:id', authMiddleware, async (req, res) => {
       const hasOrders = tablesCheck.rows[0]?.has_orders || false;
       const hasSales = tablesCheck.rows[0]?.has_sales || false;
       
-      // Verificar órdenes si existe la tabla
       if (hasOrders) {
         const ordersQ = `SELECT id FROM "${schema}".orders WHERE employee_id = $1 LIMIT 1`;
         const ordersResult = await query(ordersQ, [id]);
@@ -530,7 +546,6 @@ router.delete('/:id', authMiddleware, async (req, res) => {
         }
       }
       
-      // Verificar ventas si existe la tabla
       if (hasSales) {
         const salesQ = `SELECT id FROM "${schema}".sales WHERE employee_id = $1 LIMIT 1`;
         const salesResult = await query(salesQ, [id]);
@@ -542,7 +557,6 @@ router.delete('/:id', authMiddleware, async (req, res) => {
         }
       }
     } catch (e) {
-      // Si la tabla no existe, continuar con la eliminación
       console.log('Tablas relacionadas no encontradas, continuando con eliminación');
     }
 
@@ -558,7 +572,6 @@ router.delete('/:id', authMiddleware, async (req, res) => {
   } catch (err) {
     console.error('Error in DELETE /:id:', err);
     
-    // ── Manejar errores de foreign key ────────────────────────────────────
     if (err.message && err.message.includes('foreign key')) {
       return res.status(400).json({ 
         error: 'No se puede eliminar el colaborador porque tiene registros asociados',
