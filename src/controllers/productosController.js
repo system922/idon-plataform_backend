@@ -20,17 +20,6 @@ export const getAll = async (req, res) => {
     const includeInactive = all === '1';
     const products = await productService.getAll(schema, includeInactive, category_id);
 
-    console.log('📦 getAll - LISTA COMPLETA devuelta al frontend:', 
-      products.slice(0, 3).map(p => ({
-        id: p.id,
-        name: p.name,
-        product_type: p.product_type,
-        is_taxable: p.is_taxable,
-        tax_rate: p.tax_rate,
-        selling_price: p.selling_price,
-      }))
-    );
-
     res.json(products);
   } catch (err) {
     console.error('Error en getAll:', err);

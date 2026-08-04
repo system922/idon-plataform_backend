@@ -16,49 +16,29 @@ const SELECT = `
 // Función para normalizar los datos del producto
 const normalizeProduct = (row) => {
   if (!row) return null;
-  
-  // LOG RAW - ANTES de cualquier conversión
-  console.log('🔍 normalizeProduct RAW:', {
-    name: row.name,
-    is_taxable_raw: row.is_taxable,
-    is_taxable_type: typeof row.is_taxable,
-    is_taxable_json: JSON.stringify(row.is_taxable),
-    tax_rate_raw: row.tax_rate,
-    selling_price_raw: row.selling_price,
-    product_type: row.product_type
-  });
-  
-  // Convertir is_taxable: detectar si es booleano o número
+
   let isTaxableValue = 0;
   if (typeof row.is_taxable === 'boolean') {
     isTaxableValue = row.is_taxable ? 15 : 0;
-    console.log('⚠️ normalizeProduct: is_taxable es BOOLEANO', row.is_taxable, '→', isTaxableValue);
   } else if (row.is_taxable !== null && row.is_taxable !== undefined) {
     isTaxableValue = Number(Math.round(row.is_taxable));
-    console.log('✅ normalizeProduct: is_taxable es NÚMERO', row.is_taxable, '→', isTaxableValue);
   } else {
-    console.log('⚠️ normalizeProduct: is_taxable es NULL/UNDEFINED');
     isTaxableValue = 0;
   }
-  
-  // VALIDAR QUE SEA UNO DE LOS VALORES PERMITIDOS
+
   const tasasPermitidas = [0, 5, 8, 12, 15];
   if (!tasasPermitidas.includes(isTaxableValue)) {
-    console.warn(`❌ TASA INVÁLIDA: ${isTaxableValue}, usando 0`);
     isTaxableValue = 0;
   }
-  
-  // Validar product_type
+
   const productType = row.product_type || 'COMMERCIAL';
   const tiposPermitidos = ['COMMERCIAL', 'MANUFACTURED'];
-  if (!tiposPermitidos.includes(productType)) {
-    console.warn(`❌ TIPO INVÁLIDO: ${productType}, usando COMMERCIAL`);
-  }
-  
+  const safeProductType = tiposPermitidos.includes(productType) ? productType : 'COMMERCIAL';
+
   return {
     ...row,
     is_taxable: isTaxableValue,
-    product_type: tiposPermitidos.includes(productType) ? productType : 'COMMERCIAL',
+    product_type: safeProductType,
     tax_rate: row.tax_rate ? Number(row.tax_rate) : 0,
     selling_price: Number(row.selling_price) || 0,
     unit_cost: Number(row.unit_cost) || 0,
@@ -158,8 +138,6 @@ export const getFiscalRates = async () => {
     if (ivaRateReduced > 1) {
       ivaRateReduced = ivaRateReduced / 100;
     }
-    
-    console.log('📊 Tasas fiscales desde BD:', { ivaRate, ivaRateReduced });
     
     return {
       iva_rate: ivaRate,
