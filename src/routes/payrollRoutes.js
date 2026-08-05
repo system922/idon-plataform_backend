@@ -83,6 +83,7 @@ async function ensureTablesExist(schema) {
 }
 
 /* ================= GENERAR NÓMINA (previsualización) ================== */
+/* ================= GENERAR NÓMINA (previsualización) ================== */
 router.post('/generate', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -102,11 +103,13 @@ router.post('/generate', authMiddleware, async (req, res) => {
       params = [employee_ids];
     }
 
+    // Obtener empleados con su tipo de pago
     const employeesRes = await query(`
       SELECT 
         id, 
         full_name, 
-        COALESCE(salary, 0) as salary
+        COALESCE(salary, 0) as salary,
+        COALESCE(payment_type, 'hourly') as emp_payment_type
       FROM ${schema}.employees
       ${whereClause}
     `, params);
@@ -126,11 +129,19 @@ router.post('/generate', authMiddleware, async (req, res) => {
     
     for (const emp of employeesRes.rows) {
       const salary = Number(emp.salary) || 0;
-      console.log(`💰 Procesando: ${emp.full_name}, salary=${salary}`);
+      // Usar el tipo de pago del empleado, o el global si no tiene definido
+      const empPaymentType = emp.emp_payment_type || payment_type || 'hourly';
       
-      if (payment_type === 'daily') {
-        // Pago diario: usa el sueldo como monto fijo diario
+      console.log(`💰 Procesando: ${emp.full_name}, salary=${salary}, tipo=${empPaymentType}`);
+      
+      if (empPaymentType === 'daily') {
+        // ============================================================
+        // PAGO DIARIO: salary es el valor diario
+        // total = salary × días en el período
+        // ============================================================
         const total_pay = salary * daysInPeriod;
+        
+        console.log(`   Pago diario: $${salary}/día × ${daysInPeriod} días = $${total_pay}`);
         
         result.push({
           employee_id: emp.id,
@@ -147,11 +158,20 @@ router.post('/generate', authMiddleware, async (req, res) => {
           ordinary_hours: 0,
           night_hours: 0,
           supplementary_hours: 0,
-          extraordinary_hours: 0
+          extraordinary_hours: 0,
+          emp_payment_type: 'daily'
         });
+        
       } else {
-        // Pago por horas: usa el sueldo como sueldo mensual
-        // Obtener horas reales trabajadas
+        // ============================================================
+        // PAGO POR HORAS: salary es sueldo mensual
+        // hourly_rate = salary / 240
+        // total = horas_trabajadas × hourly_rate
+        // ============================================================
+        const hourlyRate = salary / 240;
+        console.log(`   Valor por hora: $${hourlyRate.toFixed(2)} (${salary} / 240)`);
+        
+        // Obtener horas REALES trabajadas en el período
         const workedHoursRes = await query(`
           SELECT 
             worked_date,
@@ -164,64 +184,58 @@ router.post('/generate', authMiddleware, async (req, res) => {
           ORDER BY worked_date
         `, [emp.id, start, end]);
 
-        console.log(`    📊 Horas encontradas para ${emp.full_name}: ${workedHoursRes.rows.length} días`);
+        console.log(`   📊 Horas encontradas: ${workedHoursRes.rows.length} días`);
 
-        // Calcular horas según el ministerio de trabajo
-        const hourlyRate = salary / 240; // SBU / 240 horas mensuales
-        
         let ordinary_hours = 0;
         let night_hours = 0;
         let supplementary_hours = 0;
         let extraordinary_hours = 0;
         let total_hours = 0;
         
-        // Si no hay horas registradas, usar 8 horas diarias como estándar
+        // Si NO hay horas registradas, total = 0
         if (workedHoursRes.rows.length === 0) {
-          console.log(`    ⚠️ Sin horas registradas. Usando 8h/día x ${daysInPeriod} días = ${8 * daysInPeriod}h`);
-          ordinary_hours = 8 * daysInPeriod;
-          total_hours = 8 * daysInPeriod;
+          console.log(`   ⚠️ Sin horas registradas. Total horas = 0`);
+          total_hours = 0;
+          ordinary_hours = 0;
         } else {
           // Procesar horas registradas
           for (const dayRow of workedHoursRes.rows) {
             const dailyHours = Number(dayRow.daily_hours) || 0;
             total_hours += dailyHours;
             
-            // Primeras 8 horas: ordinarias
             if (dailyHours <= 8) {
               ordinary_hours += dailyHours;
             } else {
-              // 8 horas ordinarias
               ordinary_hours += 8;
               const extraHours = dailyHours - 8;
               
-              // Determinar si es fin de semana/feriado (extraordinarias) o suplementarias
               const dayOfWeek = new Date(dayRow.worked_date).getDay();
               if (dayOfWeek === 0 || dayOfWeek === 6) {
-                // Fin de semana: extraordinarias (100% extra)
                 extraordinary_hours += extraHours;
               } else {
-                // Entre semana: suplementarias (50% extra)
                 supplementary_hours += extraHours;
               }
             }
           }
         }
 
-        // Calcular monto por tipo de hora (basado en ministerio de trabajo Ecuador)
-        const ordinaryAmount = ordinary_hours * hourlyRate; // $2.01 * 0%
-        const nightAmount = night_hours * (hourlyRate * 1.25); // $2.01 * 1.25
-        const supplementaryAmount = supplementary_hours * (hourlyRate * 1.50); // $2.01 * 1.5
-        const extraordinaryAmount = extraordinary_hours * (hourlyRate * 2.00); // $2.01 * 2
+        // Calcular montos
+        const ordinaryAmount = ordinary_hours * hourlyRate;
+        const nightAmount = night_hours * (hourlyRate * 1.25);
+        const supplementaryAmount = supplementary_hours * (hourlyRate * 1.50);
+        const extraordinaryAmount = extraordinary_hours * (hourlyRate * 2.00);
         const total_pay = ordinaryAmount + nightAmount + supplementaryAmount + extraordinaryAmount;
+        
+        console.log(`   Total horas: ${total_hours}, Total pago: $${total_pay.toFixed(2)}`);
         
         result.push({
           employee_id: emp.id,
           full_name: emp.full_name,
           total_hours: total_hours,
           extra_hours: supplementary_hours + extraordinary_hours,
-          days_worked: workedHoursRes.rows.length,
+          days_worked: workedHoursRes.rows.length || 0,
           hourly_rate: hourlyRate,
-          daily_rate: salary,
+          daily_rate: 0,
           total_days: daysInPeriod,
           extra_pay: nightAmount + supplementaryAmount + extraordinaryAmount,
           total_pay: total_pay,
@@ -229,7 +243,8 @@ router.post('/generate', authMiddleware, async (req, res) => {
           ordinary_hours: ordinary_hours,
           night_hours: night_hours,
           supplementary_hours: supplementary_hours,
-          extraordinary_hours: extraordinary_hours
+          extraordinary_hours: extraordinary_hours,
+          emp_payment_type: 'hourly'
         });
       }
     }
@@ -280,24 +295,28 @@ router.post('/', authMiddleware, async (req, res) => {
           continue;
         }
 
+        // Usar el tipo de pago del empleado, o el global si no tiene
+        const empPaymentType = r.emp_payment_type || payment_type || 'hourly';
+
         // Eliminar duplicados existentes
-        const deleteResult = await query(`
+        await query(`
           DELETE FROM ${schema}.employee_payrolls
           WHERE employee_id = $1 AND period_start = $2::DATE AND period_end = $3::DATE AND payment_type = $4
-        `, [r.employee_id, start, end, payment_type]);
-        console.log(`  🗑️  Eliminados duplicados: ${deleteResult.rowCount} filas`);
+        `, [r.employee_id, start, end, empPaymentType]);
 
         let base_salary_value;
         let total_pay_value;
         let total_hours_value = 0;
         let extra_hours_value = 0;
         
-        if (payment_type === 'daily') {
-          base_salary_value = Number(r.daily_rate) || 0;
+        if (empPaymentType === 'daily') {
+          // Pago diario
+          base_salary_value = Number(r.daily_rate) || (Number(r.total_pay) / daysInPeriod);
           total_pay_value = Number(r.total_pay) || (base_salary_value * daysInPeriod);
           console.log(`    Pago diario: $${base_salary_value}/día × ${daysInPeriod} días = $${total_pay_value}`);
         } else {
-          base_salary_value = Number(r.hourly_rate) || 0;
+          // Pago por horas
+          base_salary_value = Number(r.hourly_rate) || (Number(r.total_pay) / (Number(r.total_hours) || 1));
           total_pay_value = Number(r.total_pay) || 0;
           total_hours_value = Number(r.total_hours) || 0;
           extra_hours_value = Number(r.extra_hours) || 0;
@@ -318,7 +337,7 @@ router.post('/', authMiddleware, async (req, res) => {
           r.employee_id,
           start,
           end,
-          payment_type,
+          empPaymentType,
           base_salary_value,
           total_hours_value,
           extra_hours_value,
@@ -336,7 +355,7 @@ router.post('/', authMiddleware, async (req, res) => {
         }
 
         // Guardar detalles del pago según tipo
-        if (payment_type === 'daily') {
+        if (empPaymentType === 'daily') {
           await query(`
             INSERT INTO ${schema}.employee_payroll_details (payroll_id, concept, type, amount)
             VALUES ($1, $2, 'daily_wage', $3)

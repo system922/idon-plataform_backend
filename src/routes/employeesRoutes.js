@@ -53,7 +53,8 @@ router.get('/', async (req, res) => {
     const q = `
       SELECT 
         id, user_id, full_name, email, phone, position, department, 
-        document_number, salary, hired_at, status, created_at, updated_at
+        document_number, salary, hired_at, status, created_at, updated_at,
+        COALESCE(payment_type, 'hourly') as payment_type  -- ← NUEVO CAMPO
       FROM "${schema}".employees
       ${whereClause}
       ORDER BY created_at DESC
@@ -205,7 +206,8 @@ router.post('/', async (req, res) => {
       document_number,
       salary,
       hired_at,
-      status
+      status,
+      payment_type  // ← NUEVO CAMPO
     } = req.body;
 
     // ── Validar campos obligatorios ──────────────────────────────────────
@@ -253,6 +255,12 @@ router.post('/', async (req, res) => {
       }
     }
 
+    // ── Validar payment_type ──────────────────────────────────────────────
+    const validPaymentTypes = ['hourly', 'daily'];
+    const finalPaymentType = payment_type && validPaymentTypes.includes(payment_type) 
+      ? payment_type 
+      : 'hourly';
+
     // ── Verificar duplicados ──────────────────────────────────────────────
     if (document_number) {
       const checkDoc = await query(
@@ -282,12 +290,13 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // ── Insertar ───────────────────────────────────────────────────────────
+    // ── Insertar con el nuevo campo ──────────────────────────────────────
     const q = `
       INSERT INTO "${schema}".employees
-        (user_id, full_name, email, phone, position, department, document_number, salary, hired_at, status)
+        (user_id, full_name, email, phone, position, department, 
+         document_number, salary, hired_at, status, payment_type)
       VALUES
-        ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, 'active'))
+        ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, 'active'), $11)
       RETURNING *
     `;
     const params = [
@@ -300,7 +309,8 @@ router.post('/', async (req, res) => {
       document_number || null,
       salary || 0,
       hired_at || null,
-      status || 'active'
+      status || 'active',
+      finalPaymentType  // ← NUEVO PARÁMETRO
     ];
     
     const result = await query(q, params);
@@ -349,7 +359,8 @@ router.put('/:id', async (req, res) => {
       document_number,
       salary,
       hired_at,
-      status
+      status,
+      payment_type  // ← NUEVO CAMPO
     } = req.body;
 
     // ── Validar email si se proporciona ──────────────────────────────────
@@ -374,6 +385,13 @@ router.put('/:id', async (req, res) => {
           field: 'document_number'
         });
       }
+    }
+
+    // ── Validar payment_type ──────────────────────────────────────────────
+    const validPaymentTypes = ['hourly', 'daily'];
+    let finalPaymentType = null;
+    if (payment_type && validPaymentTypes.includes(payment_type)) {
+      finalPaymentType = payment_type;
     }
 
     // ── Verificar duplicados excluyendo el registro actual ────────────────
@@ -414,7 +432,7 @@ router.put('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Employee not found' });
     }
 
-    // ── Actualizar ─────────────────────────────────────────────────────────
+    // ── Actualizar con el nuevo campo ─────────────────────────────────────
     const q = `
       UPDATE "${schema}".employees SET
         user_id = COALESCE($1, user_id),
@@ -427,8 +445,9 @@ router.put('/:id', async (req, res) => {
         salary = COALESCE($8, salary),
         hired_at = COALESCE($9, hired_at),
         status = COALESCE($10, status),
+        payment_type = COALESCE($11, payment_type, 'hourly'),  -- ← NUEVO CAMPO
         updated_at = CURRENT_TIMESTAMP
-      WHERE id = $11
+      WHERE id = $12
       RETURNING *
     `;
     const params = [
@@ -442,6 +461,7 @@ router.put('/:id', async (req, res) => {
       salary || 0,
       hired_at || null,
       status || 'active',
+      finalPaymentType || 'hourly',  // ← NUEVO PARÁMETRO
       id
     ];
     
