@@ -1079,7 +1079,6 @@ BEGIN
 
   END IF;
 
-  -- â”€â”€â”€ EMPLOYEES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   IF ANY_MATCH(v_modules, 'employees') THEN
 
     -- employees (FK â†’ users)
@@ -1094,7 +1093,7 @@ BEGIN
         department      VARCHAR(100),
         document_number VARCHAR(50),
         salary          NUMERIC(12,2),
-        payment_type VARCHAR(20) DEFAULT 'hourly',
+        payment_type    VARCHAR(20) DEFAULT ''hourly'',
         hired_at        DATE,
         status          VARCHAR(20) DEFAULT ''active'',
         created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
