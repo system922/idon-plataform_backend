@@ -28,53 +28,15 @@ function pad(n, len) {
   return String(n).padStart(len, '0');
 }
 
+
 function ivaCode(rate) {
   const rateNum = Number(rate);
-  // Mapeo de códigos SRI para cada tasa
-  if (rateNum === 0) return 0;   // IVA 0%
-  if (rateNum === 5) return 5;   // IVA 5%
-  if (rateNum === 8) return 6;   // IVA 8%
-  if (rateNum === 12) return 2;  // IVA 12%
-  if (rateNum === 15) return 4;  // IVA 15%
+  if (rateNum === 0) return 0;
+  if (rateNum === 5) return 5;
+  if (rateNum === 8) return 8;
+  if (rateNum === 12) return 2;
+  if (rateNum === 15) return 4;
   return 4; // default 15%
-}
-
-function normalizeObligadoContabilidad(value) {
-  if (value === true || value === 'SI' || value === 'si' || value === 'S') return 'SI';
-  if (value === false || value === 'NO' || value === 'no' || value === 'N') return 'NO';
-  return 'NO';
-}
-
-function normalizeSriError(err) {
-  if (!err) return { status: 'pendiente', message: 'Error desconocido en autorización SRI' };
-
-  const estado = err.estado || err.name || '';
-  const message = err.messageSRI || err.mensajeSRI || err.message || 'Error en la autorización SRI';
-
-  if (isTransientSriError(err)) {
-    return {
-      status: 'pendiente',
-      message: 'El SRI no pudo validar el comprobante en este momento. La factura queda pendiente y se reintentará más tarde.',
-    };
-  }
-
-  if (['NO AUTORIZADO', 'RECHAZADA', 'DEVUELTA', 'ERROR'].includes(estado)) {
-    return { status: 'rechazada', message };
-  }
-
-  return { status: 'pendiente', message };
-}
-
-function isTransientSriError(err) {
-  const text = [err?.message, err?.messageSRI, err?.mensajeSRI, err?.name, err?.stack]
-    .filter(Boolean)
-    .join(' ');
-
-  return /(soap|persistenceexception|could not execute statement|genericjdbc|timeout|timed out|ECONNRESET|ETIMEDOUT|socket hang up|tempor|service unavailable|network)/i.test(text);
-}
-
-function delay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // ------------------- CONFIG Y SIGNATURE -------------------
@@ -97,11 +59,10 @@ export async function saveConfig(schema, data) {
        serie_estab               = COALESCE($9,  serie_estab),
        serie_pto_emision         = COALESCE($10, serie_pto_emision),
        secuencial_actual         = COALESCE($11, secuencial_actual),
-       secuencial_credit_notes   = COALESCE($12, secuencial_credit_notes),
-       p12_path                  = COALESCE($13, p12_path),
-       p12_password              = COALESCE($14, p12_password),
-       cert_valid_until          = COALESCE($15, cert_valid_until),
-       logo_url                  = COALESCE($16, logo_url),
+       p12_path                  = COALESCE($12, p12_path),
+       p12_password              = COALESCE($13, p12_password),
+       cert_valid_until          = COALESCE($14, cert_valid_until),
+       logo_url                  = COALESCE($15, logo_url),
        updated_at                = NOW()
      RETURNING *`,
     [
@@ -109,7 +70,6 @@ export async function saveConfig(schema, data) {
       data.direccion_establecimiento, data.contribuyente_especial, data.obligado_contabilidad,
       data.ambiente, data.serie_estab, data.serie_pto_emision,
       data.secuencial_actual != null ? parseInt(data.secuencial_actual, 10) : null,
-      data.secuencial_credit_notes != null ? parseInt(data.secuencial_credit_notes, 10) : null,
       data.p12_path, data.p12_password, data.cert_valid_until,
       data.logo_url ?? null,
     ]
@@ -159,7 +119,7 @@ export async function saveSignatureFile(schema, buffer) {
   }
 }
 
-// ------------------- CORE: Emisión (CON SUBTOTALES POR TASA Y DESCUENTOS) -------------------
+// ------------------- CORE: Emisión (USANDO VALORES DEL FRONTEND) -------------------
 export async function emitInvoice(schema, opts) {
   const cfg = await getConfig(schema);
   if (!cfg) throw new Error('Configuración de facturación electrónica no encontrada');
@@ -190,87 +150,64 @@ export async function emitInvoice(schema, opts) {
     const idComprador = customer.ruc || '9999999999';
     const razonComprador = customer.name || 'CONSUMIDOR FINAL';
     
-    // 🔥 OBTENER VALORES DEL FRONTEND
+    // 🔥 USAR LOS VALORES QUE YA VIENEN DEL FRONTEND
     const totalDescuento = parseFloat(opts.descuento || 0);
+    const subtotalConDescuento = parseFloat(opts.subtotal || 0);
     const ivaAmountTotal = parseFloat(opts.iva_amount || 0);
     const totalFactura = parseFloat(opts.total || 0);
-    const items = opts.items || [];
 
     console.log('💰💰💰 VALORES RECIBIDOS DEL FRONTEND:', {
-      totalDescuento,
+      subtotalConDescuento,
       ivaAmountTotal,
       totalFactura,
-      itemsCount: items.length
+      totalDescuento,
+      itemsCount: opts.items?.length
     });
 
-    // 🔥 PROCESAR ITEMS Y CALCULAR SUBTOTALES POR TASA
-    const subtotalByRate = {
-      0: 0,
-      5: 0,
-      8: 0,
-      12: 0,
-      15: 0,
-    };
-    
-    const ivaByRate = {
-      0: 0,
-      5: 0,
-      8: 0,
-      12: 0,
-      15: 0,
-    };
+    // 🔥 Agrupar por tasa IVA para totales
+    const ivaGroupsForTotal = {};  // { tasa: { base: 0, valor: 0 } }
 
-    const codigoPorcentajeMap = {
-      0: 0,
-      5: 5,
-      8: 6,
-      12: 2,
-      15: 4,
-    };
-
-    const detalleItems = items.map((item) => {
+    const detalleItems = (opts.items || []).map((item) => {
       const qty = parseFloat(item.qty || item.quantity || 1);
       const unitPrice = parseFloat(item.unit_price || 0);
-      const subtotalItem = parseFloat(item.subtotal || (qty * unitPrice));
+      const subtotalItem = parseFloat(item.subtotal || 0);
       const ivaItem = parseFloat(item.iva_amount || 0);
       
-      let tasaIVA = parseFloat(item.iva_rate_pct || item.is_taxable || 0);
+      // 🔥 OBTENER LA TASA IVA DEL ITEM (puede ser 0, 5, 8, 12, 15)
+      let itemIvaRate = parseFloat(item.iva_rate_pct || 0);
       
-      if (tasaIVA === 0 && ivaItem > 0 && subtotalItem > 0) {
+      // Si no viene tasa explícita pero tiene IVA > 0, usar la tasa que corresponda
+      if (itemIvaRate === 0 && ivaItem > 0 && subtotalItem > 0) {
+        // Inferir la tasa del monto de IVA y la base
         const inferredRate = Math.round((ivaItem / subtotalItem) * 100);
         if ([0, 5, 8, 12, 15].includes(inferredRate)) {
-          tasaIVA = inferredRate;
+          itemIvaRate = inferredRate;
         } else if (ivaItem > 0) {
-          tasaIVA = 15;
+          itemIvaRate = 15; // default
         }
       }
       
-      if (ivaItem === 0 && tasaIVA !== 0) {
-        tasaIVA = 0;
+      // 🔥 Para items con IVA 0, asegurar que la tasa sea 0
+      if (ivaItem === 0 && itemIvaRate !== 0) {
+        itemIvaRate = 0;
       }
+      
+      console.log(`📦 Item: ${item.description || item.name}, tasa: ${itemIvaRate}%, IVA: ${ivaItem}, subtotal: ${subtotalItem}`);
 
+      // 🔥 Acumular para totalConImpuestos por tasa
+      if (!ivaGroupsForTotal[itemIvaRate]) {
+        ivaGroupsForTotal[itemIvaRate] = { base: 0, valor: 0 };
+      }
+      ivaGroupsForTotal[itemIvaRate].base  += subtotalItem;
+      ivaGroupsForTotal[itemIvaRate].valor += ivaItem;
+
+      // Descuento proporcional por item
       let descuentoItem = 0;
-      const totalGlobal = subtotalItem + (ivaItem || 0);
-      if (totalDescuento > 0 && totalFactura > 0 && totalGlobal > 0) {
-        const ratio = totalGlobal / totalFactura;
-        descuentoItem = Math.round((totalDescuento * ratio) * 100) / 100;
+      const totalGlobal = subtotalConDescuento + ivaAmountTotal + totalDescuento;
+      if (totalDescuento > 0 && totalGlobal > 0) {
+        const totalItem = subtotalItem + ivaItem;
+        descuentoItem = totalDescuento * (totalItem / totalGlobal);
       }
-
-      const precioBase = Math.max(0, subtotalItem - descuentoItem);
-      const ivaCalculado = tasaIVA > 0 && ivaItem === 0
-        ? Math.round((precioBase * tasaIVA / 100) * 100) / 100
-        : ivaItem;
-
-      if (subtotalByRate[tasaIVA] !== undefined) {
-        subtotalByRate[tasaIVA] += precioBase;
-        ivaByRate[tasaIVA] += ivaCalculado;
-      } else {
-        subtotalByRate[15] += precioBase;
-        ivaByRate[15] += ivaCalculado;
-        tasaIVA = 15;
-      }
-
-      console.log(`📦 ${item.description}: tasa=${tasaIVA}%, base=${precioBase.toFixed(2)}, iva=${ivaCalculado.toFixed(2)}`);
 
       return {
         codigoPrincipal: item.code || item.codigo || 'PROD',
@@ -278,72 +215,46 @@ export async function emitInvoice(schema, opts) {
         descripcion: item.description || item.name || 'Producto',
         cantidad: qty,
         precioUnitario: unitPrice,
-        descuento: descuentoItem,
-        precioTotalSinImpuesto: precioBase,
+        descuento: Math.round(descuentoItem * 100) / 100,
+        precioTotalSinImpuesto: subtotalItem,
         impuestos: {
           impuesto: [{
             codigo: 2,
-            codigoPorcentaje: ivaCode(tasaIVA),
-            tarifa: tasaIVA,
-            baseImponible: precioBase,
-            valor: ivaCalculado,
+            codigoPorcentaje: ivaCode(itemIvaRate),
+            tarifa: itemIvaRate,
+            baseImponible: subtotalItem,
+            valor: ivaItem,
           }],
         },
       };
     });
 
-    const subtotalSinIVA = subtotalByRate[0] || 0;
-    const subtotalConIVA = Object.entries(subtotalByRate)
-      .filter(([rate]) => Number(rate) > 0)
-      .reduce((sum, [_, val]) => sum + val, 0);
-    const subtotalTotal = subtotalSinIVA + subtotalConIVA;
-    
-    const ivaTotal = Object.values(ivaByRate).reduce((sum, val) => sum + val, 0);
+    // 🔥 Construir totalConImpuestos con todas las tasas encontradas
+    const totalImpuestoArray = Object.entries(ivaGroupsForTotal)
+      .filter(([_, g]) => g.base > 0 || g.valor > 0)  // Solo tasas con valores
+      .map(([rate, g]) => ({
+        codigo: 2,
+        codigoPorcentaje: ivaCode(Number(rate)),
+        baseImponible: Math.round(g.base * 100) / 100,
+        valor: Math.round(g.valor * 100) / 100,
+      }));
 
-    console.log('📊 SUBTOTALES POR TASA:', {
-      'IVA 0%': subtotalByRate[0].toFixed(2),
-      'IVA 5%': subtotalByRate[5].toFixed(2),
-      'IVA 8%': subtotalByRate[8].toFixed(2),
-      'IVA 12%': subtotalByRate[12].toFixed(2),
-      'IVA 15%': subtotalByRate[15].toFixed(2),
-      'SUBTOTAL TOTAL': subtotalTotal.toFixed(2),
-      'IVA TOTAL': ivaTotal.toFixed(2),
-      'TOTAL FACTURA': (subtotalTotal + ivaTotal - totalDescuento).toFixed(2)
-    });
+    // 🔥 Ordenar por tasa descendente para mejor legibilidad
+    totalImpuestoArray.sort((a, b) => b.codigoPorcentaje - a.codigoPorcentaje);
 
-    const totalImpuestoArray = [];
-    
-    const tasasConValor = Object.keys(subtotalByRate)
-      .filter(rate => subtotalByRate[rate] > 0)
-      .map(Number)
-      .sort((a, b) => b - a);
+    console.log('📊 TOTALES POR TASA IVA:', totalImpuestoArray);
+    console.log('📊 IVA GROUPS:', ivaGroupsForTotal);
 
-    tasasConValor.forEach(rate => {
-      const subtotal = subtotalByRate[rate];
-      const iva = ivaByRate[rate];
-      
-      if (subtotal > 0 || iva > 0) {
-        totalImpuestoArray.push({
-          codigo: 2,
-          codigoPorcentaje: codigoPorcentajeMap[rate] || 4,
-          baseImponible: Math.round(subtotal * 100) / 100,
-          valor: Math.round(iva * 100) / 100,
-        });
-      }
-    });
-
+    // Si no hay ningún grupo, agregar bloque con tasa 0
     if (totalImpuestoArray.length === 0) {
       totalImpuestoArray.push({
         codigo: 2,
         codigoPorcentaje: 0,
-        baseImponible: subtotalTotal,
+        baseImponible: subtotalConDescuento,
         valor: 0,
       });
     }
 
-    console.log('📊 TOTAL IMPUESTOS ARRAY:', totalImpuestoArray);
-
-    // 🔥 CONSTRUIR EL COMPROBANTE - CORREGIDO
     const comprobante = {
       infoTributaria: {
         ruc: cfg.ruc,
@@ -354,33 +265,27 @@ export async function emitInvoice(schema, opts) {
         secuencial: pad(secuencial, 9),
         razonSocial: cfg.razon_social,
         ...(cfg.nombre_comercial ? { nombreComercial: cfg.nombre_comercial } : {}),
-        ...(cfg.agente_retencion ? { agenteRetencion: String(cfg.agente_retencion) } : {}),
-        ...(cfg.contribuyente_rimpe ? { contribuyenteRimpe: cfg.contribuyente_rimpe } : {}),
       },
       infoFactura: {
         fechaEmision: now,
         dirEstablecimiento: cfg.direccion_establecimiento || cfg.direccion_matriz || 'Ecuador',
         ...(cfg.contribuyente_especial ? { contribuyenteEspecial: cfg.contribuyente_especial } : {}),
-        obligadoContabilidad: normalizeObligadoContabilidad(cfg.obligado_contabilidad),
+        obligadoContabilidad: cfg.obligado_contabilidad ? 'SI' : 'NO',
         tipoIdentificacionComprador: tipoId,
         razonSocialComprador: razonComprador,
         identificacionComprador: idComprador,
-        
-        totalSinImpuestos: Math.round(subtotalTotal * 100) / 100,
-        totalDescuento: Math.round(totalDescuento * 100) / 100,
+        totalSinImpuestos: subtotalConDescuento,
+        totalDescuento: totalDescuento,
         propina: 0,
-        importeTotal: Math.round((subtotalTotal + ivaTotal - totalDescuento) * 100) / 100,
+        importeTotal: totalFactura,
         moneda: 'USD',
-        
         totalConImpuestos: {
           totalImpuesto: totalImpuestoArray,
         },
         pagos: {
           pago: [{
             formaPago: opts.forma_pago || '01',
-            total: Math.round((subtotalTotal + ivaTotal - totalDescuento) * 100) / 100,
-            ...(opts.plazo ? { plazo: Number(opts.plazo) } : {}),
-            ...(opts.unidad_tiempo ? { unidadTiempo: opts.unidad_tiempo } : {}),
+            total: totalFactura,
           }],
         },
       },
@@ -416,9 +321,9 @@ export async function emitInvoice(schema, opts) {
     } catch { }
     
     console.log('💾 GUARDANDO EN DB:', {
-      subtotal: subtotalTotal.toFixed(2),
-      iva_amount: ivaTotal.toFixed(2),
-      total: (subtotalTotal + ivaTotal - totalDescuento).toFixed(2),
+      subtotalConDescuento: subtotalConDescuento.toFixed(2),
+      ivaAmountTotal: ivaAmountTotal.toFixed(2),
+      totalFactura: totalFactura.toFixed(2),
       totalDescuento: totalDescuento.toFixed(2)
     });
 
@@ -433,9 +338,7 @@ export async function emitInvoice(schema, opts) {
       [
         opts.order_id || null, invoiceNumber, claveAcceso, null,
         customer.id || null, razonComprador, idComprador, customer.email || null, phone,
-        subtotalTotal.toFixed(2),
-        ivaTotal.toFixed(2),
-        (subtotalTotal + ivaTotal - totalDescuento).toFixed(2),
+        subtotalConDescuento.toFixed(2), ivaAmountTotal.toFixed(2), totalFactura.toFixed(2),
         JSON.stringify(opts.items || []),
         totalDescuento.toFixed(2),
         signedXml,
@@ -447,24 +350,9 @@ export async function emitInvoice(schema, opts) {
     await client.query('COMMIT');
     const savedInvoice = rows[0];
 
-    setImmediate(async () => {
-      try {
-        console.log('🚀 Iniciando autorización SRI en segundo plano...');
-        await _authorizeSriBackground(schema, savedInvoice, signedXml, claveAcceso, envStr);
-        console.log('✅ Autorización SRI terminada');
-      } catch (err) {
-        logger.error(
-          { err: err?.message, stack: err?.stack },
-          'Background SRI authorization failed'
-        );
-      }
-    });
-
-    console.log('📊 FACTURA FINAL:', {
-      id: savedInvoice.id,
-      invoice_number: savedInvoice.invoice_number,
-      status: savedInvoice.status,
-      auth_number: savedInvoice.auth_number
+    // Enviar a autorización SRI en segundo plano
+    _authorizeSriBackground(schema, savedInvoice, signedXml, claveAcceso, envStr).catch((err) => {
+      console.error('Error en autorización SRI background:', err);
     });
 
     return savedInvoice;
@@ -479,166 +367,58 @@ export async function emitInvoice(schema, opts) {
 
 // ── Autorización SRI en background ────────────────────
 async function _authorizeSriBackground(schema, invoice, signedXml, claveAcceso, envStr) {
-  let status = 'pendiente', authNumber = null, authDate = null, sriMessage = null;
-  let sriJsonString = null;
-  
-  console.log('========================================');
-  console.log('📤 INICIANDO AUTORIZACIÓN SRI');
-  console.log('Schema:', schema);
-  console.log('Invoice ID:', invoice.id);
-  console.log('Invoice Number:', invoice.invoice_number);
-  console.log('Clave Acceso:', claveAcceso);
-  console.log('Env:', envStr);
-  console.log('========================================');
-  
-  let lastError = null;
+  let status = 'pendiente', authNumber = null, authDate = null, sriMessage = null, sriJson = null;
+  try {
+    const recResult = await validateXml({
+      xml: new TextEncoder().encode(signedXml),
+      env: envStr,
+    });
+    logger.info({ recResult }, 'SRI recepción (bg)');
 
-  const maxAttempts = 4;
+    if (recResult?.estado === 'RECIBIDA') {
+      const authResult = await authorizeXml({ claveAcceso, env: envStr });
+      logger.info({ authResult }, 'SRI autorización (bg)');
+      sriJson = authResult;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      console.log(`📤 PASO 1: Validando XML en SRI (intento ${attempt}/${maxAttempts})...`);
-      const recResult = await validateXml({
-        xml: new TextEncoder().encode(signedXml),
-        env: envStr,
-      });
-      console.log('📥 RESPUESTA RECEPCIÓN:', JSON.stringify(recResult, null, 2));
-      logger.info({ recResult }, 'SRI recepción (bg)');
-
-      if (recResult?.estado === 'RECIBIDA') {
-        console.log('✅ XML RECIBIDO, PASO 2: Autorizando...');
-
-        await delay(2000);
-
-        console.log('📤 Enviando a autorización con clave:', claveAcceso);
-        const authResult = await authorizeXml({
-          claveAcceso,
-          env: envStr,
-          timeout: 30000,
-        });
-
-        console.log('📥 RESPUESTA AUTORIZACIÓN COMPLETA:');
-        console.log(JSON.stringify(authResult, null, 2));
-        logger.info({ authResult }, 'SRI autorización (bg)');
-
-        if (authResult) {
-          const authResultSanitizado = { ...authResult };
-
-          if (authResultSanitizado.comprobante) {
-            delete authResultSanitizado.comprobante;
-          }
-          if (authResultSanitizado.comprobanteCrudo) {
-            delete authResultSanitizado.comprobanteCrudo;
-          }
-
-          if (authResultSanitizado.mensajes && Array.isArray(authResultSanitizado.mensajes)) {
-            authResultSanitizado.mensajes = authResultSanitizado.mensajes.map(m =>
-              typeof m === 'string' ? m : (m.mensaje || m.message || String(m))
-            );
-          }
-
-          sriJsonString = JSON.stringify(authResultSanitizado);
-          console.log('📊 SRI JSON SANITIZADO (tamaño):', sriJsonString.length, 'caracteres');
-          console.log('📊 SRI JSON CONTENIDO:', sriJsonString.substring(0, 500) + '...');
-        }
-
-        if (authResult?.estadoAutorizacion === 'AUTORIZADO') {
-          status = 'autorizada';
-          authNumber = authResult.numeroAutorizacion || authResult.claveAcceso || claveAcceso;
-          authDate = authResult.fechaAutorizacion ? new Date(authResult.fechaAutorizacion) : new Date();
-          console.log('✅ ✅ ✅ FACTURA AUTORIZADA ✅ ✅ ✅');
-          console.log('Número de autorización:', authNumber);
-          console.log('Fecha de autorización:', authDate);
-        } else {
-          status = 'rechazada';
-          sriMessage = (authResult?.mensajes || []).map(m =>
-            typeof m === 'string' ? m : (m.mensaje || m.message || String(m))
-          ).join(' | ') || authResult?.estadoAutorizacion || 'Rechazada por el SRI';
-          console.log('❌ FACTURA RECHAZADA:', sriMessage);
-        }
+      if (authResult?.estadoAutorizacion === 'AUTORIZADO') {
+        status = 'autorizada';
+        authNumber = authResult.claveAcceso || claveAcceso;
+        authDate = authResult.fechaAutorizacion ? new Date(authResult.fechaAutorizacion) : new Date();
       } else {
         status = 'rechazada';
-        sriMessage = recResult?.mensaje || 'No recibida por el SRI';
-        console.log('❌ NO RECIBIDA POR SRI:', sriMessage);
-        console.log('Respuesta recepción:', JSON.stringify(recResult, null, 2));
+        sriMessage = (authResult?.mensajes || []).map(m => m.mensaje).join(' | ')
+                   || authResult?.estadoAutorizacion || 'Rechazada por el SRI';
       }
-
-      break;
-    } catch (sriErr) {
-      lastError = sriErr;
-      const normalized = normalizeSriError(sriErr);
-
-      const shouldRetry = attempt < maxAttempts && normalized.status === 'pendiente' && isTransientSriError(sriErr);
-
-      if (shouldRetry) {
-        const waitMs = 5000 * attempt;
-        console.warn(`⚠️ Error transitorio del SRI. Reintentando en ${waitMs / 1000} segundos...`);
-        console.warn(sriErr.message || sriErr);
-        logger.warn({ attempt, waitMs, err: sriErr.message, stack: sriErr.stack }, 'SRI transient error, retrying');
-        await delay(waitMs);
-        continue;
-      }
-
-      console.warn('⚠️ Error al autorizar factura SRI. Se dejará pendiente.');
-      console.warn(sriErr.message || sriErr);
-      logger.warn({ err: sriErr.message, stack: sriErr.stack }, 'SRI background error (non-blocking)');
-
-      status = normalized.status;
-      sriMessage = normalized.message;
-      break;
+    } else {
+      sriMessage = recResult?.mensaje || 'No recibida por el SRI';
     }
+  } catch (sriErr) {
+    logger.warn({ err: sriErr.message }, 'SRI background error');
+    status = 'pendiente';
+    sriMessage = sriErr.message;
   }
 
-  console.log('========================================');
-  console.log('💾 ACTUALIZANDO FACTURA EN DB');
-  console.log('ID:', invoice.id);
-  console.log('Status:', status);
-  console.log('Auth Number:', authNumber);
-  console.log('sriJsonString length:', sriJsonString ? sriJsonString.length : 0);
-  console.log('========================================');
+  const { rows: updated } = await query(
+    `UPDATE "${schema}".einvoices
+        SET status = $1, auth_number = $2, auth_date = $3,
+            sri_message = $4, sri_json = $5, updated_at = NOW()
+      WHERE id = $6
+      RETURNING *`,
+    [status, authNumber, authDate, sriMessage, sriJson ? JSON.stringify(sriJson) : null, invoice.id]
+  );
 
-  try {
-    const { rows: updated } = await query(
-      `UPDATE "${schema}".einvoices
-          SET status = $1, auth_number = $2, auth_date = $3,
-              sri_message = $4, sri_json = $5, updated_at = NOW()
-        WHERE id = $6
-        RETURNING *`,
-      [status, authNumber, authDate, sriMessage, sriJsonString, invoice.id]
-    );
+  const updatedInvoice = updated[0];
+  if (!updatedInvoice) return;
 
-    const updatedInvoice = updated[0];
-    if (!updatedInvoice) {
-      console.error('⚠️ No se pudo actualizar factura en DB - no rows returned');
-      return;
+  if (status === 'autorizada' && updatedInvoice.customer_email) {
+    try {
+      const cfg = await getConfig(schema);
+      const bizName = cfg?.nombre_comercial || cfg?.razon_social || 'Empresa';
+      const pdfBuf = await generateInvoicePdf(schema, updatedInvoice.id);
+      await sendInvoiceEmail(updatedInvoice, pdfBuf, updatedInvoice.customer_email, bizName);
+    } catch (e) {
+      logger.warn({ err: e.message }, 'Email send failed (non-blocking)');
     }
-
-    console.log('✅ FACTURA ACTUALIZADA EN DB:');
-    console.log('  ID:', updatedInvoice.id);
-    console.log('  Status:', updatedInvoice.status);
-    console.log('  Auth Number:', updatedInvoice.auth_number);
-    console.log('  sri_json exists:', !!updatedInvoice.sri_json);
-    console.log('========================================');
-
-    // ✅ Enviar email si está autorizada
-    if (status === 'autorizada' && updatedInvoice.customer_email) {
-      try {
-        console.log('📧 Enviando email a:', updatedInvoice.customer_email);
-        const cfg = await getConfig(schema);
-        const bizName = cfg?.nombre_comercial || cfg?.razon_social || 'Empresa';
-        const pdfBuf = await generateInvoicePdf(schema, updatedInvoice.id);
-        await sendInvoiceEmail(updatedInvoice, pdfBuf, updatedInvoice.customer_email, bizName);
-        console.log('✅ Email enviado');
-      } catch (e) {
-        console.error('❌ Error enviando email:', e.message);
-        logger.warn({ err: e.message }, 'Email send failed (non-blocking)');
-      }
-    }
-  } catch (dbErr) {
-    console.error('❌ ❌ ❌ ERROR ACTUALIZANDO DB ❌ ❌ ❌');
-    console.error('Error:', dbErr);
-    console.error('Stack:', dbErr.stack);
-    logger.error({ err: dbErr.message, stack: dbErr.stack }, 'DB update error');
   }
 }
 
@@ -849,7 +629,7 @@ async function parseFacturaFromXml(xmlText) {
     tipoIdComprador: str(inf?.tipoIdentificacionComprador),
     razonComprador: str(inf?.razonSocialComprador),
     idComprador: str(inf?.identificacionComprador),
-    subtotal: totalSinImpuestos + Object.values(subtotalByRate).reduce((a, b) => a + b, 0),
+    subtotal: totalSinImpuestos,
     totalDescuento: totalDescuento,
     iva: ivaTotal,
     total: importeTotal,
@@ -857,8 +637,6 @@ async function parseFacturaFromXml(xmlText) {
     items,
     subtotalByRate,
     ivaByRate,
-    subtotal0: subtotalByRate[0] || 0,
-    subtotal15: subtotalByRate[15] || 0,
   };
 }
 
@@ -870,7 +648,9 @@ async function generateBarcode(text) {
   } catch { return null; }
 }
 
-// ------------------- GENERACIÓN PDF (CON SUBTOTALES POR TASA) -------------------
+// ------------------- PDF NOTA DE CRÉDITO -------------------
+// ------------------- GENERACIÓN PDF (CON DESCUENTO) -------------------
+// ------------------- GENERACIÓN PDF (CON DESCUENTO) -------------------
 export async function generateInvoicePdf(schema, invoiceId) {
   const { rows: invRows } = await query(
     `SELECT * FROM "${schema}".einvoices WHERE id = $1`, [invoiceId]
@@ -896,6 +676,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
   const nroFactura = inv.invoice_number || `${d.estab}-${d.ptoEmi}-${d.secuencial}`;
   const esProduccion = d.ambiente === '2';
 
+  const subtotal = d.subtotal || parseFloat(inv.subtotal || 0);
   const totalDescuento = d.totalDescuento || parseFloat(inv.discount_amount || 0);
   const total = d.total || parseFloat(inv.total || 0);
 
@@ -1040,7 +821,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
 
     y = M + hH + 4;
 
-    // ==================== CLIENTE ====================
+    // ==================== CLIENTE (CON INFORMACIÓN COMPLETA) ====================
     const razonComp = d.razonComprador || inv.customer_name || 'CONSUMIDOR FINAL';
     const idComp = d.idComprador || inv.customer_ruc || '-';
     const fechaEmDisplay = d.fechaEmision
@@ -1081,6 +862,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
     y += cliH + 2;
 
     // ==================== TABLA DE ITEMS ====================
+    // 🔥 COLUMNAS AJUSTADAS: más ancho para código, menos para descripción
     const COLS = [
       { h: 'Código', w: 0.14, a: 'left' },
       { h: 'Cant', w: 0.06, a: 'right' },
@@ -1114,6 +896,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
       const precioUnitario = item.unitPrice;
       const precioTotal = item.lineTotal;
       
+      // Limpiar código: eliminar "PROD-" si es solo eso
       let codigo = item.codigoPrincipal || '';
       if (codigo === 'PROD-' || codigo === 'PROD') codigo = '';
       
@@ -1156,19 +939,15 @@ export async function generateInvoicePdf(schema, invoiceId) {
 
     const totRows = [];
     
-    // 🔥 MOSTRAR SUBTOTALES POR TASA
-    const tasasOrdenadas = Object.keys(subtotalByRate)
-      .map(Number)
-      .sort((a, b) => b - a);
-
-    for (const rate of tasasOrdenadas) {
+    for (const rate of ivaRates) {
       const subtotalRate = subtotalByRate[rate] || 0;
       if (subtotalRate > 0) {
         totRows.push([`SUBTOTAL ${rate}%`, subtotalRate.toFixed(2)]);
       }
     }
     
-    // Descuento
+    totRows.push(['SUBTOTAL SIN IMPUESTOS', subtotal.toFixed(2)]);
+    
     if (totalDescuento > 0) {
       totRows.push(['TOTAL DESCUENTO', `-${totalDescuento.toFixed(2)}`]);
     } else {
@@ -1177,13 +956,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
     
     totRows.push(['ICE', '0.00']);
     
-    // IVA por tasa
-    const tasasConIVA = Object.keys(ivaByRate)
-      .filter(rate => ivaByRate[rate] > 0)
-      .map(Number)
-      .sort((a, b) => b - a);
-    
-    for (const rate of tasasConIVA) {
+    for (const rate of ivaRates) {
       const ivaAmount = ivaByRate[rate] || 0;
       if (ivaAmount > 0) {
         totRows.push([`IVA ${rate}%`, ivaAmount.toFixed(2)]);
@@ -1203,8 +976,6 @@ export async function generateInvoicePdf(schema, invoiceId) {
          .text(val, totX + 4, ty + 2, { width: totW - 8, align: 'right' });
       ty += totRowH;
     }
-    
-    // TOTAL FINAL
     fill(totX, ty, totW, 14, BK);
     doc.fillColor(WHT).fontSize(8).font('Helvetica-Bold')
        .text('VALOR TOTAL', totX + 4, ty + 3, { width: totW * 0.65 })
@@ -1234,700 +1005,6 @@ export async function generateInvoicePdf(schema, invoiceId) {
 
     doc.fillColor(GR).fontSize(7).font('Helvetica')
        .text('Página 1 de 1', M, y, { width: W, align: 'center' });
-
-    doc.end();
-  });
-}
-// ── GENERAR XML DE NOTA DE CRÉDITO ──────────────────────────────────────────
-// ── GENERAR XML DE NOTA DE CRÉDITO ──────────────────────────────────────────
-export async function generateCreditNoteXml(schema, creditNoteId) {
-  const { rows } = await query(
-    `SELECT cn.*, ei.invoice_number as factura_numero, ei.access_key as factura_clave, ei.emission_date as factura_emision
-     FROM "${schema}".credit_notes cn
-     LEFT JOIN "${schema}".einvoices ei ON ei.id = cn.invoice_id
-     WHERE cn.id = $1`,
-    [creditNoteId]
-  );
-  
-  const cn = rows[0];
-  if (!cn) throw new Error('Nota de crédito no encontrada');
-
-  const cfg = await getConfig(schema);
-  if (!cfg) throw new Error('Configuración no encontrada');
-  if (!cfg.p12_base64 && !cfg.p12_path) throw new Error('Firma electrónica no cargada');
-
-  // 🔥 USAR secuencial_credit_notes (independiente de facturas)
-  const { rows: seqRows } = await query(
-    `UPDATE "${schema}".einvoice_config
-       SET secuencial_credit_notes = secuencial_credit_notes + 1
-     RETURNING secuencial_credit_notes - 1 AS seq`
-  );
-  const secuencial = seqRows[0].seq;
-
-  const estab = cfg.serie_estab || '001';
-  const ptoEmi = cfg.serie_pto_emision || '001';
-  const ambiente = parseInt(cfg.ambiente || '1', 10);
-
-  // Generar número de nota de crédito
-  const secPart = String(secuencial).padStart(9, '0');
-  const creditNoteNumber = `${estab}-${ptoEmi}-${secPart}`;
-
-  // Actualizar la nota con el número generado
-  await query(
-    `UPDATE "${schema}".credit_notes 
-     SET credit_note_number = $1 
-     WHERE id = $2`,
-    [creditNoteNumber, creditNoteId]
-  );
-
-  // Volver a obtener la nota actualizada
-  const { rows: updatedRows } = await query(
-    `SELECT * FROM "${schema}".credit_notes WHERE id = $1`,
-    [creditNoteId]
-  );
-  const updatedCn = updatedRows[0];
-
-  // Procesar items
-  const items = updatedCn.items || [];
-  const subtotal = parseFloat(updatedCn.subtotal) || 0;
-  const ivaAmount = parseFloat(updatedCn.iva_amount) || 0;
-  const total = parseFloat(updatedCn.total) || 0;
-
-  // Calcular subtotales por tasa de IVA
-  const subtotalByRate = {};
-  const ivaByRate = {};
-  
-  for (const item of items) {
-    const itemSubtotal = parseFloat(item.subtotal_credited || item.subtotal || 0);
-    const itemIva = parseFloat(item.iva_amount || 0);
-    
-    let tasaIVA = 0;
-    if (itemIva > 0 && itemSubtotal > 0) {
-      const inferredRate = Math.round((itemIva / itemSubtotal) * 100);
-      if ([0, 5, 8, 12, 15].includes(inferredRate)) {
-        tasaIVA = inferredRate;
-      } else {
-        tasaIVA = 15;
-      }
-    }
-    
-    subtotalByRate[tasaIVA] = (subtotalByRate[tasaIVA] || 0) + itemSubtotal;
-    ivaByRate[tasaIVA] = (ivaByRate[tasaIVA] || 0) + itemIva;
-  }
-
-  // Obtener la tasa de IVA principal
-  const ivaRate = Object.keys(subtotalByRate).length > 0 
-    ? parseFloat(Object.keys(subtotalByRate)[0]) 
-    : 15;
-
-  // Mapeo de tasas a códigos SRI
-  const IVA_CODE_MAP = {
-    0: 0,
-    5: 5,
-    8: 6,
-    12: 2,
-    15: 4
-  };
-  const codigoPorcentaje = IVA_CODE_MAP[ivaRate] || 4;
-
-  // Fecha actual para la emisión
-  const now = new Date();
-  const fechaEmision = now.toISOString();
-
-  // ── GENERAR CLAVE DE ACCESO (49 caracteres) ──
-  // Estructura: DDMMAAAA + 04 + RUC(13) + Ambiente(1) + Estab(3) + PtoEmi(3) + Secuencial(9) + Codigo(8) + TipoEmision(1) + DigitoVerificador(1)
-  
-  const day = String(now.getDate()).padStart(2, '0');
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const year = now.getFullYear();
-  const fechaPart = `${day}${month}${year}`; // DDMMAAAA (8 dígitos)
-  
-  const codDocPart = '04'; // Nota de Crédito
-  const rucPart = cfg.ruc.padStart(13, '0');
-  const ambientePart = ambiente === 2 ? '1' : '0'; // 1=Producción, 0=Pruebas
-  const estabPart = estab.padStart(3, '0');
-  const ptoEmiPart = ptoEmi.padStart(3, '0');
-  const codigoNumerico = String(Math.floor(Math.random() * 100000000)).padStart(8, '0');
-  const tipoEmision = '1'; // Normal
-
-  // Construir clave base (48 dígitos sin dígito verificador)
-  const claveBase = fechaPart + codDocPart + rucPart + ambientePart + estabPart + ptoEmiPart + secPart + codigoNumerico + tipoEmision;
-
-  // Calcular dígito verificador (Módulo 11)
-  const digitoVerificador = calcularDigitoVerificador(claveBase);
-  const claveAcceso = claveBase + digitoVerificador;
-
-  console.log('🔑 Clave de acceso generada:', claveAcceso);
-  console.log('📏 Longitud:', claveAcceso.length);
-
-  // Verificar que la clave tenga 49 caracteres
-  if (claveAcceso.length !== 49) {
-    console.warn(`⚠️ Clave de acceso tiene ${claveAcceso.length} caracteres, debería tener 49`);
-  }
-
-  // Actualizar la nota con la clave de acceso
-  await query(
-    `UPDATE "${schema}".credit_notes 
-     SET access_key = $1
-     WHERE id = $2`,
-    [claveAcceso, creditNoteId]
-  );
-
-  // ── CONSTRUIR DETALLE DE ITEMS ──
-  const detalleItems = items.map(item => {
-    const qty = parseFloat(item.quantity_credited || item.cantidad || item.qty || 1);
-    const price = parseFloat(item.unit_price || 0);
-    const subtotalItem = parseFloat(item.subtotal_credited || item.subtotal || (qty * price));
-    const ivaItem = parseFloat(item.iva_amount || 0);
-    
-    // Determinar tasa de IVA para este item
-    let tasa = ivaRate;
-    if (ivaItem > 0 && subtotalItem > 0) {
-      const inferred = Math.round((ivaItem / subtotalItem) * 100);
-      if ([0, 5, 8, 12, 15].includes(inferred)) {
-        tasa = inferred;
-      }
-    }
-    
-    const codigoPorcentajeItem = IVA_CODE_MAP[tasa] || 4;
-    
-    return {
-      codigoInterno: item.codigo_interno || item.code || item.codigo || 'PROD',
-      descripcion: item.description || item.name || 'Producto',
-      cantidad: qty,
-      precioUnitario: price,
-      descuento: parseFloat(item.descuento || 0),
-      precioTotalSinImpuesto: subtotalItem,
-      impuesto: {
-        codigo: 2,
-        codigoPorcentaje: codigoPorcentajeItem,
-        tarifa: tasa,
-        baseImponible: subtotalItem,
-        valor: ivaItem || (subtotalItem * tasa / 100),
-      }
-    };
-  });
-
-  // ── CONSTRUIR TOTAL DE IMPUESTOS ──
-  const totalImpuestos = Object.keys(subtotalByRate).map(rate => {
-    const r = parseFloat(rate);
-    const base = subtotalByRate[r] || 0;
-    const iva = ivaByRate[r] || 0;
-    const codigoPorcentajeImp = IVA_CODE_MAP[r] || 4;
-    
-    return {
-      codigo: 2,
-      codigoPorcentaje: codigoPorcentajeImp,
-      baseImponible: base,
-      valor: iva,
-    };
-  });
-
-  // Si no hay impuestos, agregar uno por defecto
-  if (totalImpuestos.length === 0) {
-    totalImpuestos.push({
-      codigo: 2,
-      codigoPorcentaje: 4,
-      baseImponible: subtotal,
-      valor: ivaAmount,
-    });
-  }
-
-  // ── OBTENER FECHA DE EMISIÓN DE LA FACTURA ORIGINAL ──
-  let facturaEmision = now.toISOString();
-  if (updatedCn.factura_emision) {
-    facturaEmision = updatedCn.factura_emision;
-  }
-
-  // ── CONSTRUIR OBJETO PARA EL XML ──
-  const comprobante = {
-    infoTributaria: {
-      ambiente: ambiente,
-      tipoEmision: 1,
-      razonSocial: cfg.razon_social,
-      nombreComercial: cfg.nombre_comercial || cfg.razon_social,
-      ruc: cfg.ruc,
-      claveAcceso: claveAcceso,
-      codDoc: '04',
-      estab: estab,
-      ptoEmi: ptoEmi,
-      secuencial: secPart,
-      dirMatriz: cfg.direccion_matriz || '',
-    },
-    infoNotaCredito: {
-      fechaEmision: fechaEmision,
-      dirEstablecimiento: cfg.direccion_establecimiento || cfg.direccion_matriz || '',
-      tipoIdentificacionComprador: '07', // RUC
-      razonSocialComprador: updatedCn.customer_name || 'CONSUMIDOR FINAL',
-      identificacionComprador: updatedCn.customer_ruc || '9999999999',
-      obligadoContabilidad: normalizeObligadoContabilidad(cfg.obligado_contabilidad),
-      codDocModificado: '01', // Factura
-      numDocModificado: updatedCn.reference_invoice || updatedCn.factura_numero || '',
-      fechaEmisionDocSustento: facturaEmision,
-      totalSinImpuestos: subtotal,
-      valorModificacion: total,
-      moneda: 'USD',
-      totalConImpuestos: {
-        totalImpuesto: totalImpuestos,
-      },
-      motivo: updatedCn.reason || 'Sin motivo especificado',
-    },
-    detalles: {
-      detalle: detalleItems,
-    },
-  };
-
-  // ── GENERAR XML ──
-  const xml = buildCreditNoteXml(comprobante);
-  
-  return { xml, claveAcceso, creditNoteNumber };
-}
-
-// ── FUNCIÓN PARA CALCULAR DÍGITO VERIFICADOR (MÓDULO 11) ──
-function calcularDigitoVerificador(claveBase) {
-  // El SRI usa un algoritmo de módulo 11 con pesos de 2 a 7
-  const pesos = [2, 3, 4, 5, 6, 7];
-  let suma = 0;
-  
-  // Recorrer de derecha a izquierda
-  for (let i = claveBase.length - 1, j = 0; i >= 0; i--, j++) {
-    const digito = parseInt(claveBase[i], 10);
-    const peso = pesos[j % pesos.length];
-    suma += digito * peso;
-  }
-  
-  const residuo = suma % 11;
-  let digitoVerificador = 11 - residuo;
-  
-  if (digitoVerificador === 11) {
-    digitoVerificador = 0;
-  } else if (digitoVerificador === 10) {
-    digitoVerificador = 1;
-  }
-  
-  return String(digitoVerificador);
-}
-
-// ── FUNCIÓN AUXILIAR PARA CONSTRUIR XML DE NOTA DE CRÉDITO ──────────────
-function buildCreditNoteXml(data) {
-  const { infoTributaria, infoNotaCredito, detalles } = data;
-  
-  let xml = `<?xml version="1.0" encoding="UTF-8"?>
-<notaCredito id="comprobante" version="1.1.0">
-  <infoTributaria>
-    <ambiente>${infoTributaria.ambiente}</ambiente>
-    <tipoEmision>${infoTributaria.tipoEmision}</tipoEmision>
-    <razonSocial>${escapeXml(infoTributaria.razonSocial)}</razonSocial>
-    ${infoTributaria.nombreComercial ? `<nombreComercial>${escapeXml(infoTributaria.nombreComercial)}</nombreComercial>` : ''}
-    <ruc>${infoTributaria.ruc}</ruc>
-    <claveAcceso>${infoTributaria.claveAcceso}</claveAcceso>
-    <codDoc>${infoTributaria.codDoc}</codDoc>
-    <estab>${infoTributaria.estab}</estab>
-    <ptoEmi>${infoTributaria.ptoEmi}</ptoEmi>
-    <secuencial>${infoTributaria.secuencial}</secuencial>
-    <dirMatriz>${escapeXml(infoTributaria.dirMatriz)}</dirMatriz>
-  </infoTributaria>
-  <infoNotaCredito>
-    <fechaEmision>${formatSriDate(infoNotaCredito.fechaEmision)}</fechaEmision>
-    <dirEstablecimiento>${escapeXml(infoNotaCredito.dirEstablecimiento)}</dirEstablecimiento>
-    <tipoIdentificacionComprador>${infoNotaCredito.tipoIdentificacionComprador}</tipoIdentificacionComprador>
-    <razonSocialComprador>${escapeXml(infoNotaCredito.razonSocialComprador)}</razonSocialComprador>
-    <identificacionComprador>${infoNotaCredito.identificacionComprador}</identificacionComprador>
-    ${infoNotaCredito.obligadoContabilidad ? `<obligadoContabilidad>${infoNotaCredito.obligadoContabilidad}</obligadoContabilidad>` : ''}
-    <codDocModificado>${infoNotaCredito.codDocModificado}</codDocModificado>
-    <numDocModificado>${infoNotaCredito.numDocModificado}</numDocModificado>
-    <fechaEmisionDocSustento>${formatSriDate(infoNotaCredito.fechaEmisionDocSustento)}</fechaEmisionDocSustento>
-    <totalSinImpuestos>${infoNotaCredito.totalSinImpuestos.toFixed(2)}</totalSinImpuestos>
-    <valorModificacion>${infoNotaCredito.valorModificacion.toFixed(2)}</valorModificacion>
-    <moneda>${infoNotaCredito.moneda}</moneda>
-    <totalConImpuestos>
-      ${infoNotaCredito.totalConImpuestos.totalImpuesto.map(imp => `
-      <totalImpuesto>
-        <codigo>${imp.codigo}</codigo>
-        <codigoPorcentaje>${imp.codigoPorcentaje}</codigoPorcentaje>
-        <baseImponible>${imp.baseImponible.toFixed(2)}</baseImponible>
-        <valor>${imp.valor.toFixed(2)}</valor>
-      </totalImpuesto>`).join('')}
-    </totalConImpuestos>
-    <motivo>${escapeXml(infoNotaCredito.motivo)}</motivo>
-  </infoNotaCredito>
-  <detalles>
-    ${detalles.detalle.map(det => `
-    <detalle>
-      <codigoInterno>${escapeXml(det.codigoInterno)}</codigoInterno>
-      <descripcion>${escapeXml(det.descripcion)}</descripcion>
-      <cantidad>${det.cantidad.toFixed(2)}</cantidad>
-      <precioUnitario>${det.precioUnitario.toFixed(2)}</precioUnitario>
-      <descuento>${det.descuento.toFixed(2)}</descuento>
-      <precioTotalSinImpuesto>${det.precioTotalSinImpuesto.toFixed(2)}</precioTotalSinImpuesto>
-      <impuestos>
-        <impuesto>
-          <codigo>${det.impuesto.codigo}</codigo>
-          <codigoPorcentaje>${det.impuesto.codigoPorcentaje}</codigoPorcentaje>
-          <tarifa>${det.impuesto.tarifa.toFixed(2)}</tarifa>
-          <baseImponible>${det.impuesto.baseImponible.toFixed(2)}</baseImponible>
-          <valor>${det.impuesto.valor.toFixed(2)}</valor>
-        </impuesto>
-      </impuestos>
-    </detalle>`).join('')}
-  </detalles>
-</notaCredito>`;
-
-  return xml;
-}
-
-// ── FUNCIÓN PARA FORMATEAR FECHA SRI (DD/MM/AAAA) ──
-function formatSriDate(dateStr) {
-  if (!dateStr) return '';
-  const date = new Date(dateStr);
-  const day = String(date.getDate()).padStart(2, '0');
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const year = date.getFullYear();
-  return `${day}/${month}/${year}`;
-}
-
-// ── FUNCIÓN AUXILIAR PARA ESCAPAR XML ──
-function escapeXml(str) {
-  if (!str) return '';
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-}
-
-// ── FUNCIÓN AUXILIAR PARA NORMALIZAR OBLIGADO CONTABILIDAD ──
-function normalizeObligadoContabilidad(value) {
-  if (value === true || value === 'SI' || value === 'si' || value === 'S') return 'SI';
-  if (value === false || value === 'NO' || value === 'no' || value === 'N') return 'NO';
-  return 'NO';
-}
-
-// ── FUNCIÓN AUXILIAR PARA CONSTRUIR XML DE NOTA DE CRÉDITO ──────────────
-function buildCreditNoteXml(data) {
-  const { infoTributaria, infoNotaCredito, detalles } = data;
-  
-  let xml = `<?xml version="1.0" encoding="UTF-8"?>
-<notaCredito id="comprobante" version="1.1.0">
-  <infoTributaria>
-    <ambiente>${infoTributaria.ambiente}</ambiente>
-    <tipoEmision>${infoTributaria.tipoEmision}</tipoEmision>
-    <razonSocial>${escapeXml(infoTributaria.razonSocial)}</razonSocial>
-    ${infoTributaria.nombreComercial ? `<nombreComercial>${escapeXml(infoTributaria.nombreComercial)}</nombreComercial>` : ''}
-    <ruc>${infoTributaria.ruc}</ruc>
-    <claveAcceso>${infoTributaria.claveAcceso}</claveAcceso>
-    <codDoc>${infoTributaria.codDoc}</codDoc>
-    <estab>${infoTributaria.estab}</estab>
-    <ptoEmi>${infoTributaria.ptoEmi}</ptoEmi>
-    <secuencial>${infoTributaria.secuencial}</secuencial>
-    <dirMatriz>${escapeXml(infoTributaria.dirMatriz)}</dirMatriz>
-  </infoTributaria>
-  <infoNotaCredito>
-    <fechaEmision>${infoNotaCredito.fechaEmision}</fechaEmision>
-    <dirEstablecimiento>${escapeXml(infoNotaCredito.dirEstablecimiento)}</dirEstablecimiento>
-    <tipoIdentificacionComprador>${infoNotaCredito.tipoIdentificacionComprador}</tipoIdentificacionComprador>
-    <razonSocialComprador>${escapeXml(infoNotaCredito.razonSocialComprador)}</razonSocialComprador>
-    <identificacionComprador>${infoNotaCredito.identificacionComprador}</identificacionComprador>
-    <codDocModificado>${infoNotaCredito.codDocModificado}</codDocModificado>
-    <numDocModificado>${infoNotaCredito.numDocModificado}</numDocModificado>
-    <fechaEmisionDocSustento>${infoNotaCredito.fechaEmisionDocSustento}</fechaEmisionDocSustento>
-    <totalSinImpuestos>${infoNotaCredito.totalSinImpuestos.toFixed(2)}</totalSinImpuestos>
-    <valorModificacion>${infoNotaCredito.valorModificacion.toFixed(2)}</valorModificacion>
-    <moneda>${infoNotaCredito.moneda}</moneda>
-    <totalConImpuestos>
-      ${infoNotaCredito.totalConImpuestos.totalImpuesto.map(imp => `
-      <totalImpuesto>
-        <codigo>${imp.codigo}</codigo>
-        <codigoPorcentaje>${imp.codigoPorcentaje}</codigoPorcentaje>
-        <baseImponible>${imp.baseImponible.toFixed(2)}</baseImponible>
-        <valor>${imp.valor.toFixed(2)}</valor>
-      </totalImpuesto>`).join('')}
-    </totalConImpuestos>
-    <motivo>${escapeXml(infoNotaCredito.motivo)}</motivo>
-  </infoNotaCredito>
-  <detalles>
-    ${detalles.detalle.map(det => `
-    <detalle>
-      <codigoInterno>${escapeXml(det.codigoInterno)}</codigoInterno>
-      <descripcion>${escapeXml(det.descripcion)}</descripcion>
-      <cantidad>${det.cantidad}</cantidad>
-      <precioUnitario>${det.precioUnitario.toFixed(2)}</precioUnitario>
-      <descuento>${det.descuento.toFixed(2)}</descuento>
-      <precioTotalSinImpuesto>${det.precioTotalSinImpuesto.toFixed(2)}</precioTotalSinImpuesto>
-      <impuestos>
-        <impuesto>
-          <codigo>${det.impuesto.codigo}</codigo>
-          <codigoPorcentaje>${det.impuesto.codigoPorcentaje}</codigoPorcentaje>
-          <tarifa>${det.impuesto.tarifa}</tarifa>
-          <baseImponible>${det.impuesto.baseImponible.toFixed(2)}</baseImponible>
-          <valor>${det.impuesto.valor.toFixed(2)}</valor>
-        </impuesto>
-      </impuestos>
-    </detalle>`).join('')}
-  </detalles>
-</notaCredito>`;
-
-  return xml;
-}
-
-// ── FUNCIÓN AUXILIAR PARA ESCAPAR XML ─────────────────────────────────────
-function escapeXml(str) {
-  if (!str) return '';
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-}
-
-// ── FUNCIÓN AUXILIAR PARA OBTENER CÓDIGO DE IVA ──────────────────────────
-function getIvaCode(rate) {
-  const rates = {
-    0: 0,
-    5: 5,
-    8: 6,
-    12: 2,
-    15: 4,
-  };
-  return rates[rate] || 4;
-}
-
-// ── EMITIR NOTA DE CRÉDITO AL SRI ────────────────────────────────────────
-export async function emitCreditNoteToSri(schema, creditNoteId) {
-  const cfg = await getConfig(schema);
-  if (!cfg?.p12_base64 && !cfg?.p12_path) throw new Error('No hay firma electrónica cargada');
-
-  // Generar XML
-  const { xml, claveAcceso, creditNoteNumber } = await generateCreditNoteXml(schema, creditNoteId);
-
-  // Firmar XML
-  let p12Buffer;
-  if (cfg.p12_base64) {
-    p12Buffer = Buffer.from(cfg.p12_base64, 'base64');
-  } else if (cfg.p12_path) {
-    p12Buffer = await readFile(cfg.p12_path);
-  } else {
-    throw new Error('No hay firma electrónica cargada');
-  }
-
-  const signedXml = await signXml({
-    p12Buffer: new Uint8Array(p12Buffer),
-    password: cfg.p12_password || '',
-    xmlBuffer: new TextEncoder().encode(xml),
-  });
-
-  const ambiente = parseInt(cfg.ambiente || '1', 10);
-  const envStr = ambiente === 2 ? 'prod' : 'test';
-
-  // Guardar XML firmado en la base de datos
-  await query(
-    `UPDATE "${schema}".credit_notes 
-     SET signed_xml = $1, status = 'pendiente', access_key = $2, credit_note_number = $3
-     WHERE id = $4`,
-    [signedXml, claveAcceso, creditNoteNumber, creditNoteId]
-  );
-
-  // Enviar al SRI
-  try {
-    console.log('📤 Enviando Nota de Crédito al SRI...');
-    
-    // Validar XML
-    const recResult = await validateXml({
-      xml: new TextEncoder().encode(signedXml),
-      env: envStr,
-    });
-    
-    console.log('📥 Respuesta recepción:', JSON.stringify(recResult, null, 2));
-
-    if (recResult?.estado === 'RECIBIDA') {
-      // Esperar un momento para la autorización
-      await delay(2000);
-
-      // Autorizar
-      const authResult = await authorizeXml({
-        claveAcceso,
-        env: envStr,
-        timeout: 30000,
-      });
-
-      console.log('📥 Respuesta autorización:', JSON.stringify(authResult, null, 2));
-
-      let status = 'pendiente';
-      let authNumber = null;
-      let authDate = null;
-      let sriMessage = null;
-      let sriJson = null;
-
-      if (authResult?.estadoAutorizacion === 'AUTORIZADO') {
-        status = 'autorizada';
-        authNumber = authResult.numeroAutorizacion || authResult.claveAcceso || claveAcceso;
-        authDate = authResult.fechaAutorizacion ? new Date(authResult.fechaAutorizacion) : new Date();
-        console.log('✅ Nota de Crédito AUTORIZADA:', authNumber);
-      } else {
-        status = 'rechazada';
-        sriMessage = (authResult?.mensajes || []).map(m => 
-          typeof m === 'string' ? m : (m.mensaje || m.message || String(m))
-        ).join(' | ') || authResult?.estadoAutorizacion || 'Rechazada por el SRI';
-        console.log('❌ Nota de Crédito RECHAZADA:', sriMessage);
-      }
-
-      sriJson = authResult;
-
-      // Actualizar estado final
-      await query(
-        `UPDATE "${schema}".credit_notes 
-         SET status = $1, auth_number = $2, auth_date = $3, sri_message = $4, sri_json = $5
-         WHERE id = $6`,
-        [status, authNumber, authDate, sriMessage, sriJson ? JSON.stringify(sriJson) : null, creditNoteId]
-      );
-
-      return { status, authNumber, authDate, sriMessage };
-    } else {
-      // No recibida
-      const sriMessage = recResult?.mensaje || 'No recibida por el SRI';
-      await query(
-        `UPDATE "${schema}".credit_notes 
-         SET status = 'rechazada', sri_message = $1, sri_json = $2
-         WHERE id = $3`,
-        [sriMessage, JSON.stringify(recResult), creditNoteId]
-      );
-      throw new Error(sriMessage);
-    }
-  } catch (error) {
-    console.error('Error enviando nota de crédito al SRI:', error);
-    await query(
-      `UPDATE "${schema}".credit_notes 
-       SET status = 'error', sri_message = $1
-       WHERE id = $2`,
-      [error.message, creditNoteId]
-    );
-    throw error;
-  }
-}
-
-// ── REENVIAR NOTA DE CRÉDITO AL SRI ──────────────────────────────────────
-export async function resendCreditNote(schema, creditNoteId) {
-  const { rows } = await query(
-    `SELECT * FROM "${schema}".credit_notes WHERE id = $1`,
-    [creditNoteId]
-  );
-  const cn = rows[0];
-  if (!cn) throw new Error('Nota de crédito no encontrada');
-  if (!cn.signed_xml) throw new Error('XML firmado no disponible');
-
-  const cfg = await getConfig(schema);
-  if (!cfg) throw new Error('Configuración no encontrada');
-
-  const ambiente = parseInt(cfg.ambiente || '1', 10);
-  const envStr = ambiente === 2 ? 'prod' : 'test';
-
-  try {
-    // Validar XML
-    await validateXml({
-      xml: new TextEncoder().encode(cn.signed_xml),
-      env: envStr,
-    });
-
-    // Autorizar
-    const authResult = await authorizeXml({
-      claveAcceso: cn.access_key,
-      env: envStr,
-    });
-
-    let status, authNumber, authDate, sriMessage;
-
-    if (authResult?.estadoAutorizacion === 'AUTORIZADO') {
-      status = 'autorizada';
-      authNumber = authResult.numeroAutorizacion || authResult.claveAcceso || cn.access_key;
-      authDate = authResult.fechaAutorizacion ? new Date(authResult.fechaAutorizacion) : new Date();
-      sriMessage = null;
-    } else {
-      status = 'rechazada';
-      authNumber = null;
-      authDate = null;
-      sriMessage = (authResult?.mensajes || []).map(m => m.mensaje).join(' | ')
-                 || authResult?.estadoAutorizacion || 'Rechazada por el SRI';
-    }
-
-    await query(
-      `UPDATE "${schema}".credit_notes 
-       SET status = $1, auth_number = $2, auth_date = $3, sri_message = $4, sri_json = $5
-       WHERE id = $6`,
-      [status, authNumber, authDate, sriMessage, authResult ? JSON.stringify(authResult) : null, creditNoteId]
-    );
-
-    return { status, authNumber, authDate, sriMessage };
-  } catch (error) {
-    await query(
-      `UPDATE "${schema}".credit_notes 
-       SET status = 'error', sri_message = $1
-       WHERE id = $2`,
-      [error.message, creditNoteId]
-    );
-    throw error;
-  }
-}
-
-// ------------------- NOTA DE CRÉDITO PDF -------------------
-export async function generateCreditNotePdf(schema, creditNoteId) {
-  const { rows } = await query(
-    `SELECT * FROM "${schema}".credit_notes WHERE id = $1`, [creditNoteId]
-  );
-  const cn = rows[0];
-  if (!cn) throw new Error('Nota de crédito no encontrada');
-
-  const cfg = await getConfig(schema);
-  const bizName = cfg?.razon_social || cfg?.nombre_comercial || 'EMPRESA';
-  const ruc = cfg?.ruc || '-';
-
-  return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', margin: 50 });
-    const chunks = [];
-    doc.on('data', c => chunks.push(c));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
-    doc.on('error', reject);
-
-    doc.fontSize(16).font('Helvetica-Bold')
-       .text('NOTA DE CRÉDITO', { align: 'center' });
-    doc.moveDown();
-    doc.fontSize(12).font('Helvetica')
-       .text(`Número: ${cn.reference_invoice || cn.id}`)
-       .text(`Fecha: ${new Date(cn.created_at).toLocaleDateString('es-EC')}`)
-       .text(`Cliente: ${cn.customer_name || 'CONSUMIDOR FINAL'}`)
-       .text(`RUC/CI: ${cn.customer_ruc || '9999999999'}`)
-       .text(`Motivo: ${cn.reason || 'Sin motivo especificado'}`);
-    doc.moveDown();
-
-    // Tabla de ítems
-    const items = cn.items || [];
-    if (items.length > 0) {
-      doc.fontSize(10).font('Helvetica-Bold')
-         .text('Detalle:', { underline: true });
-      doc.moveDown(0.5);
-      
-      items.forEach(item => {
-        const qty = item.qty || 1;
-        const desc = item.description || item.name || 'Producto';
-        const price = item.unit_price || 0;
-        const subtotal = item.subtotal || (qty * price);
-        doc.fontSize(9).font('Helvetica')
-           .text(`${qty}x ${desc} - ${price.toFixed(2)} = ${subtotal.toFixed(2)}`);
-      });
-    }
-
-    doc.moveDown();
-    doc.fontSize(10).font('Helvetica-Bold')
-       .text(`Subtotal: $${parseFloat(cn.subtotal).toFixed(2)}`)
-       .text(`IVA: $${parseFloat(cn.iva_amount).toFixed(2)}`)
-       .text(`TOTAL: $${parseFloat(cn.total).toFixed(2)}`)
-       .text(`Saldo disponible: $${parseFloat(cn.remaining_balance).toFixed(2)}`);
-
-    doc.moveDown(2);
-    doc.fontSize(9).font('Helvetica')
-       .text('Firma del responsable:', { align: 'right' })
-       .text('_________________________', { align: 'right' });
 
     doc.end();
   });
