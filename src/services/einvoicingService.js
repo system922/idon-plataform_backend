@@ -1236,6 +1236,427 @@ export async function generateInvoicePdf(schema, invoiceId) {
     doc.end();
   });
 }
+// ── GENERAR XML DE NOTA DE CRÉDITO ──────────────────────────────────────────
+export async function generateCreditNoteXml(schema, creditNoteId) {
+  const { rows } = await query(
+    `SELECT cn.*, ei.invoice_number as factura_numero, ei.access_key as factura_clave
+     FROM "${schema}".credit_notes cn
+     LEFT JOIN "${schema}".einvoices ei ON ei.id = cn.invoice_id
+     WHERE cn.id = $1`,
+    [creditNoteId]
+  );
+  
+  const cn = rows[0];
+  if (!cn) throw new Error('Nota de crédito no encontrada');
+
+  const cfg = await getConfig(schema);
+  if (!cfg) throw new Error('Configuración no encontrada');
+  if (!cfg.p12_base64 && !cfg.p12_path) throw new Error('Firma electrónica no cargada');
+
+  // Obtener siguiente secuencial para nota de crédito
+  const { rows: seqRows } = await query(
+    `UPDATE "${schema}".einvoice_config
+       SET secuencial_actual = secuencial_actual + 1
+     RETURNING secuencial_actual - 1 AS seq`
+  );
+  const secuencial = seqRows[0].seq;
+
+  const estab = cfg.serie_estab || '001';
+  const ptoEmi = cfg.serie_pto_emision || '001';
+  const ambiente = parseInt(cfg.ambiente || '1', 10);
+  const envStr = ambiente === 2 ? 'prod' : 'test';
+
+  // Generar número de nota de crédito
+  const creditNoteNumber = `${estab}-${ptoEmi}-${String(secuencial).padStart(9, '0')}`;
+
+  // Actualizar la nota con el número generado
+  await query(
+    `UPDATE "${schema}".credit_notes 
+     SET credit_note_number = $1 
+     WHERE id = $2`,
+    [creditNoteNumber, creditNoteId]
+  );
+
+  // Procesar items
+  const items = cn.items || [];
+  const subtotal = parseFloat(cn.subtotal) || 0;
+  const ivaAmount = parseFloat(cn.iva_amount) || 0;
+  const total = parseFloat(cn.total) || 0;
+
+  // Calcular subtotales por tasa de IVA
+  const subtotalByRate = {};
+  const ivaByRate = {};
+  
+  // Inferir tasa de IVA de cada item
+  for (const item of items) {
+    const itemSubtotal = parseFloat(item.subtotal) || 0;
+    const itemIva = parseFloat(item.iva_amount) || 0;
+    
+    let tasaIVA = 0;
+    if (itemIva > 0 && itemSubtotal > 0) {
+      const inferredRate = Math.round((itemIva / itemSubtotal) * 100);
+      if ([0, 5, 8, 12, 15].includes(inferredRate)) {
+        tasaIVA = inferredRate;
+      } else {
+        tasaIVA = 15;
+      }
+    }
+    
+    subtotalByRate[tasaIVA] = (subtotalByRate[tasaIVA] || 0) + itemSubtotal;
+    ivaByRate[tasaIVA] = (ivaByRate[tasaIVA] || 0) + itemIva;
+  }
+
+  // Construir el XML de la nota de crédito
+  const fechaEmision = new Date().toISOString();
+  
+  // Generar clave de acceso
+  const fechaStr = fechaEmision.replace(/[-:T.Z]/g, '').substring(0, 12); // AAAAMMDDHHMMSS
+  const claveAcceso = 
+    fechaStr +
+    cfg.ruc.padStart(13, '0') +
+    '04' + // Código de documento (Nota de Crédito)
+    estab.padStart(3, '0') +
+    ptoEmi.padStart(3, '0') +
+    String(secuencial).padStart(9, '0') +
+    '1' + // Tipo de emisión (1 = Normal)
+    '0' + // Ambiente (0 = Pruebas, 1 = Producción)
+    '00000000'; // Relleno
+
+  // Obtener detalle de items
+  const detalleItems = items.map(item => ({
+    codigoInterno: item.codigo_interno || item.code || 'PROD',
+    descripcion: item.description || item.name || 'Producto',
+    cantidad: parseFloat(item.cantidad || item.qty || 1),
+    precioUnitario: parseFloat(item.unit_price || 0),
+    descuento: parseFloat(item.descuento || 0),
+    precioTotalSinImpuesto: parseFloat(item.subtotal_credited || item.subtotal || 0),
+    impuesto: {
+      codigo: 2, // IVA
+      codigoPorcentaje: getIvaCode(Object.keys(subtotalByRate)[0] || 15),
+      tarifa: Object.keys(subtotalByRate)[0] || 15,
+      baseImponible: parseFloat(item.subtotal_credited || item.subtotal || 0),
+      valor: parseFloat(item.iva_amount || 0),
+    }
+  }));
+
+  // Construir total de impuestos
+  const totalImpuestos = Object.keys(subtotalByRate).map(rate => ({
+    codigo: 2,
+    codigoPorcentaje: getIvaCode(parseFloat(rate)),
+    baseImponible: subtotalByRate[rate] || 0,
+    valor: ivaByRate[rate] || 0,
+  }));
+
+  // Construir objeto para el generador de XML
+  const comprobante = {
+    infoTributaria: {
+      ambiente: ambiente,
+      tipoEmision: 1,
+      razonSocial: cfg.razon_social,
+      nombreComercial: cfg.nombre_comercial || cfg.razon_social,
+      ruc: cfg.ruc,
+      claveAcceso: claveAcceso,
+      codDoc: '04',
+      estab: estab,
+      ptoEmi: ptoEmi,
+      secuencial: String(secuencial).padStart(9, '0'),
+      dirMatriz: cfg.direccion_matriz || '',
+    },
+    infoNotaCredito: {
+      fechaEmision: fechaEmision,
+      dirEstablecimiento: cfg.direccion_establecimiento || cfg.direccion_matriz || '',
+      tipoIdentificacionComprador: '07', // RUC
+      razonSocialComprador: cn.customer_name || 'CONSUMIDOR FINAL',
+      identificacionComprador: cn.customer_ruc || '9999999999',
+      codDocModificado: '01', // Factura
+      numDocModificado: cn.reference_invoice || cn.factura_numero || '',
+      fechaEmisionDocSustento: new Date().toISOString(),
+      totalSinImpuestos: subtotal,
+      valorModificacion: total,
+      moneda: 'USD',
+      totalConImpuestos: {
+        totalImpuesto: totalImpuestos,
+      },
+      motivo: cn.reason || 'Sin motivo especificado',
+    },
+    detalles: {
+      detalle: detalleItems,
+    },
+  };
+
+  // Usar el generador de XML de osodreamer-sri-xml-signer para notas de crédito
+  // Nota: El paquete puede no tener función específica para nota de crédito
+  // Por ahora generamos manualmente el XML
+  const xml = buildCreditNoteXml(comprobante);
+  
+  return { xml, claveAcceso, creditNoteNumber };
+}
+
+// ── FUNCIÓN AUXILIAR PARA CONSTRUIR XML DE NOTA DE CRÉDITO ──────────────
+function buildCreditNoteXml(data) {
+  const { infoTributaria, infoNotaCredito, detalles } = data;
+  
+  let xml = `<?xml version="1.0" encoding="UTF-8"?>
+<notaCredito id="comprobante" version="1.1.0">
+  <infoTributaria>
+    <ambiente>${infoTributaria.ambiente}</ambiente>
+    <tipoEmision>${infoTributaria.tipoEmision}</tipoEmision>
+    <razonSocial>${escapeXml(infoTributaria.razonSocial)}</razonSocial>
+    ${infoTributaria.nombreComercial ? `<nombreComercial>${escapeXml(infoTributaria.nombreComercial)}</nombreComercial>` : ''}
+    <ruc>${infoTributaria.ruc}</ruc>
+    <claveAcceso>${infoTributaria.claveAcceso}</claveAcceso>
+    <codDoc>${infoTributaria.codDoc}</codDoc>
+    <estab>${infoTributaria.estab}</estab>
+    <ptoEmi>${infoTributaria.ptoEmi}</ptoEmi>
+    <secuencial>${infoTributaria.secuencial}</secuencial>
+    <dirMatriz>${escapeXml(infoTributaria.dirMatriz)}</dirMatriz>
+  </infoTributaria>
+  <infoNotaCredito>
+    <fechaEmision>${infoNotaCredito.fechaEmision}</fechaEmision>
+    <dirEstablecimiento>${escapeXml(infoNotaCredito.dirEstablecimiento)}</dirEstablecimiento>
+    <tipoIdentificacionComprador>${infoNotaCredito.tipoIdentificacionComprador}</tipoIdentificacionComprador>
+    <razonSocialComprador>${escapeXml(infoNotaCredito.razonSocialComprador)}</razonSocialComprador>
+    <identificacionComprador>${infoNotaCredito.identificacionComprador}</identificacionComprador>
+    <codDocModificado>${infoNotaCredito.codDocModificado}</codDocModificado>
+    <numDocModificado>${infoNotaCredito.numDocModificado}</numDocModificado>
+    <fechaEmisionDocSustento>${infoNotaCredito.fechaEmisionDocSustento}</fechaEmisionDocSustento>
+    <totalSinImpuestos>${infoNotaCredito.totalSinImpuestos.toFixed(2)}</totalSinImpuestos>
+    <valorModificacion>${infoNotaCredito.valorModificacion.toFixed(2)}</valorModificacion>
+    <moneda>${infoNotaCredito.moneda}</moneda>
+    <totalConImpuestos>
+      ${infoNotaCredito.totalConImpuestos.totalImpuesto.map(imp => `
+      <totalImpuesto>
+        <codigo>${imp.codigo}</codigo>
+        <codigoPorcentaje>${imp.codigoPorcentaje}</codigoPorcentaje>
+        <baseImponible>${imp.baseImponible.toFixed(2)}</baseImponible>
+        <valor>${imp.valor.toFixed(2)}</valor>
+      </totalImpuesto>`).join('')}
+    </totalConImpuestos>
+    <motivo>${escapeXml(infoNotaCredito.motivo)}</motivo>
+  </infoNotaCredito>
+  <detalles>
+    ${detalles.detalle.map(det => `
+    <detalle>
+      <codigoInterno>${escapeXml(det.codigoInterno)}</codigoInterno>
+      <descripcion>${escapeXml(det.descripcion)}</descripcion>
+      <cantidad>${det.cantidad}</cantidad>
+      <precioUnitario>${det.precioUnitario.toFixed(2)}</precioUnitario>
+      <descuento>${det.descuento.toFixed(2)}</descuento>
+      <precioTotalSinImpuesto>${det.precioTotalSinImpuesto.toFixed(2)}</precioTotalSinImpuesto>
+      <impuestos>
+        <impuesto>
+          <codigo>${det.impuesto.codigo}</codigo>
+          <codigoPorcentaje>${det.impuesto.codigoPorcentaje}</codigoPorcentaje>
+          <tarifa>${det.impuesto.tarifa}</tarifa>
+          <baseImponible>${det.impuesto.baseImponible.toFixed(2)}</baseImponible>
+          <valor>${det.impuesto.valor.toFixed(2)}</valor>
+        </impuesto>
+      </impuestos>
+    </detalle>`).join('')}
+  </detalles>
+</notaCredito>`;
+
+  return xml;
+}
+
+// ── FUNCIÓN AUXILIAR PARA ESCAPAR XML ─────────────────────────────────────
+function escapeXml(str) {
+  if (!str) return '';
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+// ── FUNCIÓN AUXILIAR PARA OBTENER CÓDIGO DE IVA ──────────────────────────
+function getIvaCode(rate) {
+  const rates = {
+    0: 0,
+    5: 5,
+    8: 6,
+    12: 2,
+    15: 4,
+  };
+  return rates[rate] || 4;
+}
+
+// ── EMITIR NOTA DE CRÉDITO AL SRI ────────────────────────────────────────
+export async function emitCreditNoteToSri(schema, creditNoteId) {
+  const cfg = await getConfig(schema);
+  if (!cfg?.p12_base64 && !cfg?.p12_path) throw new Error('No hay firma electrónica cargada');
+
+  // Generar XML
+  const { xml, claveAcceso, creditNoteNumber } = await generateCreditNoteXml(schema, creditNoteId);
+
+  // Firmar XML
+  let p12Buffer;
+  if (cfg.p12_base64) {
+    p12Buffer = Buffer.from(cfg.p12_base64, 'base64');
+  } else if (cfg.p12_path) {
+    p12Buffer = await readFile(cfg.p12_path);
+  } else {
+    throw new Error('No hay firma electrónica cargada');
+  }
+
+  const signedXml = await signXml({
+    p12Buffer: new Uint8Array(p12Buffer),
+    password: cfg.p12_password || '',
+    xmlBuffer: new TextEncoder().encode(xml),
+  });
+
+  const ambiente = parseInt(cfg.ambiente || '1', 10);
+  const envStr = ambiente === 2 ? 'prod' : 'test';
+
+  // Guardar XML firmado en la base de datos
+  await query(
+    `UPDATE "${schema}".credit_notes 
+     SET signed_xml = $1, status = 'pendiente', access_key = $2, credit_note_number = $3
+     WHERE id = $4`,
+    [signedXml, claveAcceso, creditNoteNumber, creditNoteId]
+  );
+
+  // Enviar al SRI
+  try {
+    console.log('📤 Enviando Nota de Crédito al SRI...');
+    
+    // Validar XML
+    const recResult = await validateXml({
+      xml: new TextEncoder().encode(signedXml),
+      env: envStr,
+    });
+    
+    console.log('📥 Respuesta recepción:', JSON.stringify(recResult, null, 2));
+
+    if (recResult?.estado === 'RECIBIDA') {
+      // Esperar un momento para la autorización
+      await delay(2000);
+
+      // Autorizar
+      const authResult = await authorizeXml({
+        claveAcceso,
+        env: envStr,
+        timeout: 30000,
+      });
+
+      console.log('📥 Respuesta autorización:', JSON.stringify(authResult, null, 2));
+
+      let status = 'pendiente';
+      let authNumber = null;
+      let authDate = null;
+      let sriMessage = null;
+      let sriJson = null;
+
+      if (authResult?.estadoAutorizacion === 'AUTORIZADO') {
+        status = 'autorizada';
+        authNumber = authResult.numeroAutorizacion || authResult.claveAcceso || claveAcceso;
+        authDate = authResult.fechaAutorizacion ? new Date(authResult.fechaAutorizacion) : new Date();
+        console.log('✅ Nota de Crédito AUTORIZADA:', authNumber);
+      } else {
+        status = 'rechazada';
+        sriMessage = (authResult?.mensajes || []).map(m => 
+          typeof m === 'string' ? m : (m.mensaje || m.message || String(m))
+        ).join(' | ') || authResult?.estadoAutorizacion || 'Rechazada por el SRI';
+        console.log('❌ Nota de Crédito RECHAZADA:', sriMessage);
+      }
+
+      sriJson = authResult;
+
+      // Actualizar estado final
+      await query(
+        `UPDATE "${schema}".credit_notes 
+         SET status = $1, auth_number = $2, auth_date = $3, sri_message = $4, sri_json = $5
+         WHERE id = $6`,
+        [status, authNumber, authDate, sriMessage, sriJson ? JSON.stringify(sriJson) : null, creditNoteId]
+      );
+
+      return { status, authNumber, authDate, sriMessage };
+    } else {
+      // No recibida
+      const sriMessage = recResult?.mensaje || 'No recibida por el SRI';
+      await query(
+        `UPDATE "${schema}".credit_notes 
+         SET status = 'rechazada', sri_message = $1, sri_json = $2
+         WHERE id = $3`,
+        [sriMessage, JSON.stringify(recResult), creditNoteId]
+      );
+      throw new Error(sriMessage);
+    }
+  } catch (error) {
+    console.error('Error enviando nota de crédito al SRI:', error);
+    await query(
+      `UPDATE "${schema}".credit_notes 
+       SET status = 'error', sri_message = $1
+       WHERE id = $2`,
+      [error.message, creditNoteId]
+    );
+    throw error;
+  }
+}
+
+// ── REENVIAR NOTA DE CRÉDITO AL SRI ──────────────────────────────────────
+export async function resendCreditNote(schema, creditNoteId) {
+  const { rows } = await query(
+    `SELECT * FROM "${schema}".credit_notes WHERE id = $1`,
+    [creditNoteId]
+  );
+  const cn = rows[0];
+  if (!cn) throw new Error('Nota de crédito no encontrada');
+  if (!cn.signed_xml) throw new Error('XML firmado no disponible');
+
+  const cfg = await getConfig(schema);
+  if (!cfg) throw new Error('Configuración no encontrada');
+
+  const ambiente = parseInt(cfg.ambiente || '1', 10);
+  const envStr = ambiente === 2 ? 'prod' : 'test';
+
+  try {
+    // Validar XML
+    await validateXml({
+      xml: new TextEncoder().encode(cn.signed_xml),
+      env: envStr,
+    });
+
+    // Autorizar
+    const authResult = await authorizeXml({
+      claveAcceso: cn.access_key,
+      env: envStr,
+    });
+
+    let status, authNumber, authDate, sriMessage;
+
+    if (authResult?.estadoAutorizacion === 'AUTORIZADO') {
+      status = 'autorizada';
+      authNumber = authResult.numeroAutorizacion || authResult.claveAcceso || cn.access_key;
+      authDate = authResult.fechaAutorizacion ? new Date(authResult.fechaAutorizacion) : new Date();
+      sriMessage = null;
+    } else {
+      status = 'rechazada';
+      authNumber = null;
+      authDate = null;
+      sriMessage = (authResult?.mensajes || []).map(m => m.mensaje).join(' | ')
+                 || authResult?.estadoAutorizacion || 'Rechazada por el SRI';
+    }
+
+    await query(
+      `UPDATE "${schema}".credit_notes 
+       SET status = $1, auth_number = $2, auth_date = $3, sri_message = $4, sri_json = $5
+       WHERE id = $6`,
+      [status, authNumber, authDate, sriMessage, authResult ? JSON.stringify(authResult) : null, creditNoteId]
+    );
+
+    return { status, authNumber, authDate, sriMessage };
+  } catch (error) {
+    await query(
+      `UPDATE "${schema}".credit_notes 
+       SET status = 'error', sri_message = $1
+       WHERE id = $2`,
+      [error.message, creditNoteId]
+    );
+    throw error;
+  }
+}
 
 // ------------------- NOTA DE CRÉDITO PDF -------------------
 export async function generateCreditNotePdf(schema, creditNoteId) {

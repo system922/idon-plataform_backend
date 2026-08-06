@@ -275,36 +275,12 @@ router.get('/invoices/:id', authMiddleware, requireInvoicingModule, async (req, 
 
 // ── CREDIT NOTES ─────────────────────────────────────────────────────────────
 
-async function ensureCreditNotesTable(schema) {
-  await query(`
-    CREATE TABLE IF NOT EXISTS "${schema}".credit_notes (
-      id SERIAL PRIMARY KEY,
-      invoice_id UUID,
-      reference_invoice VARCHAR(50),
-      reason TEXT NOT NULL,
-      items JSONB DEFAULT '[]',
-      subtotal NUMERIC(10,2) DEFAULT 0,
-      iva_amount NUMERIC(10,2) DEFAULT 0,
-      discount_amount NUMERIC(10,2) DEFAULT 0,
-      total NUMERIC(10,2) DEFAULT 0,
-      remaining_balance NUMERIC(10,2) DEFAULT 0,
-      customer_name VARCHAR(255),
-      customer_ruc VARCHAR(20),
-      customer_email VARCHAR(255),
-      status VARCHAR(20) DEFAULT 'emitida',
-      created_at TIMESTAMPTZ DEFAULT NOW()
-    )
-  `);
-  await query(`ALTER TABLE IF EXISTS "${schema}".credit_notes ADD COLUMN IF NOT EXISTS remaining_balance NUMERIC(10,2) DEFAULT 0`);
-  // Back-fill solo notas emitidas que nunca tuvieron remaining_balance inicializado
-  await query(`UPDATE "${schema}".credit_notes SET remaining_balance = total WHERE remaining_balance = 0 AND total > 0 AND status NOT IN ('utilizada', 'anulada')`);
-}
-
 // GET /api/einvoicing/credit-notes
-router.get('/credit-notes', authMiddleware, async (req, res) => {
+router.get('/credit-notes', authMiddleware, requireInvoicingModule, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    await ensureCreditNotesTable(schema);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
     const result = await query(`
       SELECT cn.*, ei.invoice_number
       FROM "${schema}".credit_notes cn
@@ -319,10 +295,11 @@ router.get('/credit-notes', authMiddleware, async (req, res) => {
 });
 
 // POST /api/einvoicing/credit-notes
-router.post('/credit-notes', authMiddleware, async (req, res) => {
+router.post('/credit-notes', authMiddleware, requireInvoicingModule, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    await ensureCreditNotesTable(schema);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
     const {
       invoice_id, reason, items, subtotal, iva_amount, discount_amount, total,
       customer_name, customer_ruc, customer_email, reference_invoice
@@ -373,10 +350,11 @@ router.post('/credit-notes', authMiddleware, async (req, res) => {
 
 // GET /api/einvoicing/credit-notes/available?customer_ruc=RUC&customer_name=NAME
 // Solo notas de crédito del cliente exacto con saldo disponible
-router.get('/credit-notes/available', authMiddleware, async (req, res) => {
+router.get('/credit-notes/available', authMiddleware, requireInvoicingModule, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    await ensureCreditNotesTable(schema);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
     const { customer_ruc, customer_name } = req.query;
 
     const hasRuc  = customer_ruc && customer_ruc !== '9999999999';
@@ -413,10 +391,11 @@ router.get('/credit-notes/available', authMiddleware, async (req, res) => {
 
 // POST /api/einvoicing/credit-notes/:id/apply  { amount }
 // Aplica (consume) saldo de una nota de crédito como forma de pago
-router.post('/credit-notes/:id/apply', authMiddleware, async (req, res) => {
+router.post('/credit-notes/:id/apply', authMiddleware, requireInvoicingModule, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    await ensureCreditNotesTable(schema);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
     const { id } = req.params;
     const amount = parseFloat(req.body.amount);
     if (!amount || amount <= 0) return res.status(400).json({ error: 'Monto inválido' });
@@ -448,9 +427,11 @@ router.post('/credit-notes/:id/apply', authMiddleware, async (req, res) => {
 });
 
 // GET /api/einvoicing/credit-notes/:id/pdf
-router.get('/credit-notes/:id/pdf', authMiddleware, async (req, res) => {
+router.get('/credit-notes/:id/pdf', authMiddleware, requireInvoicingModule, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
     const pdfBuf = await svc.generateCreditNotePdf(schema, req.params.id);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="nota_credito_${req.params.id}.pdf"`);
@@ -461,33 +442,86 @@ router.get('/credit-notes/:id/pdf', authMiddleware, async (req, res) => {
   }
 });
 
+// ── NUEVAS RUTAS PARA NOTAS DE CRÉDITO CON SRI ───────────────────────────
+
+// POST /api/einvoicing/credit-notes/:id/emit
+// Emitir nota de crédito al SRI
+router.post('/credit-notes/:id/emit', authMiddleware, requireInvoicingModule, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { id } = req.params;
+    
+    // Verificar que la nota existe
+    const { rows } = await query(
+      `SELECT * FROM "${schema}".credit_notes WHERE id = $1`,
+      [id]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Nota de crédito no encontrada' });
+    }
+
+    const result = await svc.emitCreditNoteToSri(schema, id);
+    res.json({ 
+      success: true, 
+      ...result,
+      message: result.status === 'autorizada' 
+        ? 'Nota de crédito autorizada correctamente' 
+        : 'Nota de crédito enviada pero no autorizada'
+    });
+  } catch (err) {
+    console.error('Error emitiendo nota de crédito:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/einvoicing/credit-notes/:id/resend
+// Reenviar nota de crédito al SRI
+router.post('/credit-notes/:id/resend', authMiddleware, requireInvoicingModule, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { id } = req.params;
+    const result = await svc.resendCreditNote(schema, id);
+    res.json(result);
+  } catch (err) {
+    console.error('Error reenviando nota de crédito:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/einvoicing/credit-notes/:id/xml
+// Descargar XML firmado de la nota de crédito
+router.get('/credit-notes/:id/xml', authMiddleware, requireInvoicingModule, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { rows } = await query(
+      `SELECT credit_note_number, signed_xml FROM "${schema}".credit_notes WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!rows[0] || !rows[0].signed_xml) {
+      return res.status(404).json({ error: 'XML no disponible' });
+    }
+
+    res.setHeader('Content-Type', 'application/xml');
+    res.setHeader('Content-Disposition', `attachment; filename="${rows[0].credit_note_number || req.params.id}.xml"`);
+    res.send(rows[0].signed_xml);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── FIN NUEVAS RUTAS PARA NOTAS DE CRÉDITO ───────────────────────────────
+
 // ── GET /api/einvoicing/debit-notes ──────────────────────────────────────────
 router.get('/debit-notes', authMiddleware, requireInvoicingModule, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
-
-    await query(`
-      CREATE TABLE IF NOT EXISTS "${schema}".debit_notes (
-        id                 SERIAL PRIMARY KEY,
-        invoice_id         UUID,
-        reference_invoice  VARCHAR(50),
-        debit_note_number  VARCHAR(50),
-        reason             TEXT NOT NULL,
-        additional_value   NUMERIC(10,2) DEFAULT 0,
-        interest_value     NUMERIC(10,2) DEFAULT 0,
-        subtotal           NUMERIC(10,2) DEFAULT 0,
-        iva_amount         NUMERIC(10,2) DEFAULT 0,
-        total              NUMERIC(10,2) DEFAULT 0,
-        customer_name      VARCHAR(255),
-        customer_ruc       VARCHAR(20),
-        customer_email     VARCHAR(255),
-        status             VARCHAR(20)   DEFAULT 'pendiente',
-        auth_number        VARCHAR(100),
-        signed_xml         TEXT,
-        created_at         TIMESTAMPTZ   DEFAULT NOW()
-      )
-    `);
 
     const limit  = Math.min(parseInt(req.query.limit) || 100, 500);
     const offset = parseInt(req.query.offset) || 0;
@@ -543,7 +577,7 @@ router.post('/debit-notes', authMiddleware, requireInvoicingModule, async (req, 
 });
 
 // ── GET /api/einvoicing/debit-notes/:id/pdf ───────────────────────────────────
-router.get('/debit-notes/:id/pdf', authMiddleware, async (req, res) => {
+router.get('/debit-notes/:id/pdf', authMiddleware, requireInvoicingModule, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     const { rows } = await query(`SELECT * FROM "${schema}".debit_notes WHERE id=$1`, [req.params.id]);
@@ -580,22 +614,6 @@ router.get('/void', authMiddleware, requireInvoicingModule, async (req, res) => 
 
     const limit  = Math.min(parseInt(req.query.limit)  || 100, 500);
     const offset = parseInt(req.query.offset) || 0;
-
-    await query(`
-      CREATE TABLE IF NOT EXISTS "${schema}".einvoice_voids (
-        id            SERIAL PRIMARY KEY,
-        invoice_id    UUID,
-        invoice_number VARCHAR(50),
-        customer_name  VARCHAR(255),
-        customer_ruc   VARCHAR(20),
-        reason         TEXT,
-        total          NUMERIC(10,2) DEFAULT 0,
-        status         VARCHAR(20)   DEFAULT 'pendiente',
-        auth_number    VARCHAR(100),
-        void_date      DATE          DEFAULT CURRENT_DATE,
-        created_at     TIMESTAMPTZ   DEFAULT NOW()
-      )
-    `);
 
     const { rows } = await query(
       `SELECT * FROM "${schema}".einvoice_voids ORDER BY void_date DESC, created_at DESC LIMIT $1 OFFSET $2`,
@@ -638,24 +656,6 @@ router.get('/remissions', authMiddleware, requireInvoicingModule, async (req, re
     const limit  = Math.min(parseInt(req.query.limit)  || 100, 500);
     const offset = parseInt(req.query.offset) || 0;
 
-    await query(`
-      CREATE TABLE IF NOT EXISTS "${schema}".einvoice_remissions (
-        id                  SERIAL PRIMARY KEY,
-        number              VARCHAR(50),
-        emission_date       DATE          DEFAULT CURRENT_DATE,
-        destinatario        VARCHAR(255),
-        ruc_destinatario    VARCHAR(20),
-        direccion_destino   VARCHAR(500),
-        transportista       VARCHAR(255),
-        ruc_transportista   VARCHAR(20),
-        placa               VARCHAR(20),
-        signed_xml          TEXT,
-        auth_number         VARCHAR(100),
-        status              VARCHAR(20)   DEFAULT 'pendiente',
-        created_at          TIMESTAMPTZ   DEFAULT NOW()
-      )
-    `);
-
     const { rows } = await query(
       `SELECT * FROM "${schema}".einvoice_remissions ORDER BY emission_date DESC, created_at DESC LIMIT $1 OFFSET $2`,
       [limit, offset]
@@ -675,20 +675,6 @@ router.get('/reports', authMiddleware, requireInvoicingModule, async (req, res) 
     const limit  = Math.min(parseInt(req.query.limit)  || 100, 500);
     const offset = parseInt(req.query.offset) || 0;
 
-    await query(`
-      CREATE TABLE IF NOT EXISTS "${schema}".einvoice_reports (
-        id               SERIAL PRIMARY KEY,
-        name             VARCHAR(255),
-        type             VARCHAR(50)  DEFAULT 'general',
-        period           VARCHAR(20),
-        total_vouchers   INTEGER      DEFAULT 0,
-        file_url         TEXT,
-        status           VARCHAR(20)  DEFAULT 'pendiente',
-        generated_at     TIMESTAMPTZ  DEFAULT NOW(),
-        created_at       TIMESTAMPTZ  DEFAULT NOW()
-      )
-    `);
-
     const { rows } = await query(
       `SELECT * FROM "${schema}".einvoice_reports ORDER BY generated_at DESC LIMIT $1 OFFSET $2`,
       [limit, offset]
@@ -707,24 +693,6 @@ router.get('/retentions', authMiddleware, requireInvoicingModule, async (req, re
 
     const limit  = Math.min(parseInt(req.query.limit)  || 100, 500);
     const offset = parseInt(req.query.offset) || 0;
-
-    await query(`
-      CREATE TABLE IF NOT EXISTS "${schema}".einvoice_retentions (
-        id               SERIAL PRIMARY KEY,
-        number           VARCHAR(50),
-        emission_date    DATE          DEFAULT CURRENT_DATE,
-        supplier_name    VARCHAR(255),
-        supplier_ruc     VARCHAR(20),
-        invoice_ref      VARCHAR(50),
-        base_imponible   NUMERIC(10,2) DEFAULT 0,
-        total_retenido   NUMERIC(10,2) DEFAULT 0,
-        detalles         JSONB         DEFAULT '[]',
-        signed_xml       TEXT,
-        auth_number      VARCHAR(100),
-        status           VARCHAR(20)   DEFAULT 'pendiente',
-        created_at       TIMESTAMPTZ   DEFAULT NOW()
-      )
-    `);
 
     const { rows } = await query(
       `SELECT * FROM "${schema}".einvoice_retentions ORDER BY emission_date DESC, created_at DESC LIMIT $1 OFFSET $2`,
