@@ -66,18 +66,31 @@ router.post('/', authMiddleware, async (req, res) => {
     }
 
     // Calcular totales desde los items enviados (el frontend envía unit_price, tax_rate)
+    // Calcular totales desde los items enviados
     let calculatedSubtotal = 0;
     let calculatedTax = 0;
     let calculatedTotal = 0;
 
     for (const item of items) {
       const unitPrice = Number(item.unit_price) || 0;
-      const taxRate = Number(item.tax_rate) || 0;
+      const ivaAmount = Number(item.iva_amount) || 0;  // ✅ MONTO de IVA
       const quantity = Number(item.quantity) || 1;
+      
+      // Subtotal = precio sin IVA * cantidad
       calculatedSubtotal += unitPrice * quantity;
-      calculatedTax += taxRate * quantity;
-      calculatedTotal += (unitPrice + taxRate) * quantity;
+      
+      // IVA total = suma de iva_amount de todos los items
+      calculatedTax += ivaAmount;
+      
+      // Total = subtotal + IVA
+      calculatedTotal += (unitPrice * quantity) + ivaAmount;
     }
+
+    console.log('📊 Totales calculados:', {
+      calculatedSubtotal,  // 13.70
+      calculatedTax,       // 2.05
+      calculatedTotal      // 15.75
+    });
 
     // Insertar orden con el número diario
     const insertRes = await client.query(
