@@ -97,10 +97,11 @@ export async function saveConfig(schema, data) {
        serie_estab               = COALESCE($9,  serie_estab),
        serie_pto_emision         = COALESCE($10, serie_pto_emision),
        secuencial_actual         = COALESCE($11, secuencial_actual),
-       p12_path                  = COALESCE($12, p12_path),
-       p12_password              = COALESCE($13, p12_password),
-       cert_valid_until          = COALESCE($14, cert_valid_until),
-       logo_url                  = COALESCE($15, logo_url),
+       secuencial_credit_notes   = COALESCE($12, secuencial_credit_notes),
+       p12_path                  = COALESCE($13, p12_path),
+       p12_password              = COALESCE($14, p12_password),
+       cert_valid_until          = COALESCE($15, cert_valid_until),
+       logo_url                  = COALESCE($16, logo_url),
        updated_at                = NOW()
      RETURNING *`,
     [
@@ -108,6 +109,7 @@ export async function saveConfig(schema, data) {
       data.direccion_establecimiento, data.contribuyente_especial, data.obligado_contabilidad,
       data.ambiente, data.serie_estab, data.serie_pto_emision,
       data.secuencial_actual != null ? parseInt(data.secuencial_actual, 10) : null,
+      data.secuencial_credit_notes != null ? parseInt(data.secuencial_credit_notes, 10) : null,
       data.p12_path, data.p12_password, data.cert_valid_until,
       data.logo_url ?? null,
     ]
@@ -1237,9 +1239,10 @@ export async function generateInvoicePdf(schema, invoiceId) {
   });
 }
 // ── GENERAR XML DE NOTA DE CRÉDITO ──────────────────────────────────────────
+// ── GENERAR XML DE NOTA DE CRÉDITO ──────────────────────────────────────────
 export async function generateCreditNoteXml(schema, creditNoteId) {
   const { rows } = await query(
-    `SELECT cn.*, ei.invoice_number as factura_numero, ei.access_key as factura_clave
+    `SELECT cn.*, ei.invoice_number as factura_numero, ei.access_key as factura_clave, ei.emission_date as factura_emision
      FROM "${schema}".credit_notes cn
      LEFT JOIN "${schema}".einvoices ei ON ei.id = cn.invoice_id
      WHERE cn.id = $1`,
@@ -1253,21 +1256,21 @@ export async function generateCreditNoteXml(schema, creditNoteId) {
   if (!cfg) throw new Error('Configuración no encontrada');
   if (!cfg.p12_base64 && !cfg.p12_path) throw new Error('Firma electrónica no cargada');
 
-  // Obtener siguiente secuencial para nota de crédito
+  // 🔥 USAR secuencial_credit_notes (independiente de facturas)
   const { rows: seqRows } = await query(
     `UPDATE "${schema}".einvoice_config
-       SET secuencial_actual = secuencial_actual + 1
-     RETURNING secuencial_actual - 1 AS seq`
+       SET secuencial_credit_notes = secuencial_credit_notes + 1
+     RETURNING secuencial_credit_notes - 1 AS seq`
   );
   const secuencial = seqRows[0].seq;
 
   const estab = cfg.serie_estab || '001';
   const ptoEmi = cfg.serie_pto_emision || '001';
   const ambiente = parseInt(cfg.ambiente || '1', 10);
-  const envStr = ambiente === 2 ? 'prod' : 'test';
 
   // Generar número de nota de crédito
-  const creditNoteNumber = `${estab}-${ptoEmi}-${String(secuencial).padStart(9, '0')}`;
+  const secPart = String(secuencial).padStart(9, '0');
+  const creditNoteNumber = `${estab}-${ptoEmi}-${secPart}`;
 
   // Actualizar la nota con el número generado
   await query(
@@ -1277,20 +1280,26 @@ export async function generateCreditNoteXml(schema, creditNoteId) {
     [creditNoteNumber, creditNoteId]
   );
 
+  // Volver a obtener la nota actualizada
+  const { rows: updatedRows } = await query(
+    `SELECT * FROM "${schema}".credit_notes WHERE id = $1`,
+    [creditNoteId]
+  );
+  const updatedCn = updatedRows[0];
+
   // Procesar items
-  const items = cn.items || [];
-  const subtotal = parseFloat(cn.subtotal) || 0;
-  const ivaAmount = parseFloat(cn.iva_amount) || 0;
-  const total = parseFloat(cn.total) || 0;
+  const items = updatedCn.items || [];
+  const subtotal = parseFloat(updatedCn.subtotal) || 0;
+  const ivaAmount = parseFloat(updatedCn.iva_amount) || 0;
+  const total = parseFloat(updatedCn.total) || 0;
 
   // Calcular subtotales por tasa de IVA
   const subtotalByRate = {};
   const ivaByRate = {};
   
-  // Inferir tasa de IVA de cada item
   for (const item of items) {
-    const itemSubtotal = parseFloat(item.subtotal) || 0;
-    const itemIva = parseFloat(item.iva_amount) || 0;
+    const itemSubtotal = parseFloat(item.subtotal_credited || item.subtotal || 0);
+    const itemIva = parseFloat(item.iva_amount || 0);
     
     let tasaIVA = 0;
     if (itemIva > 0 && itemSubtotal > 0) {
@@ -1306,48 +1315,131 @@ export async function generateCreditNoteXml(schema, creditNoteId) {
     ivaByRate[tasaIVA] = (ivaByRate[tasaIVA] || 0) + itemIva;
   }
 
-  // Construir el XML de la nota de crédito
-  const fechaEmision = new Date().toISOString();
+  // Obtener la tasa de IVA principal
+  const ivaRate = Object.keys(subtotalByRate).length > 0 
+    ? parseFloat(Object.keys(subtotalByRate)[0]) 
+    : 15;
+
+  // Mapeo de tasas a códigos SRI
+  const IVA_CODE_MAP = {
+    0: 0,
+    5: 5,
+    8: 6,
+    12: 2,
+    15: 4
+  };
+  const codigoPorcentaje = IVA_CODE_MAP[ivaRate] || 4;
+
+  // Fecha actual para la emisión
+  const now = new Date();
+  const fechaEmision = now.toISOString();
+
+  // ── GENERAR CLAVE DE ACCESO (49 caracteres) ──
+  // Estructura: DDMMAAAA + 04 + RUC(13) + Ambiente(1) + Estab(3) + PtoEmi(3) + Secuencial(9) + Codigo(8) + TipoEmision(1) + DigitoVerificador(1)
   
-  // Generar clave de acceso
-  const fechaStr = fechaEmision.replace(/[-:T.Z]/g, '').substring(0, 12); // AAAAMMDDHHMMSS
-  const claveAcceso = 
-    fechaStr +
-    cfg.ruc.padStart(13, '0') +
-    '04' + // Código de documento (Nota de Crédito)
-    estab.padStart(3, '0') +
-    ptoEmi.padStart(3, '0') +
-    String(secuencial).padStart(9, '0') +
-    '1' + // Tipo de emisión (1 = Normal)
-    '0' + // Ambiente (0 = Pruebas, 1 = Producción)
-    '00000000'; // Relleno
+  const day = String(now.getDate()).padStart(2, '0');
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const year = now.getFullYear();
+  const fechaPart = `${day}${month}${year}`; // DDMMAAAA (8 dígitos)
+  
+  const codDocPart = '04'; // Nota de Crédito
+  const rucPart = cfg.ruc.padStart(13, '0');
+  const ambientePart = ambiente === 2 ? '1' : '0'; // 1=Producción, 0=Pruebas
+  const estabPart = estab.padStart(3, '0');
+  const ptoEmiPart = ptoEmi.padStart(3, '0');
+  const codigoNumerico = String(Math.floor(Math.random() * 100000000)).padStart(8, '0');
+  const tipoEmision = '1'; // Normal
 
-  // Obtener detalle de items
-  const detalleItems = items.map(item => ({
-    codigoInterno: item.codigo_interno || item.code || 'PROD',
-    descripcion: item.description || item.name || 'Producto',
-    cantidad: parseFloat(item.cantidad || item.qty || 1),
-    precioUnitario: parseFloat(item.unit_price || 0),
-    descuento: parseFloat(item.descuento || 0),
-    precioTotalSinImpuesto: parseFloat(item.subtotal_credited || item.subtotal || 0),
-    impuesto: {
-      codigo: 2, // IVA
-      codigoPorcentaje: getIvaCode(Object.keys(subtotalByRate)[0] || 15),
-      tarifa: Object.keys(subtotalByRate)[0] || 15,
-      baseImponible: parseFloat(item.subtotal_credited || item.subtotal || 0),
-      valor: parseFloat(item.iva_amount || 0),
+  // Construir clave base (48 dígitos sin dígito verificador)
+  const claveBase = fechaPart + codDocPart + rucPart + ambientePart + estabPart + ptoEmiPart + secPart + codigoNumerico + tipoEmision;
+
+  // Calcular dígito verificador (Módulo 11)
+  const digitoVerificador = calcularDigitoVerificador(claveBase);
+  const claveAcceso = claveBase + digitoVerificador;
+
+  console.log('🔑 Clave de acceso generada:', claveAcceso);
+  console.log('📏 Longitud:', claveAcceso.length);
+
+  // Verificar que la clave tenga 49 caracteres
+  if (claveAcceso.length !== 49) {
+    console.warn(`⚠️ Clave de acceso tiene ${claveAcceso.length} caracteres, debería tener 49`);
+  }
+
+  // Actualizar la nota con la clave de acceso
+  await query(
+    `UPDATE "${schema}".credit_notes 
+     SET access_key = $1
+     WHERE id = $2`,
+    [claveAcceso, creditNoteId]
+  );
+
+  // ── CONSTRUIR DETALLE DE ITEMS ──
+  const detalleItems = items.map(item => {
+    const qty = parseFloat(item.quantity_credited || item.cantidad || item.qty || 1);
+    const price = parseFloat(item.unit_price || 0);
+    const subtotalItem = parseFloat(item.subtotal_credited || item.subtotal || (qty * price));
+    const ivaItem = parseFloat(item.iva_amount || 0);
+    
+    // Determinar tasa de IVA para este item
+    let tasa = ivaRate;
+    if (ivaItem > 0 && subtotalItem > 0) {
+      const inferred = Math.round((ivaItem / subtotalItem) * 100);
+      if ([0, 5, 8, 12, 15].includes(inferred)) {
+        tasa = inferred;
+      }
     }
-  }));
+    
+    const codigoPorcentajeItem = IVA_CODE_MAP[tasa] || 4;
+    
+    return {
+      codigoInterno: item.codigo_interno || item.code || item.codigo || 'PROD',
+      descripcion: item.description || item.name || 'Producto',
+      cantidad: qty,
+      precioUnitario: price,
+      descuento: parseFloat(item.descuento || 0),
+      precioTotalSinImpuesto: subtotalItem,
+      impuesto: {
+        codigo: 2,
+        codigoPorcentaje: codigoPorcentajeItem,
+        tarifa: tasa,
+        baseImponible: subtotalItem,
+        valor: ivaItem || (subtotalItem * tasa / 100),
+      }
+    };
+  });
 
-  // Construir total de impuestos
-  const totalImpuestos = Object.keys(subtotalByRate).map(rate => ({
-    codigo: 2,
-    codigoPorcentaje: getIvaCode(parseFloat(rate)),
-    baseImponible: subtotalByRate[rate] || 0,
-    valor: ivaByRate[rate] || 0,
-  }));
+  // ── CONSTRUIR TOTAL DE IMPUESTOS ──
+  const totalImpuestos = Object.keys(subtotalByRate).map(rate => {
+    const r = parseFloat(rate);
+    const base = subtotalByRate[r] || 0;
+    const iva = ivaByRate[r] || 0;
+    const codigoPorcentajeImp = IVA_CODE_MAP[r] || 4;
+    
+    return {
+      codigo: 2,
+      codigoPorcentaje: codigoPorcentajeImp,
+      baseImponible: base,
+      valor: iva,
+    };
+  });
 
-  // Construir objeto para el generador de XML
+  // Si no hay impuestos, agregar uno por defecto
+  if (totalImpuestos.length === 0) {
+    totalImpuestos.push({
+      codigo: 2,
+      codigoPorcentaje: 4,
+      baseImponible: subtotal,
+      valor: ivaAmount,
+    });
+  }
+
+  // ── OBTENER FECHA DE EMISIÓN DE LA FACTURA ORIGINAL ──
+  let facturaEmision = now.toISOString();
+  if (updatedCn.factura_emision) {
+    facturaEmision = updatedCn.factura_emision;
+  }
+
+  // ── CONSTRUIR OBJETO PARA EL XML ──
   const comprobante = {
     infoTributaria: {
       ambiente: ambiente,
@@ -1359,37 +1451,157 @@ export async function generateCreditNoteXml(schema, creditNoteId) {
       codDoc: '04',
       estab: estab,
       ptoEmi: ptoEmi,
-      secuencial: String(secuencial).padStart(9, '0'),
+      secuencial: secPart,
       dirMatriz: cfg.direccion_matriz || '',
     },
     infoNotaCredito: {
       fechaEmision: fechaEmision,
       dirEstablecimiento: cfg.direccion_establecimiento || cfg.direccion_matriz || '',
       tipoIdentificacionComprador: '07', // RUC
-      razonSocialComprador: cn.customer_name || 'CONSUMIDOR FINAL',
-      identificacionComprador: cn.customer_ruc || '9999999999',
+      razonSocialComprador: updatedCn.customer_name || 'CONSUMIDOR FINAL',
+      identificacionComprador: updatedCn.customer_ruc || '9999999999',
+      obligadoContabilidad: normalizeObligadoContabilidad(cfg.obligado_contabilidad),
       codDocModificado: '01', // Factura
-      numDocModificado: cn.reference_invoice || cn.factura_numero || '',
-      fechaEmisionDocSustento: new Date().toISOString(),
+      numDocModificado: updatedCn.reference_invoice || updatedCn.factura_numero || '',
+      fechaEmisionDocSustento: facturaEmision,
       totalSinImpuestos: subtotal,
       valorModificacion: total,
       moneda: 'USD',
       totalConImpuestos: {
         totalImpuesto: totalImpuestos,
       },
-      motivo: cn.reason || 'Sin motivo especificado',
+      motivo: updatedCn.reason || 'Sin motivo especificado',
     },
     detalles: {
       detalle: detalleItems,
     },
   };
 
-  // Usar el generador de XML de osodreamer-sri-xml-signer para notas de crédito
-  // Nota: El paquete puede no tener función específica para nota de crédito
-  // Por ahora generamos manualmente el XML
+  // ── GENERAR XML ──
   const xml = buildCreditNoteXml(comprobante);
   
   return { xml, claveAcceso, creditNoteNumber };
+}
+
+// ── FUNCIÓN PARA CALCULAR DÍGITO VERIFICADOR (MÓDULO 11) ──
+function calcularDigitoVerificador(claveBase) {
+  // El SRI usa un algoritmo de módulo 11 con pesos de 2 a 7
+  const pesos = [2, 3, 4, 5, 6, 7];
+  let suma = 0;
+  
+  // Recorrer de derecha a izquierda
+  for (let i = claveBase.length - 1, j = 0; i >= 0; i--, j++) {
+    const digito = parseInt(claveBase[i], 10);
+    const peso = pesos[j % pesos.length];
+    suma += digito * peso;
+  }
+  
+  const residuo = suma % 11;
+  let digitoVerificador = 11 - residuo;
+  
+  if (digitoVerificador === 11) {
+    digitoVerificador = 0;
+  } else if (digitoVerificador === 10) {
+    digitoVerificador = 1;
+  }
+  
+  return String(digitoVerificador);
+}
+
+// ── FUNCIÓN AUXILIAR PARA CONSTRUIR XML DE NOTA DE CRÉDITO ──────────────
+function buildCreditNoteXml(data) {
+  const { infoTributaria, infoNotaCredito, detalles } = data;
+  
+  let xml = `<?xml version="1.0" encoding="UTF-8"?>
+<notaCredito id="comprobante" version="1.1.0">
+  <infoTributaria>
+    <ambiente>${infoTributaria.ambiente}</ambiente>
+    <tipoEmision>${infoTributaria.tipoEmision}</tipoEmision>
+    <razonSocial>${escapeXml(infoTributaria.razonSocial)}</razonSocial>
+    ${infoTributaria.nombreComercial ? `<nombreComercial>${escapeXml(infoTributaria.nombreComercial)}</nombreComercial>` : ''}
+    <ruc>${infoTributaria.ruc}</ruc>
+    <claveAcceso>${infoTributaria.claveAcceso}</claveAcceso>
+    <codDoc>${infoTributaria.codDoc}</codDoc>
+    <estab>${infoTributaria.estab}</estab>
+    <ptoEmi>${infoTributaria.ptoEmi}</ptoEmi>
+    <secuencial>${infoTributaria.secuencial}</secuencial>
+    <dirMatriz>${escapeXml(infoTributaria.dirMatriz)}</dirMatriz>
+  </infoTributaria>
+  <infoNotaCredito>
+    <fechaEmision>${formatSriDate(infoNotaCredito.fechaEmision)}</fechaEmision>
+    <dirEstablecimiento>${escapeXml(infoNotaCredito.dirEstablecimiento)}</dirEstablecimiento>
+    <tipoIdentificacionComprador>${infoNotaCredito.tipoIdentificacionComprador}</tipoIdentificacionComprador>
+    <razonSocialComprador>${escapeXml(infoNotaCredito.razonSocialComprador)}</razonSocialComprador>
+    <identificacionComprador>${infoNotaCredito.identificacionComprador}</identificacionComprador>
+    ${infoNotaCredito.obligadoContabilidad ? `<obligadoContabilidad>${infoNotaCredito.obligadoContabilidad}</obligadoContabilidad>` : ''}
+    <codDocModificado>${infoNotaCredito.codDocModificado}</codDocModificado>
+    <numDocModificado>${infoNotaCredito.numDocModificado}</numDocModificado>
+    <fechaEmisionDocSustento>${formatSriDate(infoNotaCredito.fechaEmisionDocSustento)}</fechaEmisionDocSustento>
+    <totalSinImpuestos>${infoNotaCredito.totalSinImpuestos.toFixed(2)}</totalSinImpuestos>
+    <valorModificacion>${infoNotaCredito.valorModificacion.toFixed(2)}</valorModificacion>
+    <moneda>${infoNotaCredito.moneda}</moneda>
+    <totalConImpuestos>
+      ${infoNotaCredito.totalConImpuestos.totalImpuesto.map(imp => `
+      <totalImpuesto>
+        <codigo>${imp.codigo}</codigo>
+        <codigoPorcentaje>${imp.codigoPorcentaje}</codigoPorcentaje>
+        <baseImponible>${imp.baseImponible.toFixed(2)}</baseImponible>
+        <valor>${imp.valor.toFixed(2)}</valor>
+      </totalImpuesto>`).join('')}
+    </totalConImpuestos>
+    <motivo>${escapeXml(infoNotaCredito.motivo)}</motivo>
+  </infoNotaCredito>
+  <detalles>
+    ${detalles.detalle.map(det => `
+    <detalle>
+      <codigoInterno>${escapeXml(det.codigoInterno)}</codigoInterno>
+      <descripcion>${escapeXml(det.descripcion)}</descripcion>
+      <cantidad>${det.cantidad.toFixed(2)}</cantidad>
+      <precioUnitario>${det.precioUnitario.toFixed(2)}</precioUnitario>
+      <descuento>${det.descuento.toFixed(2)}</descuento>
+      <precioTotalSinImpuesto>${det.precioTotalSinImpuesto.toFixed(2)}</precioTotalSinImpuesto>
+      <impuestos>
+        <impuesto>
+          <codigo>${det.impuesto.codigo}</codigo>
+          <codigoPorcentaje>${det.impuesto.codigoPorcentaje}</codigoPorcentaje>
+          <tarifa>${det.impuesto.tarifa.toFixed(2)}</tarifa>
+          <baseImponible>${det.impuesto.baseImponible.toFixed(2)}</baseImponible>
+          <valor>${det.impuesto.valor.toFixed(2)}</valor>
+        </impuesto>
+      </impuestos>
+    </detalle>`).join('')}
+  </detalles>
+</notaCredito>`;
+
+  return xml;
+}
+
+// ── FUNCIÓN PARA FORMATEAR FECHA SRI (DD/MM/AAAA) ──
+function formatSriDate(dateStr) {
+  if (!dateStr) return '';
+  const date = new Date(dateStr);
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const year = date.getFullYear();
+  return `${day}/${month}/${year}`;
+}
+
+// ── FUNCIÓN AUXILIAR PARA ESCAPAR XML ──
+function escapeXml(str) {
+  if (!str) return '';
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+// ── FUNCIÓN AUXILIAR PARA NORMALIZAR OBLIGADO CONTABILIDAD ──
+function normalizeObligadoContabilidad(value) {
+  if (value === true || value === 'SI' || value === 'si' || value === 'S') return 'SI';
+  if (value === false || value === 'NO' || value === 'no' || value === 'N') return 'NO';
+  return 'NO';
 }
 
 // ── FUNCIÓN AUXILIAR PARA CONSTRUIR XML DE NOTA DE CRÉDITO ──────────────

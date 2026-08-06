@@ -1469,6 +1469,7 @@ BEGIN
         serie_estab               VARCHAR(3) DEFAULT ''001'',
         serie_pto_emision         VARCHAR(3) DEFAULT ''001'',
         secuencial_actual         INT        DEFAULT 1,
+        secuencial_credit_notes   INT        DEFAULT 1,
         p12_path                  TEXT,
         p12_password              TEXT,
         cert_valid_until          DATE,
@@ -1532,29 +1533,44 @@ BEGIN
 
     v_table_count := v_table_count + 1;
 
-    -- Notas de crÃ©dito
+    -- Notas de crédito con todos los campos para facturación electrónica
     EXECUTE format('
       CREATE TABLE IF NOT EXISTS %I.credit_notes (
-        id                SERIAL PRIMARY KEY,
-        invoice_id        UUID REFERENCES %I.einvoices(id) ON DELETE SET NULL,
-        reference_invoice VARCHAR(50),
-        reason            TEXT NOT NULL,
-        items             JSONB        DEFAULT ''[]'',
-        subtotal          NUMERIC(10,2) DEFAULT 0,
-        iva_amount        NUMERIC(10,2) DEFAULT 0,
-        discount_amount   NUMERIC(10,2) DEFAULT 0,
-        total             NUMERIC(10,2) DEFAULT 0,
-        customer_name     VARCHAR(255),
-        customer_ruc      VARCHAR(20),
-        customer_email    VARCHAR(255),
-        status            VARCHAR(20)  DEFAULT ''emitida'',
-        created_at        TIMESTAMPTZ  DEFAULT NOW()
+        id                   SERIAL PRIMARY KEY,
+        invoice_id           UUID REFERENCES %I.einvoices(id) ON DELETE SET NULL,
+        reference_invoice    VARCHAR(50),
+        credit_note_number   VARCHAR(50),
+        reason               TEXT NOT NULL,
+        items                JSONB        DEFAULT ''[]'',
+        subtotal             NUMERIC(10,2) DEFAULT 0,
+        iva_amount           NUMERIC(10,2) DEFAULT 0,
+        discount_amount      NUMERIC(10,2) DEFAULT 0,
+        total                NUMERIC(10,2) DEFAULT 0,
+        remaining_balance    NUMERIC(10,2) DEFAULT 0,
+        customer_name        VARCHAR(255),
+        customer_ruc         VARCHAR(20),
+        customer_email       VARCHAR(255),
+        status               VARCHAR(20)  DEFAULT ''emitida'',
+        access_key           VARCHAR(60),
+        auth_number          VARCHAR(60),
+        auth_date            TIMESTAMP WITH TIME ZONE,
+        signed_xml           TEXT,
+        sri_message          TEXT,
+        sri_json             JSONB,
+        emission_date        TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        created_at           TIMESTAMPTZ  DEFAULT NOW(),
+        updated_at           TIMESTAMPTZ  DEFAULT NOW()
       )', p_schema_name, p_schema_name);
-    v_table_count := v_table_count + 1;
 
+    -- Índices para mejorar el rendimiento
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_credit_notes_invoice_id_idx ON %I.credit_notes (invoice_id)', p_schema_name, p_schema_name);
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_credit_notes_created_at_idx ON %I.credit_notes (created_at DESC)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_credit_notes_status_idx ON %I.credit_notes (status)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_credit_notes_access_key_idx ON %I.credit_notes (access_key)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_credit_notes_credit_note_number_idx ON %I.credit_notes (credit_note_number)', p_schema_name, p_schema_name);
 
+    -- Actualizar contador de tablas
+    v_table_count := v_table_count + 1;
   END IF;
 
 
