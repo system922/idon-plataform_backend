@@ -17,14 +17,6 @@ const safe = (v) => (v == null || isNaN(v) ? 0 : v);
 
 const router = express.Router();
 
-/**
- * GET /api/pos/cash-register/full-closing?date=YYYY-MM-DD
- * Trae el último cierre del día
- */
-// ===============================
-// GET /api/pos/cash-register/full-closing?date=YYYY-MM-DD
-// Trae el cierre del día para el usuario autenticado
-// ===============================
 // ===============================
 // GET /api/pos/cash-register/full-closing?date=YYYY-MM-DD
 // Trae el cierre del día para el usuario autenticado
@@ -41,7 +33,6 @@ router.get('/full-closing', authMiddleware, businessContextMiddleware, async (re
       return res.status(400).json({ error: 'User ID required' });
     }
 
-    // ✅ Buscar cierre para este usuario Y fecha
     const result = await query(
       `
       SELECT
@@ -82,7 +73,9 @@ router.get('/full-closing', authMiddleware, businessContextMiddleware, async (re
       [date, userId]
     );
 
-    if (result.rows.length === 0) return res.status(404).json({});
+    if (result.rows.length === 0) {
+      return res.status(404).json({});
+    }
     res.json(result.rows[0]);
   } catch (err) {
     console.error('Error en full-closing:', err);
@@ -184,10 +177,10 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 });
 
 // ===============================
-// 💾 CLOSING - VERSIÓN COMPLETA CON TODOS LOS DATOS
-// ===============================
-// ===============================
 // 💾 CLOSING - CON VERIFICACIÓN DE EXISTENCIA
+// ===============================
+// ===============================
+// POST /api/pos/cash-register/closing
 // ===============================
 router.post('/closing', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
@@ -211,7 +204,7 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
       closing_user_id,
       closing_user_name,
       closing_user_email,
-      // ✅ NUEVOS CAMPOS DESDE EL FRONTEND
+      // ✅ DATOS DEL SISTEMA DESDE EL FRONTEND
       cash_system,
       transfer_system,
       card_system,
@@ -252,6 +245,16 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
         }
       });
     }
+
+    // ===============================
+    // 📊 FUNCIONES HELPER
+    // ===============================
+    const n = (v) => {
+      const num = Number(v);
+      return isNaN(num) ? 0 : num;
+    };
+
+    const safe = (v) => (v == null || isNaN(v) ? 0 : v);
 
     // ===============================
     // 📊 CALCULAR DIFERENCIAS
