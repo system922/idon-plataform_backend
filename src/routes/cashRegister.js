@@ -38,8 +38,6 @@ router.get('/full-closing', authMiddleware, businessContextMiddleware, async (re
       SELECT
         id,
         closing_user_id,
-        closing_user_name,
-        closing_user_email,
         closing_date,
         closing_time,
         cash_counted,
@@ -177,9 +175,6 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 });
 
 // ===============================
-// 💾 CLOSING - CON VERIFICACIÓN DE EXISTENCIA
-// ===============================
-// ===============================
 // POST /api/pos/cash-register/closing
 // ===============================
 router.post('/closing', authMiddleware, businessContextMiddleware, async (req, res) => {
@@ -189,9 +184,6 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
       return res.status(400).json({ error: 'Business context required' });
     }
 
-    // ===============================
-    // 📥 INPUTS DEL FRONTEND
-    // ===============================
     const {
       efectivoFisico,
       transferenciaFisico,
@@ -202,9 +194,6 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
       cashDenominationCount,
       coinsDenominationCount,
       closing_user_id,
-      closing_user_name,
-      closing_user_email,
-      // ✅ DATOS DEL SISTEMA DESDE EL FRONTEND
       cash_system,
       transfer_system,
       card_system,
@@ -219,30 +208,17 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
     const closingDate = date || ecuadorToday();
     const userId = closing_user_id || req.user?.id || req.user?.userId;
 
-    // ===============================
     // ✅ VERIFICAR SI YA EXISTE CIERRE PARA ESTE USUARIO Y FECHA
-    // ===============================
     const existingClose = await query(
-      `SELECT id, closing_user_id, closing_user_name, closing_date, created_at 
-       FROM "${schema}".cash_register_closing 
-       WHERE closing_date = $1 
-         AND closing_user_id = $2
-       ORDER BY created_at DESC 
+      `SELECT id FROM "${schema}".cash_register_closing 
+       WHERE closing_date = $1 AND closing_user_id = $2
        LIMIT 1`,
       [closingDate, userId]
     );
 
     if (existingClose.rows.length > 0) {
-      const existing = existingClose.rows[0];
       return res.status(409).json({ 
-        error: 'Ya existe un cierre de caja para hoy para este usuario',
-        existingClose: {
-          id: existing.id,
-          closing_user_id: existing.closing_user_id,
-          closing_user_name: existing.closing_user_name,
-          closing_date: existing.closing_date,
-          created_at: existing.created_at
-        }
+        error: 'Ya existe un cierre de caja para hoy para este usuario'
       });
     }
 
@@ -284,46 +260,17 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
     const totalCounted = cashCounted + transferCounted + cardCounted;
     const diffTotal = totalCounted - totalSystem;
 
-    // Total esperado = apertura + ventas - gastos + extras
-    const totalEsperado = n(total_esperado || (aperturaTotal + totalSystem - expensesTotal + totalExtras));
-    const diffEsperado = totalCounted - totalEsperado;
-
     const netSystem = totalSystem - expensesTotal;
     const netCounted = totalCounted - expensesTotal;
     const diffNet = netCounted - netSystem;
 
     // ===============================
-    // 🔍 DEBUG
-    // ===============================
-    console.log("💰 CLOSING COMPLETO:", {
-      userId,
-      closingDate,
-      cashSystem,
-      transferSystem,
-      cardSystem,
-      totalSystem,
-      ordersSystem,
-      expensesTotal,
-      totalExtras,
-      aperturaTotal,
-      totalEsperado,
-      cashCounted,
-      transferCounted,
-      cardCounted,
-      totalCounted,
-      diffTotal,
-      diffEsperado
-    });
-
-    // ===============================
-    // 💾 INSERT
+    // 💾 INSERT - SOLO CON closing_user_id
     // ===============================
     const result = await query(
       `
       INSERT INTO "${schema}".cash_register_closing (
         closing_user_id,
-        closing_user_name,
-        closing_user_email,
         closing_date,
         closing_time,
 
@@ -358,22 +305,20 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
         created_at
       )
       VALUES (
-        $1, $2, $3, $4, NOW(),
-        $5, $6, $7,
-        $8, $9, $10,
-        $11, $12, $13,
-        $14, $15, $16,
-        $17, $18,
-        $19, $20, $21,
-        $22, $23, $24,
-        $25, NOW()
+        $1, $2, NOW(),
+        $3, $4, $5,
+        $6, $7, $8,
+        $9, $10, $11,
+        $12, $13, $14,
+        $15, $16,
+        $17, $18, $19,
+        $20, $21, $22,
+        $23, NOW()
       )
       RETURNING *
       `,
       [
         userId,
-        closing_user_name || null,
-        closing_user_email || null,
         closingDate,
 
         safe(cashCounted),
@@ -411,7 +356,7 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
       ]
     );
 
-    console.log("✅ CIERRE GUARDADO EXITOSAMENTE:", result.rows[0].id);
+    console.log("✅ CIERRE GUARDADO EXITOSAMENTE - Usuario ID:", userId);
     res.status(201).json(result.rows[0]);
 
   } catch (err) {
