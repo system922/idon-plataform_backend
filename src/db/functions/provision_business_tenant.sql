@@ -603,7 +603,8 @@ BEGIN
         counted_items INT DEFAULT 0,
         pending_items INT DEFAULT 0,
         notes         TEXT,
-        created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name);
     EXECUTE format(
       'CREATE INDEX IF NOT EXISTS %I_inventory_physical_status_idx ON %I.inventory_physical (status)',
@@ -658,12 +659,23 @@ BEGIN
         notes        TEXT,
         created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )', p_schema_name, p_schema_name);
+
     EXECUTE format(
       'CREATE INDEX IF NOT EXISTS %I_inventory_movements_product_idx ON %I.inventory_movements (product_id)',
       p_schema_name, p_schema_name);
+
     EXECUTE format(
       'CREATE INDEX IF NOT EXISTS %I_inventory_movements_type_idx ON %I.inventory_movements (type)',
       p_schema_name, p_schema_name);
+
+    EXECUTE format(
+      'CREATE INDEX IF NOT EXISTS %I_inventory_movements_reference_idx ON %I.inventory_movements (reference_id)',
+      p_schema_name, p_schema_name);
+
+    EXECUTE format(
+      'CREATE INDEX IF NOT EXISTS %I_inventory_movements_created_idx ON %I.inventory_movements (created_at DESC)',
+      p_schema_name, p_schema_name);
+
     v_table_count := v_table_count + 1;
 
     -- recipes (FK â†’ categories)

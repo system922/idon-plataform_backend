@@ -10,10 +10,7 @@ const router = express.Router();
    INVENTARIOS FÍSICOS
 ═══════════════════════════════════════════════════════════ */
 
-/* ─────────────────────────────────────────────
-   GET /api/inventory/physical
-   Listar todos los inventarios físicos
-───────────────────────────────────────────── */
+// GET /api/inventory/physical - Listar todos los inventarios
 router.get('/physical', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -35,10 +32,7 @@ router.get('/physical', authMiddleware, async (req, res) => {
   }
 });
 
-/* ─────────────────────────────────────────────
-   POST /api/inventory/physical
-   Crear un nuevo inventario físico
-───────────────────────────────────────────── */
+// POST /api/inventory/physical - Crear inventario
 router.post('/physical', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -48,7 +42,6 @@ router.post('/physical', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Categorías requeridas' });
     }
 
-    // Crear el encabezado del inventario
     const inv = await query(`
       INSERT INTO "${schema}".inventory_physical 
         (started_date, started_time, status)
@@ -57,7 +50,6 @@ router.post('/physical', authMiddleware, async (req, res) => {
     `);
     const inventoryId = inv.rows[0].id;
 
-    // Guardar las categorías seleccionadas
     for (const catId of categories) {
       await query(`
         INSERT INTO "${schema}".inventory_physical_categories
@@ -66,7 +58,6 @@ router.post('/physical', authMiddleware, async (req, res) => {
       `, [inventoryId, catId]);
     }
 
-    // Insertar productos de las categorías seleccionadas
     await query(`
       INSERT INTO "${schema}".inventory_physical_items
       (inventory_id, product_id, product_name, system_stock, counted_stock, difference, status)
@@ -86,7 +77,6 @@ router.post('/physical', authMiddleware, async (req, res) => {
       )
     `, [inventoryId]);
 
-    // Actualizar contadores
     await query(`
       UPDATE "${schema}".inventory_physical
       SET 
@@ -104,16 +94,12 @@ router.post('/physical', authMiddleware, async (req, res) => {
   }
 });
 
-/* ─────────────────────────────────────────────
-   GET /api/inventory/physical/:id
-   Obtener detalles de un inventario
-───────────────────────────────────────────── */
+// GET /api/inventory/physical/:id - Obtener detalles de un inventario
 router.get('/physical/:id', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     const { id } = req.params;
 
-    // Obtener el inventario
     const inventory = await query(`
       SELECT * FROM "${schema}".inventory_physical WHERE id = $1
     `, [id]);
@@ -122,7 +108,6 @@ router.get('/physical/:id', authMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'Inventario no encontrado' });
     }
 
-    // Obtener los items
     const items = await query(`
       SELECT 
         id, 
@@ -148,10 +133,7 @@ router.get('/physical/:id', authMiddleware, async (req, res) => {
   }
 });
 
-/* ─────────────────────────────────────────────
-   PUT /api/inventory/physical/:id/items/:itemId
-   Actualizar conteo de un producto
-───────────────────────────────────────────── */
+// PUT /api/inventory/physical/:id/items/:itemId - Actualizar conteo
 router.put('/physical/:id/items/:itemId', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -162,7 +144,6 @@ router.put('/physical/:id/items/:itemId', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Conteo inválido' });
     }
 
-    // Actualizar el item
     await query(`
       UPDATE "${schema}".inventory_physical_items
       SET
@@ -173,7 +154,6 @@ router.put('/physical/:id/items/:itemId', authMiddleware, async (req, res) => {
       WHERE id = $2 AND inventory_id = $3
     `, [counted_stock, itemId, id]);
 
-    // Actualizar contadores del inventario
     await query(`
       UPDATE "${schema}".inventory_physical
       SET 
@@ -192,17 +172,12 @@ router.put('/physical/:id/items/:itemId', authMiddleware, async (req, res) => {
   }
 });
 
-/* ─────────────────────────────────────────────
-   POST /api/inventory/physical/:id/close
-   Cerrar inventario y registrar ajustes pendientes
-   ⚠️ NO actualiza el stock automáticamente
-───────────────────────────────────────────── */
+// POST /api/inventory/physical/:id/close - Cerrar inventario (SOLO guarda en inventory_physical)
 router.post('/physical/:id/close', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     const { id } = req.params;
 
-    // 1. Verificar que no queden items pendientes
     const pending = await query(`
       SELECT COUNT(*) as count
       FROM "${schema}".inventory_physical_items
@@ -215,33 +190,6 @@ router.post('/physical/:id/close', authMiddleware, async (req, res) => {
       });
     }
 
-    // 2. Obtener cantidad de items con diferencias
-    const diffItems = await query(`
-      SELECT COUNT(*) as count
-      FROM "${schema}".inventory_physical_items
-      WHERE inventory_id = $1 AND difference <> 0
-    `, [id]);
-
-    const adjustmentsCount = Number(diffItems.rows[0].count);
-
-    // 3. Registrar movimientos de ajuste (SOLO registro, NO actualiza stock)
-    if (adjustmentsCount > 0) {
-      await query(`
-        INSERT INTO "${schema}".inventory_movements
-        (product_id, type, quantity, reference_id, notes, applied)
-        SELECT
-          product_id,
-          'adjustment',
-          ABS(difference),
-          inventory_id,
-          CONCAT('Ajuste por inventario físico #', inventory_id),
-          false
-        FROM "${schema}".inventory_physical_items
-        WHERE inventory_id = $1 AND difference <> 0
-      `, [id]);
-    }
-
-    // 4. Cerrar el inventario
     await query(`
       UPDATE "${schema}".inventory_physical
       SET
@@ -257,10 +205,7 @@ router.post('/physical/:id/close', authMiddleware, async (req, res) => {
 
     res.json({ 
       success: true, 
-      message: adjustmentsCount > 0 
-        ? `Inventario cerrado correctamente. ${adjustmentsCount} ajuste(s) pendiente(s) de aprobación.`
-        : 'Inventario cerrado correctamente. Sin diferencias de stock.',
-      adjustments: adjustmentsCount
+      message: 'Inventario cerrado correctamente'
     });
   } catch (err) {
     console.error('Error cerrando inventario:', err);
@@ -269,13 +214,188 @@ router.post('/physical/:id/close', authMiddleware, async (req, res) => {
 });
 
 /* ═══════════════════════════════════════════════════════════
-   MOVIMIENTOS DE INVENTARIO
+   INVENTARIOS CERRADOS PARA AJUSTES
 ═══════════════════════════════════════════════════════════ */
 
-/* ─────────────────────────────────────────────
-   GET /api/inventory/movements
-   Listar movimientos de inventario
-───────────────────────────────────────────── */
+// GET /api/inventory/closed - Obtener inventarios cerrados con diferencias
+router.get('/closed', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    const result = await query(`
+      SELECT 
+        ip.id,
+        ip.created_at,
+        ip.closed_date,
+        ip.closed_time,
+        ip.total_items,
+        COUNT(CASE WHEN ipi.difference <> 0 THEN 1 END) as items_with_difference,
+        json_agg(
+          json_build_object(
+            'id', ipi.id,
+            'product_id', ipi.product_id,
+            'product_name', ipi.product_name,
+            'system_stock', ipi.system_stock,
+            'counted_stock', ipi.counted_stock,
+            'difference', ipi.difference,
+            'status', ipi.status
+          ) ORDER BY ipi.product_name
+        ) as items
+      FROM "${schema}".inventory_physical ip
+      LEFT JOIN "${schema}".inventory_physical_items ipi ON ipi.inventory_id = ip.id
+      WHERE ip.status = 'closed'
+      GROUP BY ip.id
+      ORDER BY ip.closed_date DESC, ip.closed_time DESC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error obteniendo inventarios cerrados:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/inventory/closed/:id - Obtener inventario cerrado con items
+router.get('/closed/:id', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    const { id } = req.params;
+
+    const inventory = await query(`
+      SELECT * FROM "${schema}".inventory_physical 
+      WHERE id = $1 AND status = 'closed'
+    `, [id]);
+
+    if (!inventory.rows.length) {
+      return res.status(404).json({ error: 'Inventario cerrado no encontrado' });
+    }
+
+    const items = await query(`
+      SELECT 
+        id, 
+        product_id, 
+        product_name, 
+        system_stock, 
+        counted_stock, 
+        difference, 
+        status,
+        updated_at
+      FROM "${schema}".inventory_physical_items
+      WHERE inventory_id = $1
+      ORDER BY product_name
+    `, [id]);
+
+    res.json({ 
+      inventory: inventory.rows[0], 
+      items: items.rows 
+    });
+  } catch (err) {
+    console.error('Error obteniendo inventario cerrado:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/inventory/closed/:id/apply - Aplicar ajustes de inventario cerrado
+router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
+  const client = await query.constructor.client;
+  try {
+    const schema = await getSchemaName(req);
+    const { id } = req.params;
+    const { product_ids = [] } = req.body;
+
+    await client.query('BEGIN');
+
+    // Verificar que el inventario existe y está cerrado
+    const invCheck = await client.query(`
+      SELECT id FROM "${schema}".inventory_physical 
+      WHERE id = $1 AND status = 'closed'
+    `, [id]);
+
+    if (!invCheck.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Inventario cerrado no encontrado' });
+    }
+
+    // Obtener items con diferencias
+    let itemsQuery = `
+      SELECT 
+        id, 
+        product_id, 
+        product_name,
+        system_stock, 
+        counted_stock, 
+        difference
+      FROM "${schema}".inventory_physical_items
+      WHERE inventory_id = $1 AND difference <> 0
+    `;
+
+    const params = [id];
+    if (product_ids.length > 0) {
+      itemsQuery += ` AND product_id = ANY($2)`;
+      params.push(product_ids);
+    }
+
+    const items = await client.query(itemsQuery, params);
+
+    if (!items.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'No hay diferencias para ajustar' });
+    }
+
+    // Registrar movimientos y actualizar stock
+    for (const item of items.rows) {
+      // Calcular nuevo stock
+      const newStock = item.system_stock + item.difference;
+
+      // Registrar en inventory_movements
+      await client.query(`
+        INSERT INTO "${schema}".inventory_movements
+        (product_id, type, quantity, reference_id, notes, applied)
+        VALUES ($1, 'adjustment', $2, $3, $4, true)
+      `, [
+        item.product_id,
+        Math.abs(item.difference),
+        id,
+        `Ajuste aplicado desde inventario #${id} - ${item.product_name}`
+      ]);
+
+      // Actualizar stock del producto
+      await client.query(`
+        UPDATE "${schema}".products
+        SET stock = GREATEST(0, $1), updated_at = NOW()
+        WHERE id = $2
+      `, [newStock, item.product_id]);
+    }
+
+    // Marcar los items como ajustados (opcional: agregar columna adjusted)
+    await client.query(`
+      UPDATE "${schema}".inventory_physical_items
+      SET status = 'adjusted', updated_at = NOW()
+      WHERE inventory_id = $1 AND difference <> 0
+    `, [id]);
+
+    await client.query('COMMIT');
+
+    const businessId = req.headers['x-business-id'] || req.user?.businessId;
+    emitToBusiness(businessId, 'data_changed', { entity: 'inventory', action: 'adjustments_applied' });
+
+    res.json({ 
+      success: true, 
+      message: `Se aplicaron ${items.rows.length} ajuste(s) correctamente`,
+      adjustments: items.rows.length
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error aplicando ajustes:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════
+   MOVIMIENTOS DE INVENTARIO (para la tabla de la página)
+═══════════════════════════════════════════════════════════ */
+
+// GET /api/inventory/movements - Listar movimientos
 router.get('/movements', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -327,11 +447,29 @@ router.get('/movements', authMiddleware, async (req, res) => {
   }
 });
 
-/* ─────────────────────────────────────────────
-   POST /api/inventory/movements
-   Crear movimiento manual (entrada/salida)
-   ✅ Actualiza el stock inmediatamente
-───────────────────────────────────────────── */
+// GET /api/inventory/movements/stats - Estadísticas
+router.get('/movements/stats', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    const result = await query(`
+      SELECT 
+        COUNT(*) as total,
+        COUNT(CASE WHEN type = 'entrada' THEN 1 END) as entradas,
+        COUNT(CASE WHEN type = 'salida' THEN 1 END) as salidas,
+        COUNT(CASE WHEN type = 'adjustment' THEN 1 END) as ajustes,
+        SUM(CASE WHEN type = 'entrada' THEN quantity ELSE 0 END) as total_entradas,
+        SUM(CASE WHEN type = 'salida' THEN quantity ELSE 0 END) as total_salidas,
+        COUNT(DISTINCT product_id) as productos_afectados
+      FROM "${schema}".inventory_movements
+    `);
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Error obteniendo estadísticas:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/inventory/movements - Crear movimiento manual
 router.post('/movements', authMiddleware, async (req, res) => {
   const client = await query.constructor.client;
   try {
@@ -347,7 +485,6 @@ router.post('/movements', authMiddleware, async (req, res) => {
 
     await client.query('BEGIN');
 
-    // Registrar movimiento
     const { rows } = await client.query(`
       INSERT INTO "${schema}".inventory_movements 
         (product_id, type, quantity, unit_cost, notes, applied)
@@ -355,7 +492,6 @@ router.post('/movements', authMiddleware, async (req, res) => {
       RETURNING *
     `, [product_id, type, qty, unit_cost || null, notes || null]);
 
-    // Actualizar stock (solo para movimientos manuales)
     await client.query(`
       UPDATE "${schema}".products
       SET stock = GREATEST(0, stock + $1), updated_at = NOW()
@@ -371,152 +507,6 @@ router.post('/movements', authMiddleware, async (req, res) => {
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Error creando movimiento:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* ─────────────────────────────────────────────
-   POST /api/inventory/movements/:id/apply
-   Aplicar un ajuste pendiente
-   ✅ Actualiza el stock
-───────────────────────────────────────────── */
-router.post('/movements/:id/apply', authMiddleware, async (req, res) => {
-  const client = await query.constructor.client;
-  try {
-    const schema = await getSchemaName(req);
-    const { id } = req.params;
-
-    await client.query('BEGIN');
-
-    // 1. Obtener el movimiento
-    const { rows: moveRows } = await client.query(`
-      SELECT * FROM "${schema}".inventory_movements 
-      WHERE id = $1 AND type = 'adjustment' AND (applied IS NULL OR applied = false)
-    `, [id]);
-
-    if (!moveRows.length) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'Movimiento no encontrado o ya aplicado' });
-    }
-
-    const movement = moveRows[0];
-
-    // 2. Aplicar el ajuste al stock del producto (restar porque adjustment ya es ABS)
-    await client.query(`
-      UPDATE "${schema}".products
-      SET 
-        stock = GREATEST(0, stock - $1),
-        updated_at = NOW()
-      WHERE id = $2
-    `, [movement.quantity, movement.product_id]);
-
-    // 3. Marcar el movimiento como aplicado
-    await client.query(`
-      UPDATE "${schema}".inventory_movements
-      SET applied = true, updated_at = NOW()
-      WHERE id = $1
-    `, [id]);
-
-    await client.query('COMMIT');
-
-    const businessId = req.headers['x-business-id'] || req.user?.businessId;
-    emitToBusiness(businessId, 'data_changed', { entity: 'inventory', action: 'movement_applied' });
-
-    res.json({ success: true, message: 'Ajuste aplicado correctamente' });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('Error aplicando ajuste:', err);
-    res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
-  }
-});
-
-/* ─────────────────────────────────────────────
-   POST /api/inventory/movements/:id/discard
-   Descartar un ajuste pendiente
-   ❌ NO actualiza el stock
-───────────────────────────────────────────── */
-router.post('/movements/:id/discard', authMiddleware, async (req, res) => {
-  try {
-    const schema = await getSchemaName(req);
-    const { id } = req.params;
-
-    const { rows } = await query(`
-      UPDATE "${schema}".inventory_movements
-      SET 
-        applied = false, 
-        notes = CONCAT(notes, COALESCE(' [DESCARTADO]', '')),
-        updated_at = NOW()
-      WHERE id = $1 AND type = 'adjustment' AND (applied IS NULL OR applied = false)
-      RETURNING *
-    `, [id]);
-
-    if (!rows.length) {
-      return res.status(404).json({ error: 'Movimiento no encontrado o ya aplicado' });
-    }
-
-    res.json({ success: true, message: 'Ajuste descartado correctamente' });
-  } catch (err) {
-    console.error('Error descartando ajuste:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* ─────────────────────────────────────────────
-   GET /api/inventory/movements/stats
-   Estadísticas de movimientos
-───────────────────────────────────────────── */
-router.get('/movements/stats', authMiddleware, async (req, res) => {
-  try {
-    const schema = await getSchemaName(req);
-    const result = await query(`
-      SELECT 
-        COUNT(*) as total,
-        COUNT(CASE WHEN type = 'entrada' THEN 1 END) as entradas,
-        COUNT(CASE WHEN type = 'salida' THEN 1 END) as salidas,
-        COUNT(CASE WHEN type = 'adjustment' THEN 1 END) as ajustes,
-        COUNT(CASE WHEN type = 'adjustment' AND (applied IS NULL OR applied = false) THEN 1 END) as ajustes_pendientes,
-        SUM(CASE WHEN type = 'entrada' THEN quantity ELSE 0 END) as total_entradas,
-        SUM(CASE WHEN type = 'salida' THEN quantity ELSE 0 END) as total_salidas,
-        COUNT(DISTINCT product_id) as productos_afectados
-      FROM "${schema}".inventory_movements
-    `);
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error('Error obteniendo estadísticas:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* ─────────────────────────────────────────────
-   GET /api/inventory/movements/pending
-   Obtener ajustes pendientes de aprobación
-───────────────────────────────────────────── */
-router.get('/movements/pending', authMiddleware, async (req, res) => {
-  try {
-    const schema = await getSchemaName(req);
-    const result = await query(`
-      SELECT 
-        m.id, 
-        m.product_id,
-        m.type, 
-        m.quantity, 
-        m.reference_id, 
-        m.notes, 
-        m.created_at,
-        m.applied,
-        p.name AS product_name, 
-        p.code AS product_code,
-        p.stock AS current_stock
-      FROM "${schema}".inventory_movements m
-      LEFT JOIN "${schema}".products p ON p.id = m.product_id
-      WHERE m.type = 'adjustment' AND (m.applied IS NULL OR m.applied = false)
-      ORDER BY m.created_at DESC
-    `);
-    res.json(result.rows);
-  } catch (err) {
-    console.error('Error obteniendo ajustes pendientes:', err);
     res.status(500).json({ error: err.message });
   }
 });
