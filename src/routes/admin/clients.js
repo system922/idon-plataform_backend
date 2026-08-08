@@ -117,7 +117,6 @@ router.put('/businesses/:businessId', async (req, res, next) => {
 });
 
 // POST /api/admin/businesses/:businessId/subscribe
-// POST /api/admin/businesses/:businessId/subscribe
 router.post('/businesses/:businessId/subscribe', async (req, res, next) => {
   try {
     const { businessId } = req.params;
@@ -186,6 +185,26 @@ router.post('/businesses/:businessId/subscribe', async (req, res, next) => {
     res.status(201).json({ ok: true, message: 'Suscripción creada correctamente', data: newSub[0] });
   } catch (error) {
     logger.error('Error creando suscripción:', error);
+    next(error);
+  }
+});
+
+// GET /api/admin/subscriptions/:subId/items
+router.get('/subscriptions/:subId/items', async (req, res, next) => {
+  try {
+    const { subId } = req.params;
+    const { rows } = await query(`
+      SELECT 
+        sli.id, sli.module_id, sli.quantity, sli.unit_price, sli.total_price,
+        m.name, m.code, m.price_monthly, m.price_annual
+      FROM public.subscription_line_items sli
+      JOIN public.modules m ON sli.module_id = m.id
+      WHERE sli.subscription_id = $1
+      ORDER BY m.sort_order
+    `, [subId]);
+    res.json({ ok: true, data: rows });
+  } catch (error) {
+    logger.error('Error cargando items de suscripción:', error);
     next(error);
   }
 });
