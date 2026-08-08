@@ -172,7 +172,7 @@ router.put('/physical/:id/items/:itemId', authMiddleware, async (req, res) => {
   }
 });
 
-// POST /api/inventory/physical/:id/close - Cerrar inventario (SOLO guarda en inventory_physical)
+// POST /api/inventory/physical/:id/close - Cerrar inventario
 router.post('/physical/:id/close', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -303,7 +303,7 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
 
     await client.query('BEGIN');
 
-    // Verificar que el inventario existe y está cerrado
+    // 1. Verificar que el inventario existe y está cerrado
     const invCheck = await client.query(`
       SELECT id FROM "${schema}".inventory_physical 
       WHERE id = $1 AND status = 'closed'
@@ -314,7 +314,7 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'Inventario cerrado no encontrado' });
     }
 
-    // Obtener items con diferencias
+    // 2. Obtener items con diferencias
     let itemsQuery = `
       SELECT 
         id, 
@@ -329,7 +329,7 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
 
     const params = [id];
     if (product_ids.length > 0) {
-      itemsQuery += ` AND product_id = ANY($2)`;
+      itemsQuery += ` AND product_id = ANY($2::uuid[])`;
       params.push(product_ids);
     }
 
@@ -340,7 +340,8 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'No hay diferencias para ajustar' });
     }
 
-    // Registrar movimientos y actualizar stock
+    // 3. Registrar movimientos y actualizar stock
+    let adjustmentsCount = 0;
     for (const item of items.rows) {
       // Calcular nuevo stock
       const newStock = item.system_stock + item.difference;
@@ -348,12 +349,13 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
       // Registrar en inventory_movements
       await client.query(`
         INSERT INTO "${schema}".inventory_movements
-        (product_id, type, quantity, reference_id, notes, applied)
-        VALUES ($1, 'adjustment', $2, $3, $4, true)
+        (product_id, type, quantity, unit_cost, reference_id, notes, applied)
+        VALUES ($1, 'adjustment', $2, $3, $4, $5, true)
       `, [
         item.product_id,
         Math.abs(item.difference),
-        id,
+        null, // unit_cost
+        parseInt(id),
         `Ajuste aplicado desde inventario #${id} - ${item.product_name}`
       ]);
 
@@ -363,9 +365,11 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
         SET stock = GREATEST(0, $1), updated_at = NOW()
         WHERE id = $2
       `, [newStock, item.product_id]);
+
+      adjustmentsCount++;
     }
 
-    // Marcar los items como ajustados (opcional: agregar columna adjusted)
+    // 4. Marcar los items como ajustados (opcional)
     await client.query(`
       UPDATE "${schema}".inventory_physical_items
       SET status = 'adjusted', updated_at = NOW()
@@ -379,8 +383,8 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
 
     res.json({ 
       success: true, 
-      message: `Se aplicaron ${items.rows.length} ajuste(s) correctamente`,
-      adjustments: items.rows.length
+      message: `Se aplicaron ${adjustmentsCount} ajuste(s) correctamente`,
+      adjustments: adjustmentsCount
     });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -392,7 +396,7 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
 });
 
 /* ═══════════════════════════════════════════════════════════
-   MOVIMIENTOS DE INVENTARIO (para la tabla de la página)
+   MOVIMIENTOS DE INVENTARIO
 ═══════════════════════════════════════════════════════════ */
 
 // GET /api/inventory/movements - Listar movimientos
@@ -447,28 +451,6 @@ router.get('/movements', authMiddleware, async (req, res) => {
   }
 });
 
-// GET /api/inventory/movements/stats - Estadísticas
-router.get('/movements/stats', authMiddleware, async (req, res) => {
-  try {
-    const schema = await getSchemaName(req);
-    const result = await query(`
-      SELECT 
-        COUNT(*) as total,
-        COUNT(CASE WHEN type = 'entrada' THEN 1 END) as entradas,
-        COUNT(CASE WHEN type = 'salida' THEN 1 END) as salidas,
-        COUNT(CASE WHEN type = 'adjustment' THEN 1 END) as ajustes,
-        SUM(CASE WHEN type = 'entrada' THEN quantity ELSE 0 END) as total_entradas,
-        SUM(CASE WHEN type = 'salida' THEN quantity ELSE 0 END) as total_salidas,
-        COUNT(DISTINCT product_id) as productos_afectados
-      FROM "${schema}".inventory_movements
-    `);
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error('Error obteniendo estadísticas:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // POST /api/inventory/movements - Crear movimiento manual
 router.post('/movements', authMiddleware, async (req, res) => {
   const client = await query.constructor.client;
@@ -507,6 +489,30 @@ router.post('/movements', authMiddleware, async (req, res) => {
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Error creando movimiento:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// GET /api/inventory/movements/stats - Estadísticas
+router.get('/movements/stats', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    const result = await query(`
+      SELECT 
+        COUNT(*) as total,
+        COUNT(CASE WHEN type = 'entrada' THEN 1 END) as entradas,
+        COUNT(CASE WHEN type = 'salida' THEN 1 END) as salidas,
+        COUNT(CASE WHEN type = 'adjustment' THEN 1 END) as ajustes,
+        SUM(CASE WHEN type = 'entrada' THEN quantity ELSE 0 END) as total_entradas,
+        SUM(CASE WHEN type = 'salida' THEN quantity ELSE 0 END) as total_salidas,
+        COUNT(DISTINCT product_id) as productos_afectados
+      FROM "${schema}".inventory_movements
+    `);
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Error obteniendo estadísticas:', err);
     res.status(500).json({ error: err.message });
   }
 });
