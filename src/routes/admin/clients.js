@@ -117,6 +117,7 @@ router.put('/businesses/:businessId', async (req, res, next) => {
 });
 
 // POST /api/admin/businesses/:businessId/subscribe
+// POST /api/admin/businesses/:businessId/subscribe
 router.post('/businesses/:businessId/subscribe', async (req, res, next) => {
   try {
     const { businessId } = req.params;
@@ -131,16 +132,25 @@ router.post('/businesses/:businessId/subscribe', async (req, res, next) => {
     if (existingSub.length > 0)
       return res.status(409).json({ ok: false, message: 'Este negocio ya tiene una suscripción' });
 
+    // ✅ OBTENER MÓDULOS CON PRECIOS CORRECTOS
     const { rows: modRows } = await query(`
-      SELECT m.price_monthly, m.price_annual
+      SELECT 
+        m.id,
+        COALESCE(m.price_monthly, 0) as price_monthly, 
+        COALESCE(m.price_annual, 0) as price_annual
       FROM public.business_modules bm
       JOIN public.modules m ON bm.module_id = m.id
       WHERE bm.business_id=$1 AND bm.is_active=TRUE
     `, [businessId]);
 
+    // ✅ Calcular subtotales base (SIN descuento)
     const amount_monthly_base = modRows.reduce((s, m) => s + parseFloat(m.price_monthly || 0), 0);
-    const amount_annual_base  = modRows.reduce((s, m) => s + parseFloat(m.price_annual  || 0), 0);
-    const disc         = Math.min(Math.max(parseFloat(discount_percentage) || 0, 0), 100);
+    const amount_annual_base  = modRows.reduce((s, m) => s + parseFloat(m.price_annual || 0), 0);
+
+    // ✅ Asegurar que el descuento sea un número válido (0-100)
+    const disc = Math.min(Math.max(parseFloat(discount_percentage) || 0, 0), 100);
+    
+    // ✅ Calcular montos CON descuento
     const amount_monthly = parseFloat((amount_monthly_base * (1 - disc / 100)).toFixed(2));
     const amount_annual  = parseFloat((amount_annual_base  * (1 - disc / 100)).toFixed(2));
     const total_amount   = billing_period === 'monthly' ? amount_monthly : amount_annual;
@@ -158,24 +168,82 @@ router.post('/businesses/:businessId/subscribe', async (req, res, next) => {
       RETURNING *
     `, [businessId, billing_period, billing_day, amount_monthly, amount_annual, total_amount, disc, next_billing.toISOString()]);
 
+    // ✅ INSERTAR EN subscription_line_items con los precios BASE (sin descuento)
     for (const mod of modRows) {
+      const unitPrice = billing_period === 'monthly' ? mod.price_monthly : mod.price_annual;
       await query(`
         INSERT INTO public.subscription_line_items
           (subscription_id, module_id, quantity, unit_price, total_price)
-        SELECT $1, bm.module_id, 1,
-          CASE WHEN $2='monthly' THEN m.price_monthly ELSE m.price_annual END,
-          CASE WHEN $2='monthly' THEN m.price_monthly ELSE m.price_annual END
-        FROM public.business_modules bm
-        JOIN public.modules m ON bm.module_id=m.id
-        WHERE bm.business_id=$3 AND bm.is_active=TRUE
-        ON CONFLICT (subscription_id, module_id) DO NOTHING
-      `, [newSub[0].id, billing_period, businessId]);
+        VALUES ($1, $2, 1, $3, $3)
+        ON CONFLICT (subscription_id, module_id) DO UPDATE SET
+          unit_price = $3,
+          total_price = $3,
+          updated_at = NOW()
+      `, [newSub[0].id, mod.id, unitPrice]);
     }
 
-    logger.info(`[SUBSCRIPTION] Creada para business=${businessId} period=${billing_period} total=$${total_amount}`);
+    logger.info(`[SUBSCRIPTION] Creada para business=${businessId} period=${billing_period} total=$${total_amount} descuento=${disc}%`);
     res.status(201).json({ ok: true, message: 'Suscripción creada correctamente', data: newSub[0] });
   } catch (error) {
     logger.error('Error creando suscripción:', error);
+    next(error);
+  }
+});
+
+// PUT /api/admin/businesses/:businessId/subscription/:subId
+router.put('/businesses/:businessId/subscription/:subId', async (req, res, next) => {
+  try {
+    const { subId, businessId } = req.params;
+    const { billing_period, billing_day, discount_percentage, status } = req.body;
+
+    // ✅ OBTENER MÓDULOS CON PRECIOS CORRECTOS
+    const { rows: modRows } = await query(`
+      SELECT 
+        m.id,
+        COALESCE(m.price_monthly, 0) as price_monthly, 
+        COALESCE(m.price_annual, 0) as price_annual
+      FROM public.business_modules bm
+      JOIN public.modules m ON bm.module_id = m.id
+      WHERE bm.business_id=$1 AND bm.is_active=TRUE
+    `, [businessId]);
+
+    // ✅ Calcular subtotales base (SIN descuento)
+    const base_monthly = modRows.reduce((s, m) => s + parseFloat(m.price_monthly || 0), 0);
+    const base_annual  = modRows.reduce((s, m) => s + parseFloat(m.price_annual || 0), 0);
+
+    // ✅ Asegurar que el descuento sea un número válido (0-100)
+    const disc = Math.min(Math.max(parseFloat(discount_percentage) || 0, 0), 100);
+    
+    // ✅ Calcular montos CON descuento
+    const amount_monthly = parseFloat((base_monthly * (1 - disc / 100)).toFixed(2));
+    const amount_annual  = parseFloat((base_annual  * (1 - disc / 100)).toFixed(2));
+    const total_amount   = billing_period === 'monthly' ? amount_monthly : amount_annual;
+
+    const { rows } = await query(`
+      UPDATE public.subscriptions
+      SET billing_period=$1, billing_day=$2, discount_percentage=$3, status=$4,
+          amount_monthly=$5, amount_annual=$6, total_amount=$7, updated_at=NOW()
+      WHERE id=$8 AND business_id=$9 RETURNING *
+    `, [billing_period, billing_day || 1, disc, status || 'active',
+        amount_monthly, amount_annual, total_amount, subId, businessId]);
+
+    if (!rows.length) return res.status(404).json({ ok: false, message: 'Suscripción no encontrada' });
+
+    // ✅ ACTUALIZAR subscription_line_items con los precios BASE (sin descuento)
+    await query('DELETE FROM public.subscription_line_items WHERE subscription_id = $1', [subId]);
+    for (const mod of modRows) {
+      const unitPrice = billing_period === 'monthly' ? mod.price_monthly : mod.price_annual;
+      await query(`
+        INSERT INTO public.subscription_line_items
+          (subscription_id, module_id, quantity, unit_price, total_price)
+        VALUES ($1, $2, 1, $3, $3)
+      `, [subId, mod.id, unitPrice]);
+    }
+    
+    logger.info(`[SUBSCRIPTION] Actualizada business=${businessId} period=${billing_period} total=$${total_amount} descuento=${disc}%`);
+    res.json({ ok: true, message: 'Suscripción actualizada correctamente', data: rows[0] });
+  } catch (error) {
+    logger.error('Error actualizando suscripción:', error);
     next(error);
   }
 });
