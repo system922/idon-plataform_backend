@@ -10,6 +10,7 @@ const router = express.Router();
 const getUserInfo = async (schema, userId) => {
   if (!userId) return null;
 
+  // 1. Buscar en public.users (usuarios globales - dueños de negocio)
   const globalUser = await query(`
     SELECT id, email, first_name, last_name, 'global' as source
     FROM public.users 
@@ -24,6 +25,7 @@ const getUserInfo = async (schema, userId) => {
     };
   }
 
+  // 2. Buscar en tenant.users (usuarios del esquema)
   const tenantUser = await query(`
     SELECT id, email, first_name, last_name, 'tenant' as source
     FROM "${schema}".users 
@@ -107,6 +109,7 @@ router.post('/physical', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Usuario no identificado' });
     }
 
+    // Obtener información del usuario
     const user = await getUserInfo(schema, userId);
     if (!user) {
       return res.status(400).json({ error: 'Usuario no encontrado en el sistema' });
@@ -116,6 +119,7 @@ router.post('/physical', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Categorías requeridas' });
     }
 
+    // Crear el encabezado del inventario
     let insertQuery = `
       INSERT INTO "${schema}".inventory_physical 
         (started_date, started_time, status
@@ -138,6 +142,7 @@ router.post('/physical', authMiddleware, async (req, res) => {
     const inv = await query(insertQuery, params);
     const inventoryId = inv.rows[0].id;
 
+    // Guardar las categorías seleccionadas
     for (const catId of categories) {
       await query(`
         INSERT INTO "${schema}".inventory_physical_categories
@@ -146,6 +151,7 @@ router.post('/physical', authMiddleware, async (req, res) => {
       `, [inventoryId, catId]);
     }
 
+    // Insertar productos de las categorías seleccionadas
     await query(`
       INSERT INTO "${schema}".inventory_physical_items
       (inventory_id, product_id, product_name, system_stock, counted_stock, difference, status)
@@ -165,6 +171,7 @@ router.post('/physical', authMiddleware, async (req, res) => {
       )
     `, [inventoryId]);
 
+    // Actualizar contadores
     await query(`
       UPDATE "${schema}".inventory_physical
       SET 
@@ -310,6 +317,7 @@ router.post('/physical/:id/close', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Usuario no identificado' });
     }
 
+    // Obtener información del usuario
     const user = await getUserInfo(schema, userId);
     if (!user) {
       return res.status(400).json({ 
@@ -318,6 +326,7 @@ router.post('/physical/:id/close', authMiddleware, async (req, res) => {
       });
     }
 
+    // Verificar que no queden items pendientes
     const pending = await query(`
       SELECT COUNT(*) as count
       FROM "${schema}".inventory_physical_items
@@ -330,6 +339,7 @@ router.post('/physical/:id/close', authMiddleware, async (req, res) => {
       });
     }
 
+    // Cerrar el inventario guardando en la columna correspondiente
     let updateQuery = `
       UPDATE "${schema}".inventory_physical
       SET
