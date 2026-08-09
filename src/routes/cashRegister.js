@@ -171,6 +171,9 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 // ===============================
 // 📦 POST /closing - CIERRE COMPLETO CON INVENTARIO
 // ===============================
+// ===============================
+// 📦 POST /closing - CIERRE COMPLETO CON INVENTARIO
+// ===============================
 router.post('/closing', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -220,6 +223,14 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
         closing_id: existingClose.rows[0].id
       });
     }
+
+    // 📊 FUNCIONES HELPER
+    const n = (v) => {
+      const num = Number(v);
+      return isNaN(num) ? 0 : num;
+    };
+
+    const safe = (v) => (v == null || isNaN(v) ? 0 : v);
 
     // 📊 CALCULAR DIFERENCIAS
     const cashSystem = n(cash_system || 0);
@@ -333,7 +344,7 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
       try {
         console.log('📦 INICIANDO PROCESAMIENTO DE INVENTARIO...');
 
-        // Verificar si ya existen movimientos
+        // Verificar si ya existen movimientos para esta fecha
         const movementsCheck = await query(
           `
           SELECT COUNT(*) as count 
@@ -422,24 +433,28 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
               itemsResult.rows.forEach(row => {
                 const productId = row.product_id;
                 const quantity = parseInt(row.quantity) || 0;
-                const orderNumber = row.order_number || 'S/N';
 
                 if (productMovements.has(productId)) {
                   const existing = productMovements.get(productId);
                   existing.total_quantity += quantity;
-                  existing.orders.push(orderNumber);
                 } else {
                   productMovements.set(productId, {
                     product_id: productId,
                     product_name: row.product_name || 'Producto',
                     total_quantity: quantity,
-                    unit_price: parseFloat(row.unit_price) || 0,
-                    orders: [orderNumber]
+                    unit_price: parseFloat(row.unit_price) || 0
                   });
                 }
               });
 
               console.log(`📊 Productos agrupados: ${productMovements.size}`);
+
+              // Formatear fecha para el note
+              const formattedDate = new Date(closingDate).toLocaleDateString('es-EC', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit'
+              });
 
               // Crear movimientos
               for (const [productId, data] of productMovements) {
@@ -456,23 +471,20 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
                 const productName = productResult.rows[0]?.name || data.product_name || 'Producto';
                 const currentStock = productResult.rows[0]?.stock || 0;
 
-                // Crear nota
-                let notes = '';
-                if (sourceType === 'facturas') {
-                  const invoiceNumbers = invoicesResult.rows
-                    .filter(inv => orderIds.includes(inv.order_id))
-                    .map(inv => inv.invoice_number)
-                    .filter(Boolean)
-                    .join(', #');
-                  notes = `Factura #${invoiceNumbers}`;
-                } else {
-                  const orderNumbers = data.orders.join(', #');
-                  notes = `Orden #${orderNumbers}`;
-                }
-
+                // 📝 NOTA: "Cierre de caja de 08/08/2026"
+                const notes = `Cierre de caja de ${formattedDate}`;
+                
+                // Cantidad NEGATIVA para venta (salida de inventario)
                 const quantity = -Math.abs(data.total_quantity);
 
-                // Insertar movimiento
+                console.log(`📝 Creando movimiento para ${productName}:`, {
+                  quantity,
+                  unitCost,
+                  notes,
+                  currentStock
+                });
+
+                // Insertar movimiento de inventario
                 const movementResult = await query(
                   `
                   INSERT INTO "${schema}".inventory_movements (
@@ -503,7 +515,7 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
 
                 inventoryMovements.push(movementResult.rows[0]);
 
-                // Actualizar stock
+                // Actualizar stock del producto
                 await query(
                   `
                   UPDATE "${schema}".products
