@@ -45,7 +45,7 @@ const getUserInfo = async (schema, userId) => {
 
 /* ─────────────────────────────────────────────
    GET /api/inventory/physical
-   Listar todos los inventarios físicos
+   Listar todos los inventarios físicos (VERSIÓN SIMPLIFICADA)
 ───────────────────────────────────────────── */
 router.get('/physical', authMiddleware, async (req, res) => {
   try {
@@ -57,31 +57,28 @@ router.get('/physical', authMiddleware, async (req, res) => {
     const result = await query(`
       SELECT 
         ip.*,
-        COALESCE(u1.first_name, u3.first_name) || ' ' || 
-        COALESCE(u1.last_name, u3.last_name) AS created_by_name,
-        COALESCE(u2.first_name, u4.first_name) || ' ' || 
-        COALESCE(u2.last_name, u4.last_name) AS closed_by_name,
-        CASE 
-          WHEN u1.id IS NOT NULL THEN 'global'
-          WHEN u3.id IS NOT NULL THEN 'tenant'
-          ELSE NULL
-        END AS created_by_source,
-        CASE 
-          WHEN u2.id IS NOT NULL THEN 'global'
-          WHEN u4.id IS NOT NULL THEN 'tenant'
-          ELSE NULL
-        END AS closed_by_source,
-        COUNT(ipi.id) as total_items,
-        COUNT(CASE WHEN ipi.status = 'counted' THEN 1 END) as counted_items,
-        COUNT(CASE WHEN ipi.status = 'pending' THEN 1 END) as pending_items
+        (
+          SELECT COALESCE(
+            (SELECT first_name || ' ' || last_name FROM public.users WHERE id = ip.created_by_global),
+            (SELECT first_name || ' ' || last_name FROM "${schema}".users WHERE id = ip.created_by_tenant)
+          )
+        ) AS created_by_name,
+        (
+          SELECT COALESCE(
+            (SELECT first_name || ' ' || last_name FROM public.users WHERE id = ip.closed_by_global),
+            (SELECT first_name || ' ' || last_name FROM "${schema}".users WHERE id = ip.closed_by_tenant)
+          )
+        ) AS closed_by_name,
+        (
+          SELECT COUNT(*) FROM "${schema}".inventory_physical_items WHERE inventory_id = ip.id
+        ) AS total_items,
+        (
+          SELECT COUNT(*) FROM "${schema}".inventory_physical_items WHERE inventory_id = ip.id AND status = 'counted'
+        ) AS counted_items,
+        (
+          SELECT COUNT(*) FROM "${schema}".inventory_physical_items WHERE inventory_id = ip.id AND status = 'pending'
+        ) AS pending_items
       FROM "${schema}".inventory_physical ip
-      LEFT JOIN "${schema}".inventory_physical_items ipi ON ipi.inventory_id = ip.id
-      LEFT JOIN public.users u1 ON u1.id = ip.created_by_global
-      LEFT JOIN public.users u2 ON u2.id = ip.closed_by_global
-      LEFT JOIN "${schema}".users u3 ON u3.id = ip.created_by_tenant
-      LEFT JOIN "${schema}".users u4 ON u4.id = ip.closed_by_tenant
-      GROUP BY ip.id, u1.first_name, u1.last_name, u2.first_name, u2.last_name,
-               u3.first_name, u3.last_name, u4.first_name, u4.last_name
       ORDER BY ip.created_at DESC
     `);
     res.json(result.rows);
@@ -205,15 +202,19 @@ router.get('/physical/:id', authMiddleware, async (req, res) => {
     const inventory = await query(`
       SELECT 
         ip.*,
-        COALESCE(u1.first_name, u3.first_name) || ' ' || 
-        COALESCE(u1.last_name, u3.last_name) AS created_by_name,
-        COALESCE(u2.first_name, u4.first_name) || ' ' || 
-        COALESCE(u2.last_name, u4.last_name) AS closed_by_name
+        (
+          SELECT COALESCE(
+            (SELECT first_name || ' ' || last_name FROM public.users WHERE id = ip.created_by_global),
+            (SELECT first_name || ' ' || last_name FROM "${schema}".users WHERE id = ip.created_by_tenant)
+          )
+        ) AS created_by_name,
+        (
+          SELECT COALESCE(
+            (SELECT first_name || ' ' || last_name FROM public.users WHERE id = ip.closed_by_global),
+            (SELECT first_name || ' ' || last_name FROM "${schema}".users WHERE id = ip.closed_by_tenant)
+          )
+        ) AS closed_by_name
       FROM "${schema}".inventory_physical ip
-      LEFT JOIN public.users u1 ON u1.id = ip.created_by_global
-      LEFT JOIN public.users u2 ON u2.id = ip.closed_by_global
-      LEFT JOIN "${schema}".users u3 ON u3.id = ip.created_by_tenant
-      LEFT JOIN "${schema}".users u4 ON u4.id = ip.closed_by_tenant
       WHERE ip.id = $1
     `, [id]);
 
@@ -425,7 +426,14 @@ router.get('/closed', authMiddleware, async (req, res) => {
       LEFT JOIN public.users u2 ON u2.id = ip.closed_by_global
       LEFT JOIN "${schema}".users u4 ON u4.id = ip.closed_by_tenant
       WHERE ip.status = 'closed'
-      GROUP BY ip.id, u2.first_name, u2.last_name, u4.first_name, u4.last_name
+      GROUP BY 
+        ip.id, 
+        ip.created_at,
+        ip.closed_date,
+        ip.closed_time,
+        ip.total_items,
+        u2.first_name, u2.last_name,
+        u4.first_name, u4.last_name
       ORDER BY ip.closed_date DESC, ip.closed_time DESC
     `);
     res.json(result.rows);
@@ -451,11 +459,13 @@ router.get('/closed/:id', authMiddleware, async (req, res) => {
     const inventory = await query(`
       SELECT 
         ip.*,
-        COALESCE(u2.first_name, u4.first_name) || ' ' || 
-        COALESCE(u2.last_name, u4.last_name) AS closed_by_name
+        (
+          SELECT COALESCE(
+            (SELECT first_name || ' ' || last_name FROM public.users WHERE id = ip.closed_by_global),
+            (SELECT first_name || ' ' || last_name FROM "${schema}".users WHERE id = ip.closed_by_tenant)
+          )
+        ) AS closed_by_name
       FROM "${schema}".inventory_physical ip
-      LEFT JOIN public.users u2 ON u2.id = ip.closed_by_global
-      LEFT JOIN "${schema}".users u4 ON u4.id = ip.closed_by_tenant
       WHERE ip.id = $1 AND ip.status = 'closed'
     `, [id]);
 
