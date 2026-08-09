@@ -603,15 +603,19 @@ BEGIN
         counted_items INT DEFAULT 0,
         pending_items INT DEFAULT 0,
         notes         TEXT,
+        closed_by     UUID          REFERENCES %I.users(id) ON DELETE SET NULL,
         created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )', p_schema_name);
+      )', p_schema_name, p_schema_name);
+
     EXECUTE format(
       'CREATE INDEX IF NOT EXISTS %I_inventory_physical_status_idx ON %I.inventory_physical (status)',
       p_schema_name, p_schema_name);
+
     EXECUTE format(
       'CREATE INDEX IF NOT EXISTS %I_inventory_physical_created_at_desc_idx ON %I.inventory_physical (created_at DESC)',
       p_schema_name, p_schema_name);
+
     v_table_count := v_table_count + 1;
 
     -- inventory_physical_categories (FK â†’ inventory_physical, categories)

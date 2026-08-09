@@ -20,12 +20,14 @@ router.get('/physical', authMiddleware, async (req, res) => {
     const result = await query(`
       SELECT 
         ip.*,
+        u.first_name || ' ' || u.last_name AS closed_by_name,
         COUNT(ipi.id) as total_items,
         COUNT(CASE WHEN ipi.status = 'counted' THEN 1 END) as counted_items,
         COUNT(CASE WHEN ipi.status = 'pending' THEN 1 END) as pending_items
       FROM "${schema}".inventory_physical ip
       LEFT JOIN "${schema}".inventory_physical_items ipi ON ipi.inventory_id = ip.id
-      GROUP BY ip.id
+      LEFT JOIN "${schema}".users u ON u.id = ip.closed_by
+      GROUP BY ip.id, u.first_name, u.last_name
       ORDER BY ip.created_at DESC
     `);
     res.json(result.rows);
@@ -161,7 +163,6 @@ router.get('/physical/:id', authMiddleware, async (req, res) => {
   }
 });
 
-
 /* ─────────────────────────────────────────────
    PUT /api/inventory/physical/:id/items/:itemId
    Actualizar conteo de un producto
@@ -210,7 +211,7 @@ router.put('/physical/:id/items/:itemId', authMiddleware, async (req, res) => {
 
 /* ─────────────────────────────────────────────
    POST /api/inventory/physical/:id/close
-   Cerrar inventario
+   Cerrar inventario (guarda el usuario que cierra)
 ───────────────────────────────────────────── */
 router.post('/physical/:id/close', authMiddleware, async (req, res) => {
   try {
@@ -220,6 +221,11 @@ router.post('/physical/:id/close', authMiddleware, async (req, res) => {
     }
 
     const { id } = req.params;
+    const userId = req.user?.id || req.user?.userId;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'Usuario no identificado' });
+    }
 
     // Verificar que no queden items pendientes
     const pending = await query(`
@@ -234,16 +240,17 @@ router.post('/physical/:id/close', authMiddleware, async (req, res) => {
       });
     }
 
-    // Cerrar el inventario
+    // Cerrar el inventario guardando el usuario que lo cerró
     await query(`
       UPDATE "${schema}".inventory_physical
       SET
         status = 'closed',
         closed_date = CURRENT_DATE,
         closed_time = CURRENT_TIME,
+        closed_by = $1,
         updated_at = NOW()
-      WHERE id = $1
-    `, [id]);
+      WHERE id = $2
+    `, [userId, id]);
 
     const businessId = req.headers['x-business-id'] || req.user?.businessId;
     emitToBusiness(businessId, 'data_changed', { entity: 'inventory', action: 'closed' });
@@ -280,6 +287,7 @@ router.get('/closed', authMiddleware, async (req, res) => {
         ip.closed_date,
         ip.closed_time,
         ip.total_items,
+        u.first_name || ' ' || u.last_name AS closed_by_name,
         COUNT(CASE WHEN ipi.difference <> 0 THEN 1 END) as items_with_difference,
         json_agg(
           json_build_object(
@@ -301,8 +309,9 @@ router.get('/closed', authMiddleware, async (req, res) => {
       LEFT JOIN "${schema}".inventory_physical_items ipi ON ipi.inventory_id = ip.id
       LEFT JOIN "${schema}".products p ON p.id = ipi.product_id
       LEFT JOIN "${schema}".categories c ON c.id = p.category_id
+      LEFT JOIN "${schema}".users u ON u.id = ip.closed_by
       WHERE ip.status = 'closed'
-      GROUP BY ip.id
+      GROUP BY ip.id, u.first_name, u.last_name
       ORDER BY ip.closed_date DESC, ip.closed_time DESC
     `);
     res.json(result.rows);
@@ -326,8 +335,12 @@ router.get('/closed/:id', authMiddleware, async (req, res) => {
     const { id } = req.params;
 
     const inventory = await query(`
-      SELECT * FROM "${schema}".inventory_physical 
-      WHERE id = $1 AND status = 'closed'
+      SELECT 
+        ip.*,
+        u.first_name || ' ' || u.last_name AS closed_by_name
+      FROM "${schema}".inventory_physical ip
+      LEFT JOIN "${schema}".users u ON u.id = ip.closed_by
+      WHERE ip.id = $1 AND ip.status = 'closed'
     `, [id]);
 
     if (!inventory.rows.length) {
@@ -365,7 +378,6 @@ router.get('/closed/:id', authMiddleware, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
 
 /* ─────────────────────────────────────────────
    POST /api/inventory/closed/:id/apply
@@ -463,9 +475,6 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
     for (const item of items.rows) {
       const newStock = item.system_stock + item.difference;
 
-      // ✅ REGISTRAR COMO ADJUSTMENT (NO como entrada/salida)
-      // La cantidad siempre es positiva (valor absoluto de la diferencia)
-      // El signo se infiere del contexto (diferencia positiva = aumento de stock)
       const adjustmentQuantity = Math.abs(item.difference);
       const sign = item.difference > 0 ? '+' : '-';
 
@@ -476,8 +485,8 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
         VALUES ($1, 'adjustment', $2, $3, $4, $5, true)
       `, [
         item.product_id,
-        adjustmentQuantity,  // ✅ SIEMPRE POSITIVO
-        null,  // unit_cost
+        adjustmentQuantity,
+        null,
         parseInt(id),
         `Ajuste aplicado desde inventario #${id} - ${item.product_name} (${sign}${adjustmentQuantity})`
       ]);
