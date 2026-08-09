@@ -6,14 +6,17 @@ import { emitToBusiness } from '../socket.js';
 
 const router = express.Router();
 
-/* ═══════════════════════════════════════════════════════════
-   INVENTARIOS FÍSICOS
-═══════════════════════════════════════════════════════════ */
-
-// GET /api/inventory/physical - Listar todos los inventarios
+/* ─────────────────────────────────────────────
+   GET /api/inventory/physical
+   Listar todos los inventarios físicos
+───────────────────────────────────────────── */
 router.get('/physical', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
     const result = await query(`
       SELECT 
         ip.*,
@@ -27,21 +30,29 @@ router.get('/physical', authMiddleware, async (req, res) => {
     `);
     res.json(result.rows);
   } catch (err) {
-    console.error('Error listando inventarios:', err);
+    console.error('Error in GET /physical:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// POST /api/inventory/physical - Crear inventario
+/* ─────────────────────────────────────────────
+   POST /api/inventory/physical
+   Crear un nuevo inventario físico
+───────────────────────────────────────────── */
 router.post('/physical', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
     const { categories } = req.body;
 
     if (!categories?.length) {
       return res.status(400).json({ error: 'Categorías requeridas' });
     }
 
+    // Crear el encabezado del inventario
     const inv = await query(`
       INSERT INTO "${schema}".inventory_physical 
         (started_date, started_time, status)
@@ -50,6 +61,7 @@ router.post('/physical', authMiddleware, async (req, res) => {
     `);
     const inventoryId = inv.rows[0].id;
 
+    // Guardar las categorías seleccionadas
     for (const catId of categories) {
       await query(`
         INSERT INTO "${schema}".inventory_physical_categories
@@ -58,6 +70,7 @@ router.post('/physical', authMiddleware, async (req, res) => {
       `, [inventoryId, catId]);
     }
 
+    // Insertar productos de las categorías seleccionadas
     await query(`
       INSERT INTO "${schema}".inventory_physical_items
       (inventory_id, product_id, product_name, system_stock, counted_stock, difference, status)
@@ -77,6 +90,7 @@ router.post('/physical', authMiddleware, async (req, res) => {
       )
     `, [inventoryId]);
 
+    // Actualizar contadores
     await query(`
       UPDATE "${schema}".inventory_physical
       SET 
@@ -89,15 +103,22 @@ router.post('/physical', authMiddleware, async (req, res) => {
 
     res.status(201).json(inv.rows[0]);
   } catch (err) {
-    console.error('Error creando inventario:', err);
+    console.error('Error in POST /physical:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// GET /api/inventory/physical/:id - Obtener detalles de un inventario
+/* ─────────────────────────────────────────────
+   GET /api/inventory/physical/:id
+   Obtener detalles de un inventario
+───────────────────────────────────────────── */
 router.get('/physical/:id', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
     const { id } = req.params;
 
     const inventory = await query(`
@@ -128,15 +149,22 @@ router.get('/physical/:id', authMiddleware, async (req, res) => {
       items: items.rows 
     });
   } catch (err) {
-    console.error('Error obteniendo inventario:', err);
+    console.error('Error in GET /physical/:id:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// PUT /api/inventory/physical/:id/items/:itemId - Actualizar conteo
+/* ─────────────────────────────────────────────
+   PUT /api/inventory/physical/:id/items/:itemId
+   Actualizar conteo de un producto
+───────────────────────────────────────────── */
 router.put('/physical/:id/items/:itemId', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
     const { id, itemId } = req.params;
     const { counted_stock } = req.body;
 
@@ -167,17 +195,25 @@ router.put('/physical/:id/items/:itemId', authMiddleware, async (req, res) => {
 
     res.json({ success: true });
   } catch (err) {
-    console.error('Error actualizando item:', err);
+    console.error('Error in PUT /physical/:id/items/:itemId:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// POST /api/inventory/physical/:id/close - Cerrar inventario
+/* ─────────────────────────────────────────────
+   POST /api/inventory/physical/:id/close
+   Cerrar inventario
+───────────────────────────────────────────── */
 router.post('/physical/:id/close', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
     const { id } = req.params;
 
+    // Verificar que no queden items pendientes
     const pending = await query(`
       SELECT COUNT(*) as count
       FROM "${schema}".inventory_physical_items
@@ -190,6 +226,7 @@ router.post('/physical/:id/close', authMiddleware, async (req, res) => {
       });
     }
 
+    // Cerrar el inventario
     await query(`
       UPDATE "${schema}".inventory_physical
       SET
@@ -208,7 +245,7 @@ router.post('/physical/:id/close', authMiddleware, async (req, res) => {
       message: 'Inventario cerrado correctamente'
     });
   } catch (err) {
-    console.error('Error cerrando inventario:', err);
+    console.error('Error in POST /physical/:id/close:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -217,10 +254,17 @@ router.post('/physical/:id/close', authMiddleware, async (req, res) => {
    INVENTARIOS CERRADOS PARA AJUSTES
 ═══════════════════════════════════════════════════════════ */
 
-// GET /api/inventory/closed - Obtener inventarios cerrados con diferencias
+/* ─────────────────────────────────────────────
+   GET /api/inventory/closed
+   Obtener inventarios cerrados con diferencias
+───────────────────────────────────────────── */
 router.get('/closed', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
     const result = await query(`
       SELECT 
         ip.id,
@@ -248,15 +292,22 @@ router.get('/closed', authMiddleware, async (req, res) => {
     `);
     res.json(result.rows);
   } catch (err) {
-    console.error('Error obteniendo inventarios cerrados:', err);
+    console.error('Error in GET /closed:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// GET /api/inventory/closed/:id - Obtener inventario cerrado con items
+/* ─────────────────────────────────────────────
+   GET /api/inventory/closed/:id
+   Obtener inventario cerrado con items
+───────────────────────────────────────────── */
 router.get('/closed/:id', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
     const { id } = req.params;
 
     const inventory = await query(`
@@ -288,29 +339,32 @@ router.get('/closed/:id', authMiddleware, async (req, res) => {
       items: items.rows 
     });
   } catch (err) {
-    console.error('Error obteniendo inventario cerrado:', err);
+    console.error('Error in GET /closed/:id:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// POST /api/inventory/closed/:id/apply - Aplicar ajustes de inventario cerrado
+/* ─────────────────────────────────────────────
+   POST /api/inventory/closed/:id/apply
+   Aplicar ajustes de inventario cerrado
+───────────────────────────────────────────── */
 router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
-  const client = await query.constructor.client;
   try {
     const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
     const { id } = req.params;
     const { product_ids = [] } = req.body;
 
-    await client.query('BEGIN');
-
     // 1. Verificar que el inventario existe y está cerrado
-    const invCheck = await client.query(`
+    const invCheck = await query(`
       SELECT id FROM "${schema}".inventory_physical 
       WHERE id = $1 AND status = 'closed'
     `, [id]);
 
     if (!invCheck.rows.length) {
-      await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Inventario cerrado no encontrado' });
     }
 
@@ -333,34 +387,32 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
       params.push(product_ids);
     }
 
-    const items = await client.query(itemsQuery, params);
+    const items = await query(itemsQuery, params);
 
     if (!items.rows.length) {
-      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'No hay diferencias para ajustar' });
     }
 
     // 3. Registrar movimientos y actualizar stock
     let adjustmentsCount = 0;
     for (const item of items.rows) {
-      // Calcular nuevo stock
       const newStock = item.system_stock + item.difference;
 
       // Registrar en inventory_movements
-      await client.query(`
+      await query(`
         INSERT INTO "${schema}".inventory_movements
         (product_id, type, quantity, unit_cost, reference_id, notes, applied)
         VALUES ($1, 'adjustment', $2, $3, $4, $5, true)
       `, [
         item.product_id,
         Math.abs(item.difference),
-        null, // unit_cost
+        null,
         parseInt(id),
         `Ajuste aplicado desde inventario #${id} - ${item.product_name}`
       ]);
 
       // Actualizar stock del producto
-      await client.query(`
+      await query(`
         UPDATE "${schema}".products
         SET stock = GREATEST(0, $1), updated_at = NOW()
         WHERE id = $2
@@ -369,14 +421,12 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
       adjustmentsCount++;
     }
 
-    // 4. Marcar los items como ajustados (opcional)
-    await client.query(`
+    // 4. Marcar los items como ajustados
+    await query(`
       UPDATE "${schema}".inventory_physical_items
       SET status = 'adjusted', updated_at = NOW()
       WHERE inventory_id = $1 AND difference <> 0
     `, [id]);
-
-    await client.query('COMMIT');
 
     const businessId = req.headers['x-business-id'] || req.user?.businessId;
     emitToBusiness(businessId, 'data_changed', { entity: 'inventory', action: 'adjustments_applied' });
@@ -387,11 +437,8 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
       adjustments: adjustmentsCount
     });
   } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('Error aplicando ajustes:', err);
+    console.error('Error in POST /closed/:id/apply:', err);
     res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
   }
 });
 
@@ -399,10 +446,17 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
    MOVIMIENTOS DE INVENTARIO
 ═══════════════════════════════════════════════════════════ */
 
-// GET /api/inventory/movements - Listar movimientos
+/* ─────────────────────────────────────────────
+   GET /api/inventory/movements
+   Listar movimientos de inventario
+───────────────────────────────────────────── */
 router.get('/movements', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
     const { product_id, type, limit = 100 } = req.query;
 
     let whereClause = '';
@@ -446,16 +500,22 @@ router.get('/movements', authMiddleware, async (req, res) => {
 
     res.json(result.rows);
   } catch (err) {
-    console.error('Error listando movimientos:', err);
+    console.error('Error in GET /movements:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// POST /api/inventory/movements - Crear movimiento manual
+/* ─────────────────────────────────────────────
+   POST /api/inventory/movements
+   Crear movimiento manual (entrada/salida)
+───────────────────────────────────────────── */
 router.post('/movements', authMiddleware, async (req, res) => {
-  const client = await query.constructor.client;
   try {
     const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
     const { product_id, type, quantity, unit_cost, notes } = req.body;
 
     if (!product_id || !type || !quantity) {
@@ -465,40 +525,42 @@ router.post('/movements', authMiddleware, async (req, res) => {
     const qty = Math.abs(Number(quantity));
     const delta = type === 'entrada' ? qty : -qty;
 
-    await client.query('BEGIN');
-
-    const { rows } = await client.query(`
+    // Registrar movimiento
+    const { rows } = await query(`
       INSERT INTO "${schema}".inventory_movements 
         (product_id, type, quantity, unit_cost, notes, applied)
       VALUES ($1, $2, $3, $4, $5, true)
       RETURNING *
     `, [product_id, type, qty, unit_cost || null, notes || null]);
 
-    await client.query(`
+    // Actualizar stock
+    await query(`
       UPDATE "${schema}".products
       SET stock = GREATEST(0, stock + $1), updated_at = NOW()
       WHERE id = $2
     `, [delta, product_id]);
-
-    await client.query('COMMIT');
 
     const businessId = req.headers['x-business-id'] || req.user?.businessId;
     emitToBusiness(businessId, 'data_changed', { entity: 'inventory', action: 'updated' });
 
     res.status(201).json(rows[0]);
   } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('Error creando movimiento:', err);
+    console.error('Error in POST /movements:', err);
     res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
   }
 });
 
-// GET /api/inventory/movements/stats - Estadísticas
+/* ─────────────────────────────────────────────
+   GET /api/inventory/movements/stats
+   Estadísticas de movimientos
+───────────────────────────────────────────── */
 router.get('/movements/stats', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
     const result = await query(`
       SELECT 
         COUNT(*) as total,
@@ -512,7 +574,7 @@ router.get('/movements/stats', authMiddleware, async (req, res) => {
     `);
     res.json(result.rows[0]);
   } catch (err) {
-    console.error('Error obteniendo estadísticas:', err);
+    console.error('Error in GET /movements/stats:', err);
     res.status(500).json({ error: err.message });
   }
 });
