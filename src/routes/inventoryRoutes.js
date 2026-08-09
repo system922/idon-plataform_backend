@@ -131,17 +131,24 @@ router.get('/physical/:id', authMiddleware, async (req, res) => {
 
     const items = await query(`
       SELECT 
-        id, 
-        product_id, 
-        product_name, 
-        system_stock, 
-        counted_stock, 
-        difference, 
-        status,
-        updated_at
-      FROM "${schema}".inventory_physical_items
-      WHERE inventory_id = $1
-      ORDER BY product_name
+        ipi.id, 
+        ipi.product_id, 
+        ipi.product_name, 
+        ipi.system_stock, 
+        ipi.counted_stock, 
+        ipi.difference, 
+        ipi.status,
+        ipi.updated_at,
+        p.code AS product_code,
+        p.barcode AS product_barcode,
+        p.description AS product_description,
+        p.category_id,
+        c.name AS category_name
+      FROM "${schema}".inventory_physical_items ipi
+      LEFT JOIN "${schema}".products p ON p.id = ipi.product_id
+      LEFT JOIN "${schema}".categories c ON c.id = p.category_id
+      WHERE ipi.inventory_id = $1
+      ORDER BY ipi.product_name
     `, [id]);
 
     res.json({ 
@@ -153,6 +160,7 @@ router.get('/physical/:id', authMiddleware, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 /* ─────────────────────────────────────────────
    PUT /api/inventory/physical/:id/items/:itemId
@@ -278,6 +286,11 @@ router.get('/closed', authMiddleware, async (req, res) => {
             'id', ipi.id,
             'product_id', ipi.product_id,
             'product_name', ipi.product_name,
+            'product_code', p.code,
+            'product_barcode', p.barcode,
+            'product_description', p.description,
+            'category_id', p.category_id,
+            'category_name', c.name,
             'system_stock', ipi.system_stock,
             'counted_stock', ipi.counted_stock,
             'difference', ipi.difference,
@@ -286,6 +299,8 @@ router.get('/closed', authMiddleware, async (req, res) => {
         ) as items
       FROM "${schema}".inventory_physical ip
       LEFT JOIN "${schema}".inventory_physical_items ipi ON ipi.inventory_id = ip.id
+      LEFT JOIN "${schema}".products p ON p.id = ipi.product_id
+      LEFT JOIN "${schema}".categories c ON c.id = p.category_id
       WHERE ip.status = 'closed'
       GROUP BY ip.id
       ORDER BY ip.closed_date DESC, ip.closed_time DESC
@@ -321,17 +336,24 @@ router.get('/closed/:id', authMiddleware, async (req, res) => {
 
     const items = await query(`
       SELECT 
-        id, 
-        product_id, 
-        product_name, 
-        system_stock, 
-        counted_stock, 
-        difference, 
-        status,
-        updated_at
-      FROM "${schema}".inventory_physical_items
-      WHERE inventory_id = $1
-      ORDER BY product_name
+        ipi.id, 
+        ipi.product_id, 
+        ipi.product_name, 
+        ipi.system_stock, 
+        ipi.counted_stock, 
+        ipi.difference, 
+        ipi.status,
+        ipi.updated_at,
+        p.code AS product_code,
+        p.barcode AS product_barcode,
+        p.description AS product_description,
+        p.category_id,
+        c.name AS category_name
+      FROM "${schema}".inventory_physical_items ipi
+      LEFT JOIN "${schema}".products p ON p.id = ipi.product_id
+      LEFT JOIN "${schema}".categories c ON c.id = p.category_id
+      WHERE ipi.inventory_id = $1
+      ORDER BY ipi.product_name
     `, [id]);
 
     res.json({ 
@@ -344,10 +366,7 @@ router.get('/closed/:id', authMiddleware, async (req, res) => {
   }
 });
 
-/* ─────────────────────────────────────────────
-   POST /api/inventory/closed/:id/apply
-   Aplicar ajustes de inventario cerrado
-───────────────────────────────────────────── */
+
 /* ─────────────────────────────────────────────
    POST /api/inventory/closed/:id/apply
    Aplicar ajustes de inventario cerrado
