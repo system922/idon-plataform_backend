@@ -81,10 +81,6 @@ router.get('/full-closing', authMiddleware, businessContextMiddleware, async (re
   }
 });
 
-/**
-* GET /api/pos/cash-register/summary?date=YYYY-MM-DD
-* Trae el resumen (ventas por método como array, propinas, comandas, gastos)
-*/
 // ===============================
 // 📊 SUMMARY
 // ===============================
@@ -175,7 +171,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 });
 
 // ===============================
-// POST /api/pos/cash-register/closing
+// 📦 POST /api/pos/cash-register/closing - CIERRE COMPLETO CON INVENTARIO
 // ===============================
 router.post('/closing', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
@@ -202,13 +198,17 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
       expenses_total,
       total_extras,
       apertura_total,
-      total_esperado
+      total_esperado,
+      process_inventory = true // Flag para controlar si se procesa inventario
     } = req.body;
 
     const closingDate = date || ecuadorToday();
     const userId = closing_user_id || req.user?.id || req.user?.userId;
+    const TZ = 'America/Guayaquil';
 
+    // ===============================
     // ✅ VERIFICAR SI YA EXISTE CIERRE PARA ESTE USUARIO Y FECHA
+    // ===============================
     const existingClose = await query(
       `SELECT id FROM "${schema}".cash_register_closing 
        WHERE closing_date = $1 AND closing_user_id = $2
@@ -218,7 +218,8 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
 
     if (existingClose.rows.length > 0) {
       return res.status(409).json({ 
-        error: 'Ya existe un cierre de caja para hoy para este usuario'
+        error: 'Ya existe un cierre de caja para hoy para este usuario',
+        closing_id: existingClose.rows[0].id
       });
     }
 
@@ -265,9 +266,9 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
     const diffNet = netCounted - netSystem;
 
     // ===============================
-    // 💾 INSERT - SOLO CON closing_user_id
+    // 💾 INSERT - CIERRE DE CAJA
     // ===============================
-    const result = await query(
+    const closingResult = await query(
       `
       INSERT INTO "${schema}".cash_register_closing (
         closing_user_id,
@@ -356,117 +357,715 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
       ]
     );
 
-    console.log("✅ CIERRE GUARDADO EXITOSAMENTE - Usuario ID:", userId);
-    res.status(201).json(result.rows[0]);
+    const closingData = closingResult.rows[0];
+    console.log("✅ CIERRE GUARDADO EXITOSAMENTE - ID:", closingData.id);
+
+    // ===============================
+    // 📦 PROCESAR MOVIMIENTOS DE INVENTARIO
+    // ===============================
+    let inventoryMovements = [];
+    let inventoryProcessed = false;
+    let inventoryError = null;
+
+    if (process_inventory) {
+      try {
+        // Verificar si ya se procesaron movimientos para esta fecha
+        const movementsCheck = await query(
+          `
+          SELECT COUNT(*) as count 
+          FROM "${schema}".inventory_movements 
+          WHERE DATE(created_at AT TIME ZONE '${TZ}') = $1
+          AND type = 'venta'
+          `,
+          [closingDate]
+        );
+
+        if (parseInt(movementsCheck.rows[0].count) === 0) {
+          // Obtener todas las facturas del día con sus items
+          const invoicesResult = await query(
+            `
+            SELECT 
+              ei.id AS invoice_id,
+              ei.invoice_number,
+              oi.product_id,
+              oi.quantity,
+              oi.product_name,
+              oi.unit_price,
+              oi.line_total,
+              oi.tax_rate,
+              oi.iva_amount
+            FROM "${schema}".einvoices ei
+            INNER JOIN "${schema}".pos_orders o ON o.id = ei.order_id
+            INNER JOIN "${schema}".pos_order_items oi ON oi.order_id = o.id
+            WHERE 
+              DATE(ei.emission_date AT TIME ZONE '${TZ}') = $1
+              AND ei.status IN ('completada', 'emitida')
+              AND o.status IN ('paid', 'completed')
+            `,
+            [closingDate]
+          );
+
+          if (invoicesResult.rows.length > 0) {
+            // Agrupar por producto
+            const productMovements = new Map();
+
+            invoicesResult.rows.forEach(row => {
+              const productId = row.product_id;
+              const quantity = parseInt(row.quantity) || 0;
+              const invoiceNumber = row.invoice_number || 'S/N';
+
+              if (productMovements.has(productId)) {
+                const existing = productMovements.get(productId);
+                existing.total_quantity += quantity;
+                existing.invoices.push(invoiceNumber);
+                existing.total_line_total += parseFloat(row.line_total || 0);
+                existing.items_count += 1;
+              } else {
+                productMovements.set(productId, {
+                  product_id: productId,
+                  product_name: row.product_name || 'Producto',
+                  total_quantity: quantity,
+                  unit_price: parseFloat(row.unit_price) || 0,
+                  total_line_total: parseFloat(row.line_total) || 0,
+                  invoices: [invoiceNumber],
+                  items_count: 1
+                });
+              }
+            });
+
+            // Crear movimientos de inventario
+            for (const [productId, data] of productMovements) {
+              // Obtener el costo actual del producto desde la tabla products
+              const productCost = await query(
+                `
+                SELECT unit_cost, stock, name 
+                FROM "${schema}".products 
+                WHERE id = $1
+                `,
+                [productId]
+              );
+
+              const unitCost = productCost.rows[0]?.unit_cost || data.unit_price || 0;
+              const productName = productCost.rows[0]?.name || data.product_name || 'Producto';
+              const currentStock = productCost.rows[0]?.stock || 0;
+              
+              // Crear nota con números de factura
+              const invoiceNumbers = data.invoices.join(', #');
+              const notes = `Factura #${invoiceNumbers}`;
+              
+              // Cantidad negativa para ventas (salida de inventario)
+              const quantity = -Math.abs(data.total_quantity);
+
+              // Insertar movimiento de inventario con referencia al cierre
+              const movementResult = await query(
+                `
+                INSERT INTO "${schema}".inventory_movements (
+                  product_id,
+                  type,
+                  quantity,
+                  unit_cost,
+                  reference_id,
+                  notes,
+                  applied,
+                  created_at
+                )
+                VALUES (
+                  $1, $2, $3, $4, $5, $6, $7, NOW()
+                )
+                RETURNING *
+                `,
+                [
+                  productId,
+                  'venta',
+                  quantity,
+                  unitCost,
+                  closingData.id, // Referencia al ID del cierre
+                  notes,
+                  true // applied = true porque ya está aplicado
+                ]
+              );
+
+              inventoryMovements.push(movementResult.rows[0]);
+
+              // Actualizar stock del producto
+              await query(
+                `
+                UPDATE "${schema}".products
+                SET stock = stock - $1,
+                    updated_at = NOW()
+                WHERE id = $2
+                `,
+                [Math.abs(data.total_quantity), productId]
+              );
+
+              console.log(`✅ Movimiento creado para ${productName}: ${quantity} unidades (${data.invoices.length} facturas)`);
+            }
+
+            inventoryProcessed = true;
+            console.log(`✅ ${inventoryMovements.length} movimientos de inventario creados para ${closingDate}`);
+          } else {
+            console.log(`ℹ️ No hay facturas completadas para procesar en ${closingDate}`);
+          }
+        } else {
+          console.log(`ℹ️ Ya existen movimientos de inventario para ${closingDate}`);
+          inventoryProcessed = true;
+        }
+      } catch (inventoryErr) {
+        console.error("⚠️ Error al procesar movimientos de inventario:", inventoryErr);
+        inventoryError = inventoryErr.message;
+        // No fallamos el cierre si el inventario falla, solo registramos el error
+      }
+    }
+
+    // ===============================
+    // 📤 RESPUESTA COMPLETA
+    // ===============================
+    res.status(201).json({
+      success: true,
+      closing: closingData,
+      inventory: {
+        processed: inventoryProcessed,
+        movements_created: inventoryMovements.length,
+        movements: inventoryMovements,
+        error: inventoryError
+      },
+      message: inventoryError 
+        ? 'Cierre completado con errores en inventario' 
+        : 'Cierre completado exitosamente'
+    });
 
   } catch (err) {
     console.error("❌ ERROR CLOSING:", err);
     res.status(500).json({
-      error: err.message
+      success: false,
+      error: err.message,
+      details: 'Error al procesar el cierre de caja'
     });
   }
 });
 
-
-
-/**
- * GET /api/pos/cash-register/opening?date=YYYY-MM-DD
- * Devuelve la apertura del día para el usuario autenticado.
- * Si no existe → 404 con {}.
- */
-router.get('/opening', authMiddleware, businessContextMiddleware, async (req, res) => {
+// ===============================
+// 📦 POST /api/pos/cash-register/process-inventory
+// Procesar inventario manualmente (útil si falló en el cierre)
+// ===============================
+router.post('/process-inventory', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
 
-    const date   = req.query.date || ecuadorToday();
+    const { date, force = false, closing_id = null } = req.body;
+    const closingDate = date || ecuadorToday();
+    const TZ = 'America/Guayaquil';
 
-    // 🔥 FIX: Buscar apertura de caja POR FECHA, no por usuario
-    // Una sola apertura por día para todos los usuarios
+    // Si no se proporciona closing_id, buscar el cierre de la fecha
+    let closingId = closing_id;
+    if (!closingId) {
+      const closingRes = await query(
+        `
+        SELECT id FROM "${schema}".cash_register_closing
+        WHERE closing_date = $1
+        ORDER BY created_at DESC
+        LIMIT 1
+        `,
+        [closingDate]
+      );
+      
+      if (closingRes.rows.length === 0) {
+        return res.status(404).json({
+          error: 'No se encontró un cierre para esta fecha'
+        });
+      }
+      closingId = closingRes.rows[0].id;
+    }
+
+    // Verificar si ya se procesaron movimientos
+    const movementsCheck = await query(
+      `
+      SELECT COUNT(*) as count 
+      FROM "${schema}".inventory_movements 
+      WHERE reference_id = $1
+      AND type = 'venta'
+      `,
+      [closingId]
+    );
+
+    if (parseInt(movementsCheck.rows[0].count) > 0 && !force) {
+      return res.status(409).json({
+        error: 'Ya existen movimientos de inventario para este cierre',
+        count: parseInt(movementsCheck.rows[0].count)
+      });
+    }
+
+    // Si force es true, eliminar movimientos existentes
+    if (force && parseInt(movementsCheck.rows[0].count) > 0) {
+      // Obtener movimientos para revertir stock
+      const existingMovements = await query(
+        `
+        SELECT * FROM "${schema}".inventory_movements
+        WHERE reference_id = $1
+        AND type = 'venta'
+        `,
+        [closingId]
+      );
+
+      // Revertir stock
+      for (const movement of existingMovements.rows) {
+        await query(
+          `
+          UPDATE "${schema}".products
+          SET stock = stock + $1,
+              updated_at = NOW()
+          WHERE id = $2
+          `,
+          [Math.abs(movement.quantity), movement.product_id]
+        );
+      }
+
+      // Eliminar movimientos
+      await query(
+        `
+        DELETE FROM "${schema}".inventory_movements
+        WHERE reference_id = $1
+        AND type = 'venta'
+        `,
+        [closingId]
+      );
+
+      console.log(`🔄 Movimientos eliminados para reprocesar`);
+    }
+
+    // Obtener todas las facturas del día
+    const invoicesResult = await query(
+      `
+      SELECT 
+        ei.id AS invoice_id,
+        ei.invoice_number,
+        oi.product_id,
+        oi.quantity,
+        oi.product_name,
+        oi.unit_price,
+        oi.line_total,
+        oi.tax_rate,
+        oi.iva_amount
+      FROM "${schema}".einvoices ei
+      INNER JOIN "${schema}".pos_orders o ON o.id = ei.order_id
+      INNER JOIN "${schema}".pos_order_items oi ON oi.order_id = o.id
+      WHERE 
+        DATE(ei.emission_date AT TIME ZONE '${TZ}') = $1
+        AND ei.status IN ('completada', 'emitida')
+        AND o.status IN ('paid', 'completed')
+      `,
+      [closingDate]
+    );
+
+    if (invoicesResult.rows.length === 0) {
+      return res.status(404).json({
+        message: 'No hay facturas completadas para procesar en esta fecha'
+      });
+    }
+
+    // Agrupar por producto
+    const productMovements = new Map();
+
+    invoicesResult.rows.forEach(row => {
+      const productId = row.product_id;
+      const quantity = parseInt(row.quantity) || 0;
+      const invoiceNumber = row.invoice_number || 'S/N';
+
+      if (productMovements.has(productId)) {
+        const existing = productMovements.get(productId);
+        existing.total_quantity += quantity;
+        existing.invoices.push(invoiceNumber);
+        existing.total_line_total += parseFloat(row.line_total || 0);
+        existing.items_count += 1;
+      } else {
+        productMovements.set(productId, {
+          product_id: productId,
+          product_name: row.product_name || 'Producto',
+          total_quantity: quantity,
+          unit_price: parseFloat(row.unit_price) || 0,
+          total_line_total: parseFloat(row.line_total) || 0,
+          invoices: [invoiceNumber],
+          items_count: 1
+        });
+      }
+    });
+
+    // Crear movimientos
+    const movements = [];
+    const productsUpdated = [];
+
+    for (const [productId, data] of productMovements) {
+      // Obtener costo actual
+      const productCost = await query(
+        `
+        SELECT unit_cost, stock, name 
+        FROM "${schema}".products 
+        WHERE id = $1
+        `,
+        [productId]
+      );
+
+      const unitCost = productCost.rows[0]?.unit_cost || data.unit_price || 0;
+      const productName = productCost.rows[0]?.name || data.product_name || 'Producto';
+      const currentStock = productCost.rows[0]?.stock || 0;
+
+      // Crear nota con facturas
+      const invoiceNumbers = data.invoices.join(', #');
+      const notes = `Factura #${invoiceNumbers}`;
+      const quantity = -Math.abs(data.total_quantity);
+
+      // Insertar movimiento
+      const movementResult = await query(
+        `
+        INSERT INTO "${schema}".inventory_movements (
+          product_id,
+          type,
+          quantity,
+          unit_cost,
+          reference_id,
+          notes,
+          applied,
+          created_at
+        )
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7, NOW()
+        )
+        RETURNING *
+        `,
+        [
+          productId,
+          'venta',
+          quantity,
+          unitCost,
+          closingId,
+          notes,
+          true
+        ]
+      );
+
+      movements.push(movementResult.rows[0]);
+
+      // Actualizar stock
+      await query(
+        `
+        UPDATE "${schema}".products
+        SET stock = stock - $1,
+            updated_at = NOW()
+        WHERE id = $2
+        `,
+        [Math.abs(data.total_quantity), productId]
+      );
+
+      productsUpdated.push({
+        product_id: productId,
+        product_name: productName,
+        quantity_sold: Math.abs(data.total_quantity),
+        previous_stock: currentStock,
+        new_stock: currentStock - Math.abs(data.total_quantity),
+        unit_cost: unitCost
+      });
+    }
+
+    // Calcular resumen
+    const totalInvoices = new Set(invoicesResult.rows.map(r => r.invoice_id)).size;
+    const totalProducts = productMovements.size;
+    const totalUnits = Array.from(productMovements.values()).reduce((sum, d) => sum + d.total_quantity, 0);
+
+    res.status(201).json({
+      success: true,
+      message: 'Movimientos de inventario procesados exitosamente',
+      summary: {
+        date: closingDate,
+        closing_id: closingId,
+        total_invoices: totalInvoices,
+        total_products: totalProducts,
+        total_units_sold: totalUnits,
+        movements_created: movements.length
+      },
+      movements: movements,
+      products_updated: productsUpdated
+    });
+
+  } catch (err) {
+    console.error("❌ ERROR PROCESSING INVENTORY:", err);
+    res.status(500).json({
+      success: false,
+      error: err.message,
+      details: 'Error al procesar movimientos de inventario'
+    });
+  }
+});
+
+// ===============================
+// 📊 GET /api/pos/cash-register/inventory-movements
+// Obtener movimientos de inventario por fecha
+// ===============================
+router.get('/inventory-movements', authMiddleware, businessContextMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
+    const date = req.query.date || ecuadorToday();
+    const TZ = 'America/Guayaquil';
+
     const result = await query(
-      `SELECT * FROM "${schema}".cash_register_openings
-       WHERE date = $1
-       ORDER BY created_at ASC
-       LIMIT 1`,
+      `
+      SELECT 
+        im.id,
+        im.product_id,
+        p.name AS product_name,
+        p.code AS product_code,
+        p.unit_cost AS current_cost,
+        im.type,
+        im.quantity,
+        im.unit_cost AS movement_cost,
+        im.notes,
+        im.applied,
+        im.reference_id,
+        im.created_at,
+        (im.quantity * im.unit_cost) AS total_cost,
+        CASE 
+          WHEN im.quantity < 0 THEN 'SALIDA'
+          WHEN im.quantity > 0 THEN 'ENTRADA'
+          ELSE 'SIN MOVIMIENTO'
+        END AS movement_type,
+        crc.closing_date,
+        crc.closing_user_id
+      FROM "${schema}".inventory_movements im
+      LEFT JOIN "${schema}".products p ON p.id = im.product_id
+      LEFT JOIN "${schema}".cash_register_closing crc ON crc.id = im.reference_id
+      WHERE DATE(im.created_at AT TIME ZONE '${TZ}') = $1
+        AND im.type = 'venta'
+      ORDER BY im.created_at DESC
+      `,
       [date]
     );
 
-    if (result.rows.length === 0) return res.status(404).json({});
-    res.json(result.rows[0]);
+    // Calcular totales
+    const totalProducts = result.rows.length;
+    const totalUnits = result.rows.reduce((sum, row) => sum + Math.abs(row.quantity || 0), 0);
+    const totalCost = result.rows.reduce((sum, row) => sum + Math.abs(row.total_cost || 0), 0);
+
+    // Agrupar por producto para resumen
+    const productSummary = {};
+    result.rows.forEach(row => {
+      const key = row.product_id;
+      if (!productSummary[key]) {
+        productSummary[key] = {
+          product_id: row.product_id,
+          product_name: row.product_name,
+          product_code: row.product_code,
+          total_quantity: 0,
+          total_cost: 0,
+          invoices: [],
+          unit_cost: row.movement_cost
+        };
+      }
+      productSummary[key].total_quantity += Math.abs(row.quantity || 0);
+      productSummary[key].total_cost += Math.abs(row.total_cost || 0);
+      
+      // Extraer números de factura de notes
+      if (row.notes) {
+        const matches = row.notes.match(/#(\d+)/g);
+        if (matches) {
+          matches.forEach(m => {
+            const num = m.replace('#', '');
+            if (!productSummary[key].invoices.includes(num)) {
+              productSummary[key].invoices.push(num);
+            }
+          });
+        }
+      }
+    });
+
+    res.json({
+      success: true,
+      date: date,
+      movements: result.rows,
+      summary: {
+        total_products: totalProducts,
+        total_units_sold: totalUnits,
+        total_cost: parseFloat(totalCost.toFixed(2))
+      },
+      product_summary: Object.values(productSummary)
+    });
+
   } catch (err) {
+    console.error("❌ ERROR GETTING INVENTORY MOVEMENTS:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-/**
- * POST /api/pos/cash-register/opening
- * Crea la apertura del día. Solo una vez por usuario/día.
- */
-router.post('/opening', authMiddleware, businessContextMiddleware, async (req, res) => {
+// ===============================
+// 🔍 GET /api/pos/cash-register/check-inventory-movements
+// Verificar movimientos de inventario
+// ===============================
+router.get('/check-inventory-movements', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    if (!schema) return res.status(400).json({ error: 'Business context required' });
-
-    const userId   = req.user?.id || req.user?.userId || 'unknown';
-    const userName = [req.user?.firstName, req.user?.lastName].filter(Boolean).join(' ')
-                     || req.user?.email || userId;
-    const date     = req.body.date || ecuadorToday();
-
-    // 🔥 FIX: Verificar que no exista apertura POR FECHA
-    // No por usuario. Una sola apertura por día para todos.
-    const existing = await query(
-      `SELECT id FROM "${schema}".cash_register_openings WHERE date = $1 LIMIT 1`,
-      [date]
-    );
-    if (existing.rows.length > 0) {
-      return res.status(409).json({ error: 'Ya existe una apertura de caja para hoy' });
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
     }
 
-    // Parsing de denominaciones asegurando Number()
-    const {
-      moneda_001 = 0, moneda_005 = 0, moneda_010 = 0,
-      moneda_025 = 0, moneda_050 = 0, moneda_100 = 0,
-      billete_1  = 0, billete_5  = 0, billete_10  = 0,
-      billete_20 = 0, billete_50 = 0, billete_100 = 0,
-      monto_banca = 0, observaciones = null,
-    } = req.body;
-
-    // Calcular total de efectivo por denominación (si está mal escrito, lo fuerza a 0)
-    const totalEfectivo =
-      Number(moneda_001) * 0.01 + Number(moneda_005) * 0.05 + Number(moneda_010) * 0.10 +
-      Number(moneda_025) * 0.25 + Number(moneda_050) * 0.50 + Number(moneda_100) * 1.00 +
-      Number(billete_1)  * 1    + Number(billete_5)  * 5    + Number(billete_10)  * 10   +
-      Number(billete_20) * 20   + Number(billete_50) * 50   + Number(billete_100) * 100;
-
-    const totalInicial = totalEfectivo + Number(monto_banca);
+    const date = req.query.date || ecuadorToday();
+    const TZ = 'America/Guayaquil';
 
     const result = await query(
-      `INSERT INTO "${schema}".cash_register_openings (
-        user_id, user_name, date,
-        moneda_001, moneda_005, moneda_010, moneda_025, moneda_050, moneda_100,
-        billete_1,  billete_5,  billete_10, billete_20, billete_50, billete_100,
-        total_efectivo, monto_banca, total_inicial, observaciones
-      ) VALUES (
-        $1,  $2,  $3,
-        $4,  $5,  $6,  $7,  $8,  $9,
-        $10, $11, $12, $13, $14, $15,
-        $16, $17, $18, $19
-      ) RETURNING *`,
-      [
-        userId, userName, date,
-        Number(moneda_001), Number(moneda_005), Number(moneda_010),
-        Number(moneda_025), Number(moneda_050), Number(moneda_100),
-        Number(billete_1),  Number(billete_5),  Number(billete_10),
-        Number(billete_20), Number(billete_50), Number(billete_100),
-        parseFloat(totalEfectivo.toFixed(2)),
-        Number(monto_banca),
-        parseFloat(totalInicial.toFixed(2)),
-        observaciones,
-      ]
+      `
+      SELECT 
+        COUNT(*) as total_movements,
+        COUNT(DISTINCT product_id) as products_affected,
+        SUM(ABS(quantity)) as total_units,
+        SUM(ABS(quantity * unit_cost)) as total_cost,
+        array_agg(DISTINCT product_id) as product_ids,
+        array_agg(DISTINCT reference_id) as closing_ids
+      FROM "${schema}".inventory_movements
+      WHERE DATE(created_at AT TIME ZONE '${TZ}') = $1
+        AND type = 'venta'
+      `,
+      [date]
     );
 
-    res.status(201).json(result.rows[0]);
+    const data = result.rows[0];
+    res.json({
+      success: true,
+      date: date,
+      has_movements: parseInt(data.total_movements || 0) > 0,
+      total_movements: parseInt(data.total_movements || 0),
+      products_affected: parseInt(data.products_affected || 0),
+      total_units: parseInt(data.total_units || 0),
+      total_cost: parseFloat(data.total_cost || 0).toFixed(2),
+      product_ids: data.product_ids || [],
+      closing_ids: data.closing_ids || []
+    });
+
   } catch (err) {
+    console.error("❌ ERROR CHECKING INVENTORY MOVEMENTS:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===============================
+// 🔄 POST /api/pos/cash-register/revert-inventory
+// Revertir movimientos de inventario
+// ===============================
+router.post('/revert-inventory', authMiddleware, businessContextMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
+    const { closing_id, date, confirm = false } = req.body;
+    const TZ = 'America/Guayaquil';
+
+    if (!closing_id && !date) {
+      return res.status(400).json({ 
+        error: 'Se requiere closing_id o date para revertir' 
+      });
+    }
+
+    // Obtener movimientos a revertir
+    let movementsQuery;
+    let params;
+    let identifier;
+
+    if (closing_id) {
+      movementsQuery = `
+        SELECT * FROM "${schema}".inventory_movements
+        WHERE reference_id = $1
+        AND type = 'venta'
+      `;
+      params = [closing_id];
+      identifier = `cierre ${closing_id}`;
+    } else if (date) {
+      movementsQuery = `
+        SELECT * FROM "${schema}".inventory_movements
+        WHERE DATE(created_at AT TIME ZONE '${TZ}') = $1
+        AND type = 'venta'
+      `;
+      params = [date];
+      identifier = `fecha ${date}`;
+    }
+
+    const movements = await query(movementsQuery, params);
+
+    if (movements.rows.length === 0) {
+      return res.status(404).json({ 
+        message: `No se encontraron movimientos para ${identifier}` 
+      });
+    }
+
+    // Si no se confirma, mostrar resumen antes de revertir
+    if (!confirm) {
+      const summary = {
+        total_movements: movements.rows.length,
+        products: [],
+        total_units: 0
+      };
+
+      const productMap = new Map();
+      movements.rows.forEach(m => {
+        const pid = m.product_id;
+        if (!productMap.has(pid)) {
+          productMap.set(pid, {
+            product_id: pid,
+            quantity: 0
+          });
+        }
+        productMap.get(pid).quantity += Math.abs(m.quantity);
+        summary.total_units += Math.abs(m.quantity);
+      });
+
+      summary.products = Array.from(productMap.values());
+
+      return res.json({
+        confirm_required: true,
+        message: `Se encontraron ${movements.rows.length} movimientos para revertir`,
+        summary: summary,
+        movements: movements.rows
+      });
+    }
+
+    // Revertir movimientos (eliminar y restaurar stock)
+    const reverted = [];
+    for (const movement of movements.rows) {
+      // Restaurar stock
+      await query(
+        `
+        UPDATE "${schema}".products
+        SET stock = stock + $1,
+            updated_at = NOW()
+        WHERE id = $2
+        `,
+        [Math.abs(movement.quantity), movement.product_id]
+      );
+
+      // Eliminar movimiento
+      await query(
+        `
+        DELETE FROM "${schema}".inventory_movements
+        WHERE id = $1
+        `,
+        [movement.id]
+      );
+
+      reverted.push(movement);
+    }
+
+    res.json({
+      success: true,
+      message: `Se revirtieron ${reverted.length} movimientos de inventario`,
+      reverted: reverted
+    });
+
+  } catch (err) {
+    console.error("❌ ERROR REVERTING INVENTORY:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -508,10 +1107,10 @@ router.post('/income-extra', authMiddleware, businessContextMiddleware, async (r
   }
 });
 
-/**
- * POST /api/pos/cash-register/send-close-email
- * Envía el PDF del cierre de caja por email al propietario del negocio
- */
+// ===============================
+// 📧 POST /api/pos/cash-register/send-close-email
+// Envía el PDF del cierre de caja por email
+// ===============================
 router.post('/send-close-email', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
     const { pdfBase64, closingDate, totalVentas, totalContado, diferencia } = req.body;
@@ -590,6 +1189,99 @@ router.post('/send-close-email', authMiddleware, businessContextMiddleware, asyn
   } catch (err) {
     console.error('[SendCloseEmail]', err.message);
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ===============================
+// GET /api/pos/cash-register/opening
+// ===============================
+router.get('/opening', authMiddleware, businessContextMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const date   = req.query.date || ecuadorToday();
+
+    const result = await query(
+      `SELECT * FROM "${schema}".cash_register_openings
+       WHERE date = $1
+       ORDER BY created_at ASC
+       LIMIT 1`,
+      [date]
+    );
+
+    if (result.rows.length === 0) return res.status(404).json({});
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===============================
+// POST /api/pos/cash-register/opening
+// ===============================
+router.post('/opening', authMiddleware, businessContextMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const userId   = req.user?.id || req.user?.userId || 'unknown';
+    const userName = [req.user?.firstName, req.user?.lastName].filter(Boolean).join(' ')
+                     || req.user?.email || userId;
+    const date     = req.body.date || ecuadorToday();
+
+    const existing = await query(
+      `SELECT id FROM "${schema}".cash_register_openings WHERE date = $1 LIMIT 1`,
+      [date]
+    );
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ error: 'Ya existe una apertura de caja para hoy' });
+    }
+
+    const {
+      moneda_001 = 0, moneda_005 = 0, moneda_010 = 0,
+      moneda_025 = 0, moneda_050 = 0, moneda_100 = 0,
+      billete_1  = 0, billete_5  = 0, billete_10  = 0,
+      billete_20 = 0, billete_50 = 0, billete_100 = 0,
+      monto_banca = 0, observaciones = null,
+    } = req.body;
+
+    const totalEfectivo =
+      Number(moneda_001) * 0.01 + Number(moneda_005) * 0.05 + Number(moneda_010) * 0.10 +
+      Number(moneda_025) * 0.25 + Number(moneda_050) * 0.50 + Number(moneda_100) * 1.00 +
+      Number(billete_1)  * 1    + Number(billete_5)  * 5    + Number(billete_10)  * 10   +
+      Number(billete_20) * 20   + Number(billete_50) * 50   + Number(billete_100) * 100;
+
+    const totalInicial = totalEfectivo + Number(monto_banca);
+
+    const result = await query(
+      `INSERT INTO "${schema}".cash_register_openings (
+        user_id, user_name, date,
+        moneda_001, moneda_005, moneda_010, moneda_025, moneda_050, moneda_100,
+        billete_1,  billete_5,  billete_10, billete_20, billete_50, billete_100,
+        total_efectivo, monto_banca, total_inicial, observaciones
+      ) VALUES (
+        $1,  $2,  $3,
+        $4,  $5,  $6,  $7,  $8,  $9,
+        $10, $11, $12, $13, $14, $15,
+        $16, $17, $18, $19
+      ) RETURNING *`,
+      [
+        userId, userName, date,
+        Number(moneda_001), Number(moneda_005), Number(moneda_010),
+        Number(moneda_025), Number(moneda_050), Number(moneda_100),
+        Number(billete_1),  Number(billete_5),  Number(billete_10),
+        Number(billete_20), Number(billete_50), Number(billete_100),
+        parseFloat(totalEfectivo.toFixed(2)),
+        Number(monto_banca),
+        parseFloat(totalInicial.toFixed(2)),
+        observaciones,
+      ]
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
