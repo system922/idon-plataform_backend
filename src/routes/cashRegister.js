@@ -173,374 +173,157 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 // ===============================
 // 📦 POST /api/pos/cash-register/closing - CIERRE COMPLETO CON INVENTARIO
 // ===============================
-router.post('/closing', authMiddleware, businessContextMiddleware, async (req, res) => {
+// ===============================
+// 🔍 GET /api/pos/cash-register/debug-inventory
+// Diagnóstico de inventario
+// ===============================
+router.get('/debug-inventory', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     if (!schema) {
       return res.status(400).json({ error: 'Business context required' });
     }
 
-    const {
-      efectivoFisico,
-      transferenciaFisico,
-      tarjetaFisico,
-      propinaFisico,
-      date,
-      remarks,
-      cashDenominationCount,
-      coinsDenominationCount,
-      closing_user_id,
-      cash_system,
-      transfer_system,
-      card_system,
-      total_system,
-      orders_system,
-      expenses_total,
-      total_extras,
-      apertura_total,
-      total_esperado,
-      process_inventory = true // Flag para controlar si se procesa inventario
-    } = req.body;
-
-    const closingDate = date || ecuadorToday();
-    const userId = closing_user_id || req.user?.id || req.user?.userId;
+    const date = req.query.date || ecuadorToday();
     const TZ = 'America/Guayaquil';
 
-    // ===============================
-    // ✅ VERIFICAR SI YA EXISTE CIERRE PARA ESTE USUARIO Y FECHA
-    // ===============================
-    const existingClose = await query(
-      `SELECT id FROM "${schema}".cash_register_closing 
-       WHERE closing_date = $1 AND closing_user_id = $2
-       LIMIT 1`,
-      [closingDate, userId]
-    );
+    const results = {};
 
-    if (existingClose.rows.length > 0) {
-      return res.status(409).json({ 
-        error: 'Ya existe un cierre de caja para hoy para este usuario',
-        closing_id: existingClose.rows[0].id
-      });
-    }
-
-    // ===============================
-    // 📊 FUNCIONES HELPER
-    // ===============================
-    const n = (v) => {
-      const num = Number(v);
-      return isNaN(num) ? 0 : num;
-    };
-
-    const safe = (v) => (v == null || isNaN(v) ? 0 : v);
-
-    // ===============================
-    // 📊 CALCULAR DIFERENCIAS
-    // ===============================
-    const cashSystem = n(cash_system || 0);
-    const transferSystem = n(transfer_system || 0);
-    const cardSystem = n(card_system || 0);
-    const totalSystem = n(total_system || 0);
-    const ordersSystem = n(orders_system || 0);
-    const expensesTotal = n(expenses_total || 0);
-    const totalExtras = n(total_extras || 0);
-    const aperturaTotal = n(apertura_total || 0);
-
-    const cashCounted = n(efectivoFisico || 0);
-    const transferCounted = n(transferenciaFisico || 0);
-    const cardCounted = n(tarjetaFisico || 0);
-    const tipCounted = n(propinaFisico || 0);
-
-    // ===============================
-    // 🧮 CÁLCULOS
-    // ===============================
-    const diffCash = cashCounted - cashSystem;
-    const diffTransfer = transferCounted - transferSystem;
-    const diffCard = cardCounted - cardSystem;
-    const diffOrders = 0 - ordersSystem;
-
-    const totalCounted = cashCounted + transferCounted + cardCounted;
-    const diffTotal = totalCounted - totalSystem;
-
-    const netSystem = totalSystem - expensesTotal;
-    const netCounted = totalCounted - expensesTotal;
-    const diffNet = netCounted - netSystem;
-
-    // ===============================
-    // 💾 INSERT - CIERRE DE CAJA
-    // ===============================
-    const closingResult = await query(
+    // 1. Verificar órdenes paid del día
+    const ordersPaid = await query(
       `
-      INSERT INTO "${schema}".cash_register_closing (
-        closing_user_id,
-        closing_date,
-        closing_time,
-
-        cash_counted,
-        cash_system,
-        diff_cash,
-
-        transfer_counted,
-        transfer_system,
-        diff_transfer,
-
-        card_counted,
-        card_system,
-        diff_card,
-
-        orders_counted,
-        orders_system,
-        diff_orders,
-
-        extras,
-        expenses_total,
-
-        total_counted,
-        total_system,
-        diff_total,
-
-        net_system,
-        net_counted,
-        diff_net,
-
-        remarks,
+      SELECT 
+        id,
+        order_number,
+        status,
+        customer_name,
+        total,
         created_at
-      )
-      VALUES (
-        $1, $2, NOW(),
-        $3, $4, $5,
-        $6, $7, $8,
-        $9, $10, $11,
-        $12, $13, $14,
-        $15, $16,
-        $17, $18, $19,
-        $20, $21, $22,
-        $23, NOW()
-      )
-      RETURNING *
+      FROM "${schema}".pos_orders
+      WHERE DATE(created_at AT TIME ZONE '${TZ}') = $1
+        AND status = 'paid'
       `,
-      [
-        userId,
-        closingDate,
-
-        safe(cashCounted),
-        safe(cashSystem),
-        safe(diffCash),
-
-        safe(transferCounted),
-        safe(transferSystem),
-        safe(diffTransfer),
-
-        safe(cardCounted),
-        safe(cardSystem),
-        safe(diffCard),
-
-        safe(0), // orders_counted
-        safe(ordersSystem),
-        safe(diffOrders),
-
-        JSON.stringify({
-          cash_denomination: cashDenominationCount || {},
-          coins_denomination: coinsDenominationCount || {},
-          propina: tipCounted
-        }),
-        safe(expensesTotal),
-
-        safe(totalCounted),
-        safe(totalSystem),
-        safe(diffTotal),
-
-        safe(netSystem),
-        safe(netCounted),
-        safe(diffNet),
-
-        remarks || null
-      ]
+      [date]
     );
+    results.orders_paid = ordersPaid.rows;
+    results.orders_paid_count = ordersPaid.rows.length;
 
-    const closingData = closingResult.rows[0];
-    console.log("✅ CIERRE GUARDADO EXITOSAMENTE - ID:", closingData.id);
+    // 2. Verificar facturas del día (todas)
+    const invoices = await query(
+      `
+      SELECT 
+        id,
+        invoice_number,
+        order_id,
+        status,
+        emission_date
+      FROM "${schema}".einvoices
+      WHERE DATE(emission_date AT TIME ZONE '${TZ}') = $1
+      `,
+      [date]
+    );
+    results.invoices = invoices.rows;
+    results.invoices_count = invoices.rows.length;
 
-    // ===============================
-    // 📦 PROCESAR MOVIMIENTOS DE INVENTARIO
-    // ===============================
-    let inventoryMovements = [];
-    let inventoryProcessed = false;
-    let inventoryError = null;
+    // 3. Verificar order_ids de facturas
+    const orderIdsFromInvoices = invoices.rows.map(row => row.order_id).filter(Boolean);
+    results.order_ids_from_invoices = orderIdsFromInvoices;
+    results.order_ids_from_invoices_count = orderIdsFromInvoices.length;
 
-    if (process_inventory) {
-      try {
-        // Verificar si ya se procesaron movimientos para esta fecha
-        const movementsCheck = await query(
-          `
-          SELECT COUNT(*) as count 
-          FROM "${schema}".inventory_movements 
-          WHERE DATE(created_at AT TIME ZONE '${TZ}') = $1
-          AND type = 'venta'
-          `,
-          [closingDate]
-        );
-
-        if (parseInt(movementsCheck.rows[0].count) === 0) {
-          // Obtener todas las facturas del día con sus items
-          const invoicesResult = await query(
-            `
-            SELECT 
-              ei.id AS invoice_id,
-              ei.invoice_number,
-              oi.product_id,
-              oi.quantity,
-              oi.product_name,
-              oi.unit_price,
-              oi.line_total,
-              oi.tax_rate,
-              oi.iva_amount
-            FROM "${schema}".einvoices ei
-            INNER JOIN "${schema}".pos_orders o ON o.id = ei.order_id
-            INNER JOIN "${schema}".pos_order_items oi ON oi.order_id = o.id
-            WHERE 
-              DATE(ei.emission_date AT TIME ZONE '${TZ}') = $1
-              AND ei.status IN ('completada', 'emitida')
-              AND o.status IN ('paid', 'completed')
-            `,
-            [closingDate]
-          );
-
-          if (invoicesResult.rows.length > 0) {
-            // Agrupar por producto
-            const productMovements = new Map();
-
-            invoicesResult.rows.forEach(row => {
-              const productId = row.product_id;
-              const quantity = parseInt(row.quantity) || 0;
-              const invoiceNumber = row.invoice_number || 'S/N';
-
-              if (productMovements.has(productId)) {
-                const existing = productMovements.get(productId);
-                existing.total_quantity += quantity;
-                existing.invoices.push(invoiceNumber);
-                existing.total_line_total += parseFloat(row.line_total || 0);
-                existing.items_count += 1;
-              } else {
-                productMovements.set(productId, {
-                  product_id: productId,
-                  product_name: row.product_name || 'Producto',
-                  total_quantity: quantity,
-                  unit_price: parseFloat(row.unit_price) || 0,
-                  total_line_total: parseFloat(row.line_total) || 0,
-                  invoices: [invoiceNumber],
-                  items_count: 1
-                });
-              }
-            });
-
-            // Crear movimientos de inventario
-            for (const [productId, data] of productMovements) {
-              // Obtener el costo actual del producto desde la tabla products
-              const productCost = await query(
-                `
-                SELECT unit_cost, stock, name 
-                FROM "${schema}".products 
-                WHERE id = $1
-                `,
-                [productId]
-              );
-
-              const unitCost = productCost.rows[0]?.unit_cost || data.unit_price || 0;
-              const productName = productCost.rows[0]?.name || data.product_name || 'Producto';
-              const currentStock = productCost.rows[0]?.stock || 0;
-              
-              // Crear nota con números de factura
-              const invoiceNumbers = data.invoices.join(', #');
-              const notes = `Factura #${invoiceNumbers}`;
-              
-              // Cantidad negativa para ventas (salida de inventario)
-              const quantity = -Math.abs(data.total_quantity);
-
-              // Insertar movimiento de inventario con referencia al cierre
-              const movementResult = await query(
-                `
-                INSERT INTO "${schema}".inventory_movements (
-                  product_id,
-                  type,
-                  quantity,
-                  unit_cost,
-                  reference_id,
-                  notes,
-                  applied,
-                  created_at
-                )
-                VALUES (
-                  $1, $2, $3, $4, $5, $6, $7, NOW()
-                )
-                RETURNING *
-                `,
-                [
-                  productId,
-                  'venta',
-                  quantity,
-                  unitCost,
-                  closingData.id, // Referencia al ID del cierre
-                  notes,
-                  true // applied = true porque ya está aplicado
-                ]
-              );
-
-              inventoryMovements.push(movementResult.rows[0]);
-
-              // Actualizar stock del producto
-              await query(
-                `
-                UPDATE "${schema}".products
-                SET stock = stock - $1,
-                    updated_at = NOW()
-                WHERE id = $2
-                `,
-                [Math.abs(data.total_quantity), productId]
-              );
-
-              console.log(`✅ Movimiento creado para ${productName}: ${quantity} unidades (${data.invoices.length} facturas)`);
-            }
-
-            inventoryProcessed = true;
-            console.log(`✅ ${inventoryMovements.length} movimientos de inventario creados para ${closingDate}`);
-          } else {
-            console.log(`ℹ️ No hay facturas completadas para procesar en ${closingDate}`);
-          }
-        } else {
-          console.log(`ℹ️ Ya existen movimientos de inventario para ${closingDate}`);
-          inventoryProcessed = true;
-        }
-      } catch (inventoryErr) {
-        console.error("⚠️ Error al procesar movimientos de inventario:", inventoryErr);
-        inventoryError = inventoryErr.message;
-        // No fallamos el cierre si el inventario falla, solo registramos el error
-      }
+    // 4. Verificar items de órdenes paid
+    if (ordersPaid.rows.length > 0) {
+      const orderIds = ordersPaid.rows.map(row => row.id);
+      const items = await query(
+        `
+        SELECT 
+          oi.order_id,
+          oi.product_id,
+          oi.product_name,
+          oi.quantity,
+          oi.unit_price,
+          oi.line_total,
+          o.order_number
+        FROM "${schema}".pos_order_items oi
+        INNER JOIN "${schema}".pos_orders o ON o.id = oi.order_id
+        WHERE oi.order_id = ANY($1::uuid[])
+        `,
+        [orderIds]
+      );
+      results.items_from_orders = items.rows;
+      results.items_from_orders_count = items.rows.length;
     }
 
-    // ===============================
-    // 📤 RESPUESTA COMPLETA
-    // ===============================
-    res.status(201).json({
+    // 5. Verificar items de facturas
+    if (orderIdsFromInvoices.length > 0) {
+      const items = await query(
+        `
+        SELECT 
+          oi.order_id,
+          oi.product_id,
+          oi.product_name,
+          oi.quantity,
+          oi.unit_price,
+          oi.line_total,
+          o.order_number
+        FROM "${schema}".pos_order_items oi
+        INNER JOIN "${schema}".pos_orders o ON o.id = oi.order_id
+        WHERE oi.order_id = ANY($1::uuid[])
+        `,
+        [orderIdsFromInvoices]
+      );
+      results.items_from_invoices = items.rows;
+      results.items_from_invoices_count = items.rows.length;
+    }
+
+    // 6. Verificar movimientos de inventario existentes
+    const movements = await query(
+      `
+      SELECT 
+        im.*,
+        p.name as product_name
+      FROM "${schema}".inventory_movements im
+      LEFT JOIN "${schema}".products p ON p.id = im.product_id
+      WHERE DATE(im.created_at AT TIME ZONE '${TZ}') = $1
+      `,
+      [date]
+    );
+    results.movements = movements.rows;
+    results.movements_count = movements.rows.length;
+
+    // 7. Verificar productos con stock
+    const products = await query(
+      `
+      SELECT 
+        id,
+        name,
+        unit_cost,
+        stock,
+        selling_price
+      FROM "${schema}".products
+      WHERE is_active = true
+      ORDER BY name
+      LIMIT 20
+      `
+    );
+    results.products = products.rows;
+
+    res.json({
       success: true,
-      closing: closingData,
-      inventory: {
-        processed: inventoryProcessed,
-        movements_created: inventoryMovements.length,
-        movements: inventoryMovements,
-        error: inventoryError
+      date: date,
+      summary: {
+        orders_paid: results.orders_paid_count,
+        invoices: results.invoices_count,
+        order_ids_from_invoices: results.order_ids_from_invoices_count,
+        items_from_orders: results.items_from_orders_count || 0,
+        items_from_invoices: results.items_from_invoices_count || 0,
+        movements: results.movements_count
       },
-      message: inventoryError 
-        ? 'Cierre completado con errores en inventario' 
-        : 'Cierre completado exitosamente'
+      results: results
     });
 
   } catch (err) {
-    console.error("❌ ERROR CLOSING:", err);
-    res.status(500).json({
-      success: false,
-      error: err.message,
-      details: 'Error al procesar el cierre de caja'
-    });
+    console.error("❌ ERROR DEBUG:", err);
+    res.status(500).json({ error: err.message });
   }
 });
 
