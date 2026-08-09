@@ -19,7 +19,6 @@ const router = express.Router();
 
 // ===============================
 // GET /api/pos/cash-register/full-closing?date=YYYY-MM-DD
-// Trae el cierre del día para el usuario autenticado
 // ===============================
 router.get('/full-closing', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
@@ -128,7 +127,6 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 
     console.log(`💰 VENTAS RESULT:`, ventasRes.rows);
 
-    // 💸 GASTOS
     const gastosRes = await query(
       `
       SELECT
@@ -171,11 +169,396 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 });
 
 // ===============================
-// 📦 POST /api/pos/cash-register/closing - CIERRE COMPLETO CON INVENTARIO
+// 📦 POST /closing - CIERRE COMPLETO CON INVENTARIO
 // ===============================
+router.post('/closing', authMiddleware, businessContextMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
+    const {
+      efectivoFisico,
+      transferenciaFisico,
+      tarjetaFisico,
+      propinaFisico,
+      date,
+      remarks,
+      cashDenominationCount,
+      coinsDenominationCount,
+      closing_user_id,
+      cash_system,
+      transfer_system,
+      card_system,
+      total_system,
+      orders_system,
+      expenses_total,
+      total_extras,
+      apertura_total,
+      total_esperado,
+      process_inventory = true
+    } = req.body;
+
+    const closingDate = date || ecuadorToday();
+    const userId = closing_user_id || req.user?.id || req.user?.userId;
+    const TZ = 'America/Guayaquil';
+
+    console.log('📦 INICIANDO CIERRE:', { closingDate, userId, schema });
+
+    // ✅ VERIFICAR SI YA EXISTE CIERRE
+    const existingClose = await query(
+      `SELECT id FROM "${schema}".cash_register_closing 
+       WHERE closing_date = $1 AND closing_user_id = $2
+       LIMIT 1`,
+      [closingDate, userId]
+    );
+
+    if (existingClose.rows.length > 0) {
+      return res.status(409).json({ 
+        error: 'Ya existe un cierre de caja para hoy para este usuario',
+        closing_id: existingClose.rows[0].id
+      });
+    }
+
+    // 📊 CALCULAR DIFERENCIAS
+    const cashSystem = n(cash_system || 0);
+    const transferSystem = n(transfer_system || 0);
+    const cardSystem = n(card_system || 0);
+    const totalSystem = n(total_system || 0);
+    const ordersSystem = n(orders_system || 0);
+    const expensesTotal = n(expenses_total || 0);
+
+    const cashCounted = n(efectivoFisico || 0);
+    const transferCounted = n(transferenciaFisico || 0);
+    const cardCounted = n(tarjetaFisico || 0);
+    const tipCounted = n(propinaFisico || 0);
+
+    const diffCash = cashCounted - cashSystem;
+    const diffTransfer = transferCounted - transferSystem;
+    const diffCard = cardCounted - cardSystem;
+    const diffOrders = 0 - ordersSystem;
+
+    const totalCounted = cashCounted + transferCounted + cardCounted;
+    const diffTotal = totalCounted - totalSystem;
+
+    const netSystem = totalSystem - expensesTotal;
+    const netCounted = totalCounted - expensesTotal;
+    const diffNet = netCounted - netSystem;
+
+    // 💾 INSERT - CIERRE DE CAJA
+    const closingResult = await query(
+      `
+      INSERT INTO "${schema}".cash_register_closing (
+        closing_user_id,
+        closing_date,
+        closing_time,
+        cash_counted,
+        cash_system,
+        diff_cash,
+        transfer_counted,
+        transfer_system,
+        diff_transfer,
+        card_counted,
+        card_system,
+        diff_card,
+        orders_counted,
+        orders_system,
+        diff_orders,
+        extras,
+        expenses_total,
+        total_counted,
+        total_system,
+        diff_total,
+        net_system,
+        net_counted,
+        diff_net,
+        remarks,
+        created_at
+      )
+      VALUES (
+        $1, $2, NOW(),
+        $3, $4, $5,
+        $6, $7, $8,
+        $9, $10, $11,
+        $12, $13, $14,
+        $15, $16,
+        $17, $18, $19,
+        $20, $21, $22,
+        $23, NOW()
+      )
+      RETURNING *
+      `,
+      [
+        userId,
+        closingDate,
+        safe(cashCounted),
+        safe(cashSystem),
+        safe(diffCash),
+        safe(transferCounted),
+        safe(transferSystem),
+        safe(diffTransfer),
+        safe(cardCounted),
+        safe(cardSystem),
+        safe(diffCard),
+        safe(0),
+        safe(ordersSystem),
+        safe(diffOrders),
+        JSON.stringify({
+          cash_denomination: cashDenominationCount || {},
+          coins_denomination: coinsDenominationCount || {},
+          propina: tipCounted
+        }),
+        safe(expensesTotal),
+        safe(totalCounted),
+        safe(totalSystem),
+        safe(diffTotal),
+        safe(netSystem),
+        safe(netCounted),
+        safe(diffNet),
+        remarks || null
+      ]
+    );
+
+    const closingData = closingResult.rows[0];
+    console.log('✅ CIERRE GUARDADO - ID:', closingData.id);
+
+    // 📦 PROCESAR MOVIMIENTOS DE INVENTARIO
+    let inventoryMovements = [];
+    let inventoryProcessed = false;
+    let inventoryError = null;
+    let sourceType = 'none';
+
+    if (process_inventory) {
+      try {
+        console.log('📦 INICIANDO PROCESAMIENTO DE INVENTARIO...');
+
+        // Verificar si ya existen movimientos
+        const movementsCheck = await query(
+          `
+          SELECT COUNT(*) as count 
+          FROM "${schema}".inventory_movements 
+          WHERE DATE(created_at AT TIME ZONE '${TZ}') = $1
+          AND type = 'venta'
+          `,
+          [closingDate]
+        );
+
+        console.log(`📊 Movimientos existentes: ${movementsCheck.rows[0].count}`);
+
+        if (parseInt(movementsCheck.rows[0].count) === 0) {
+          // 🔍 BUSCAR EN FACTURAS
+          let orderIds = [];
+
+          const invoicesResult = await query(
+            `
+            SELECT 
+              ei.id AS invoice_id,
+              ei.invoice_number,
+              ei.order_id
+            FROM "${schema}".einvoices ei
+            WHERE 
+              DATE(ei.emission_date AT TIME ZONE '${TZ}') = $1
+            `,
+            [closingDate]
+          );
+
+          console.log(`📊 Facturas encontradas: ${invoicesResult.rows.length}`);
+
+          // Extraer order_ids de facturas
+          const orderIdsFromInvoices = invoicesResult.rows
+            .map(row => row.order_id)
+            .filter(id => id !== null);
+
+          if (orderIdsFromInvoices.length > 0) {
+            orderIds = orderIdsFromInvoices;
+            sourceType = 'facturas';
+            console.log(`📊 Usando ${orderIds.length} órdenes de facturas`);
+          } else {
+            // Buscar órdenes paid directamente
+            const ordersResult = await query(
+              `
+              SELECT 
+                id AS order_id,
+                order_number
+              FROM "${schema}".pos_orders
+              WHERE 
+                DATE(created_at AT TIME ZONE '${TZ}') = $1
+                AND status = 'paid'
+              `,
+              [closingDate]
+            );
+            
+            orderIds = ordersResult.rows.map(row => row.order_id);
+            sourceType = 'ordenes_paid';
+            console.log(`📊 Usando ${orderIds.length} órdenes paid directas`);
+          }
+
+          // Obtener items de las órdenes
+          if (orderIds.length > 0) {
+            const itemsResult = await query(
+              `
+              SELECT 
+                oi.order_id,
+                oi.product_id,
+                oi.product_name,
+                oi.quantity,
+                oi.unit_price,
+                oi.line_total,
+                o.order_number
+              FROM "${schema}".pos_order_items oi
+              INNER JOIN "${schema}".pos_orders o ON o.id = oi.order_id
+              WHERE oi.order_id = ANY($1::uuid[])
+              `,
+              [orderIds]
+            );
+
+            console.log(`📊 Items encontrados: ${itemsResult.rows.length}`);
+
+            if (itemsResult.rows.length > 0) {
+              // Agrupar por producto
+              const productMovements = new Map();
+
+              itemsResult.rows.forEach(row => {
+                const productId = row.product_id;
+                const quantity = parseInt(row.quantity) || 0;
+                const orderNumber = row.order_number || 'S/N';
+
+                if (productMovements.has(productId)) {
+                  const existing = productMovements.get(productId);
+                  existing.total_quantity += quantity;
+                  existing.orders.push(orderNumber);
+                } else {
+                  productMovements.set(productId, {
+                    product_id: productId,
+                    product_name: row.product_name || 'Producto',
+                    total_quantity: quantity,
+                    unit_price: parseFloat(row.unit_price) || 0,
+                    orders: [orderNumber]
+                  });
+                }
+              });
+
+              console.log(`📊 Productos agrupados: ${productMovements.size}`);
+
+              // Crear movimientos
+              for (const [productId, data] of productMovements) {
+                const productResult = await query(
+                  `
+                  SELECT unit_cost, stock, name 
+                  FROM "${schema}".products 
+                  WHERE id = $1
+                  `,
+                  [productId]
+                );
+
+                const unitCost = productResult.rows[0]?.unit_cost || data.unit_price || 0;
+                const productName = productResult.rows[0]?.name || data.product_name || 'Producto';
+                const currentStock = productResult.rows[0]?.stock || 0;
+
+                // Crear nota
+                let notes = '';
+                if (sourceType === 'facturas') {
+                  const invoiceNumbers = invoicesResult.rows
+                    .filter(inv => orderIds.includes(inv.order_id))
+                    .map(inv => inv.invoice_number)
+                    .filter(Boolean)
+                    .join(', #');
+                  notes = `Factura #${invoiceNumbers}`;
+                } else {
+                  const orderNumbers = data.orders.join(', #');
+                  notes = `Orden #${orderNumbers}`;
+                }
+
+                const quantity = -Math.abs(data.total_quantity);
+
+                // Insertar movimiento
+                const movementResult = await query(
+                  `
+                  INSERT INTO "${schema}".inventory_movements (
+                    product_id,
+                    type,
+                    quantity,
+                    unit_cost,
+                    reference_id,
+                    notes,
+                    applied,
+                    created_at
+                  )
+                  VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, NOW()
+                  )
+                  RETURNING *
+                  `,
+                  [
+                    productId,
+                    'venta',
+                    quantity,
+                    unitCost,
+                    null,
+                    notes,
+                    true
+                  ]
+                );
+
+                inventoryMovements.push(movementResult.rows[0]);
+
+                // Actualizar stock
+                await query(
+                  `
+                  UPDATE "${schema}".products
+                  SET stock = stock - $1,
+                      updated_at = NOW()
+                  WHERE id = $2
+                  `,
+                  [Math.abs(data.total_quantity), productId]
+                );
+
+                console.log(`✅ Movimiento creado para ${productName}: ${quantity} unidades (Stock: ${currentStock} → ${currentStock - Math.abs(data.total_quantity)})`);
+              }
+
+              inventoryProcessed = true;
+              console.log(`✅ ${inventoryMovements.length} movimientos creados desde ${sourceType}`);
+            } else {
+              console.log('ℹ️ No hay items para procesar');
+            }
+          } else {
+            console.log('ℹ️ No hay órdenes para procesar');
+          }
+        } else {
+          console.log(`ℹ️ Ya existen movimientos para ${closingDate}`);
+          inventoryProcessed = true;
+        }
+      } catch (inventoryErr) {
+        console.error("⚠️ ERROR EN INVENTARIO:", inventoryErr);
+        inventoryError = inventoryErr.message;
+      }
+    }
+
+    // 📤 RESPUESTA
+    res.status(201).json({
+      success: true,
+      closing: closingData,
+      inventory: {
+        processed: inventoryProcessed,
+        movements_created: inventoryMovements.length,
+        movements: inventoryMovements,
+        source: sourceType,
+        error: inventoryError
+      }
+    });
+
+  } catch (err) {
+    console.error("❌ ERROR CLOSING:", err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
 // ===============================
-// 🔍 GET /api/pos/cash-register/debug-inventory
-// Diagnóstico de inventario
+// 🔍 GET /debug-inventory
 // ===============================
 router.get('/debug-inventory', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
@@ -328,8 +711,7 @@ router.get('/debug-inventory', authMiddleware, businessContextMiddleware, async 
 });
 
 // ===============================
-// 📦 POST /api/pos/cash-register/process-inventory
-// Procesar inventario manualmente (útil si falló en el cierre)
+// 📦 POST /process-inventory
 // ===============================
 router.post('/process-inventory', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
@@ -342,7 +724,6 @@ router.post('/process-inventory', authMiddleware, businessContextMiddleware, asy
     const closingDate = date || ecuadorToday();
     const TZ = 'America/Guayaquil';
 
-    // Si no se proporciona closing_id, buscar el cierre de la fecha
     let closingId = closing_id;
     if (!closingId) {
       const closingRes = await query(
@@ -363,7 +744,6 @@ router.post('/process-inventory', authMiddleware, businessContextMiddleware, asy
       closingId = closingRes.rows[0].id;
     }
 
-    // Verificar si ya se procesaron movimientos
     const movementsCheck = await query(
       `
       SELECT COUNT(*) as count 
@@ -381,9 +761,7 @@ router.post('/process-inventory', authMiddleware, businessContextMiddleware, asy
       });
     }
 
-    // Si force es true, eliminar movimientos existentes
     if (force && parseInt(movementsCheck.rows[0].count) > 0) {
-      // Obtener movimientos para revertir stock
       const existingMovements = await query(
         `
         SELECT * FROM "${schema}".inventory_movements
@@ -393,7 +771,6 @@ router.post('/process-inventory', authMiddleware, businessContextMiddleware, asy
         [closingId]
       );
 
-      // Revertir stock
       for (const movement of existingMovements.rows) {
         await query(
           `
@@ -406,7 +783,6 @@ router.post('/process-inventory', authMiddleware, businessContextMiddleware, asy
         );
       }
 
-      // Eliminar movimientos
       await query(
         `
         DELETE FROM "${schema}".inventory_movements
@@ -419,7 +795,6 @@ router.post('/process-inventory', authMiddleware, businessContextMiddleware, asy
       console.log(`🔄 Movimientos eliminados para reprocesar`);
     }
 
-    // Obtener todas las facturas del día
     const invoicesResult = await query(
       `
       SELECT 
@@ -429,15 +804,12 @@ router.post('/process-inventory', authMiddleware, businessContextMiddleware, asy
         oi.quantity,
         oi.product_name,
         oi.unit_price,
-        oi.line_total,
-        oi.tax_rate,
-        oi.iva_amount
+        oi.line_total
       FROM "${schema}".einvoices ei
       INNER JOIN "${schema}".pos_orders o ON o.id = ei.order_id
       INNER JOIN "${schema}".pos_order_items oi ON oi.order_id = o.id
       WHERE 
         DATE(ei.emission_date AT TIME ZONE '${TZ}') = $1
-        AND ei.status IN ('completada', 'emitida')
         AND o.status IN ('paid', 'completed')
       `,
       [closingDate]
@@ -445,11 +817,10 @@ router.post('/process-inventory', authMiddleware, businessContextMiddleware, asy
 
     if (invoicesResult.rows.length === 0) {
       return res.status(404).json({
-        message: 'No hay facturas completadas para procesar en esta fecha'
+        message: 'No hay facturas para procesar en esta fecha'
       });
     }
 
-    // Agrupar por producto
     const productMovements = new Map();
 
     invoicesResult.rows.forEach(row => {
@@ -461,27 +832,21 @@ router.post('/process-inventory', authMiddleware, businessContextMiddleware, asy
         const existing = productMovements.get(productId);
         existing.total_quantity += quantity;
         existing.invoices.push(invoiceNumber);
-        existing.total_line_total += parseFloat(row.line_total || 0);
-        existing.items_count += 1;
       } else {
         productMovements.set(productId, {
           product_id: productId,
           product_name: row.product_name || 'Producto',
           total_quantity: quantity,
           unit_price: parseFloat(row.unit_price) || 0,
-          total_line_total: parseFloat(row.line_total) || 0,
-          invoices: [invoiceNumber],
-          items_count: 1
+          invoices: [invoiceNumber]
         });
       }
     });
 
-    // Crear movimientos
     const movements = [];
     const productsUpdated = [];
 
     for (const [productId, data] of productMovements) {
-      // Obtener costo actual
       const productCost = await query(
         `
         SELECT unit_cost, stock, name 
@@ -495,12 +860,10 @@ router.post('/process-inventory', authMiddleware, businessContextMiddleware, asy
       const productName = productCost.rows[0]?.name || data.product_name || 'Producto';
       const currentStock = productCost.rows[0]?.stock || 0;
 
-      // Crear nota con facturas
       const invoiceNumbers = data.invoices.join(', #');
       const notes = `Factura #${invoiceNumbers}`;
       const quantity = -Math.abs(data.total_quantity);
 
-      // Insertar movimiento
       const movementResult = await query(
         `
         INSERT INTO "${schema}".inventory_movements (
@@ -531,7 +894,6 @@ router.post('/process-inventory', authMiddleware, businessContextMiddleware, asy
 
       movements.push(movementResult.rows[0]);
 
-      // Actualizar stock
       await query(
         `
         UPDATE "${schema}".products
@@ -552,7 +914,6 @@ router.post('/process-inventory', authMiddleware, businessContextMiddleware, asy
       });
     }
 
-    // Calcular resumen
     const totalInvoices = new Set(invoicesResult.rows.map(r => r.invoice_id)).size;
     const totalProducts = productMovements.size;
     const totalUnits = Array.from(productMovements.values()).reduce((sum, d) => sum + d.total_quantity, 0);
@@ -583,8 +944,7 @@ router.post('/process-inventory', authMiddleware, businessContextMiddleware, asy
 });
 
 // ===============================
-// 📊 GET /api/pos/cash-register/inventory-movements
-// Obtener movimientos de inventario por fecha
+// 📊 GET /inventory-movements
 // ===============================
 router.get('/inventory-movements', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
@@ -616,12 +976,9 @@ router.get('/inventory-movements', authMiddleware, businessContextMiddleware, as
           WHEN im.quantity < 0 THEN 'SALIDA'
           WHEN im.quantity > 0 THEN 'ENTRADA'
           ELSE 'SIN MOVIMIENTO'
-        END AS movement_type,
-        crc.closing_date,
-        crc.closing_user_id
+        END AS movement_type
       FROM "${schema}".inventory_movements im
       LEFT JOIN "${schema}".products p ON p.id = im.product_id
-      LEFT JOIN "${schema}".cash_register_closing crc ON crc.id = im.reference_id
       WHERE DATE(im.created_at AT TIME ZONE '${TZ}') = $1
         AND im.type = 'venta'
       ORDER BY im.created_at DESC
@@ -629,42 +986,9 @@ router.get('/inventory-movements', authMiddleware, businessContextMiddleware, as
       [date]
     );
 
-    // Calcular totales
     const totalProducts = result.rows.length;
     const totalUnits = result.rows.reduce((sum, row) => sum + Math.abs(row.quantity || 0), 0);
     const totalCost = result.rows.reduce((sum, row) => sum + Math.abs(row.total_cost || 0), 0);
-
-    // Agrupar por producto para resumen
-    const productSummary = {};
-    result.rows.forEach(row => {
-      const key = row.product_id;
-      if (!productSummary[key]) {
-        productSummary[key] = {
-          product_id: row.product_id,
-          product_name: row.product_name,
-          product_code: row.product_code,
-          total_quantity: 0,
-          total_cost: 0,
-          invoices: [],
-          unit_cost: row.movement_cost
-        };
-      }
-      productSummary[key].total_quantity += Math.abs(row.quantity || 0);
-      productSummary[key].total_cost += Math.abs(row.total_cost || 0);
-      
-      // Extraer números de factura de notes
-      if (row.notes) {
-        const matches = row.notes.match(/#(\d+)/g);
-        if (matches) {
-          matches.forEach(m => {
-            const num = m.replace('#', '');
-            if (!productSummary[key].invoices.includes(num)) {
-              productSummary[key].invoices.push(num);
-            }
-          });
-        }
-      }
-    });
 
     res.json({
       success: true,
@@ -674,8 +998,7 @@ router.get('/inventory-movements', authMiddleware, businessContextMiddleware, as
         total_products: totalProducts,
         total_units_sold: totalUnits,
         total_cost: parseFloat(totalCost.toFixed(2))
-      },
-      product_summary: Object.values(productSummary)
+      }
     });
 
   } catch (err) {
@@ -685,8 +1008,7 @@ router.get('/inventory-movements', authMiddleware, businessContextMiddleware, as
 });
 
 // ===============================
-// 🔍 GET /api/pos/cash-register/check-inventory-movements
-// Verificar movimientos de inventario
+// 🔍 GET /check-inventory-movements
 // ===============================
 router.get('/check-inventory-movements', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
@@ -734,8 +1056,7 @@ router.get('/check-inventory-movements', authMiddleware, businessContextMiddlewa
 });
 
 // ===============================
-// 🔄 POST /api/pos/cash-register/revert-inventory
-// Revertir movimientos de inventario
+// 🔄 POST /revert-inventory
 // ===============================
 router.post('/revert-inventory', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
@@ -753,7 +1074,6 @@ router.post('/revert-inventory', authMiddleware, businessContextMiddleware, asyn
       });
     }
 
-    // Obtener movimientos a revertir
     let movementsQuery;
     let params;
     let identifier;
@@ -784,7 +1104,6 @@ router.post('/revert-inventory', authMiddleware, businessContextMiddleware, asyn
       });
     }
 
-    // Si no se confirma, mostrar resumen antes de revertir
     if (!confirm) {
       const summary = {
         total_movements: movements.rows.length,
@@ -815,10 +1134,8 @@ router.post('/revert-inventory', authMiddleware, businessContextMiddleware, asyn
       });
     }
 
-    // Revertir movimientos (eliminar y restaurar stock)
     const reverted = [];
     for (const movement of movements.rows) {
-      // Restaurar stock
       await query(
         `
         UPDATE "${schema}".products
@@ -829,7 +1146,6 @@ router.post('/revert-inventory', authMiddleware, businessContextMiddleware, asyn
         [Math.abs(movement.quantity), movement.product_id]
       );
 
-      // Eliminar movimiento
       await query(
         `
         DELETE FROM "${schema}".inventory_movements
@@ -891,15 +1207,13 @@ router.post('/income-extra', authMiddleware, businessContextMiddleware, async (r
 });
 
 // ===============================
-// 📧 POST /api/pos/cash-register/send-close-email
-// Envía el PDF del cierre de caja por email
+// 📧 POST /send-close-email
 // ===============================
 router.post('/send-close-email', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
     const { pdfBase64, closingDate, totalVentas, totalContado, diferencia } = req.body;
     const businessId = req.user?.businessId;
 
-    // Obtener email del propietario
     const bizRes = await query(`
       SELECT bo.email, b.name AS business_name
       FROM public.businesses b
@@ -976,7 +1290,7 @@ router.post('/send-close-email', authMiddleware, businessContextMiddleware, asyn
 });
 
 // ===============================
-// GET /api/pos/cash-register/opening
+// GET /opening
 // ===============================
 router.get('/opening', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
@@ -1001,7 +1315,7 @@ router.get('/opening', authMiddleware, businessContextMiddleware, async (req, re
 });
 
 // ===============================
-// POST /api/pos/cash-register/opening
+// POST /opening
 // ===============================
 router.post('/opening', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
