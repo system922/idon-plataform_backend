@@ -255,6 +255,70 @@ router.get('/physical/:id', authMiddleware, async (req, res) => {
 });
 
 /* ─────────────────────────────────────────────
+   POST /api/inventory/physical/:id/reopen
+   Reabrir un inventario cerrado para reconteo
+───────────────────────────────────────────── */
+router.post('/physical/:id/reopen', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
+    const { id } = req.params;
+    const { notes } = req.body;
+    const userId = req.user?.id || req.user?.userId;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'Usuario no identificado' });
+    }
+
+    // Verificar que el inventario existe y está cerrado
+    const invCheck = await query(`
+      SELECT * FROM "${schema}".inventory_physical 
+      WHERE id = $1 AND status = 'closed'
+    `, [id]);
+
+    if (!invCheck.rows.length) {
+      return res.status(404).json({ error: 'Inventario cerrado no encontrado' });
+    }
+
+    // Obtener información del usuario que reabre
+    const user = await getUserInfo(schema, userId);
+    if (!user) {
+      return res.status(400).json({ error: 'Usuario no encontrado en el sistema' });
+    }
+
+    // Reabrir el inventario (cambiar status a 'open' y limpiar campos de cierre)
+    const result = await query(`
+      UPDATE "${schema}".inventory_physical
+      SET
+        status = 'open',
+        notes = COALESCE($1, notes),
+        updated_at = NOW(),
+        closed_date = NULL,
+        closed_time = NULL,
+        closed_by_global = NULL,
+        closed_by_tenant = NULL
+      WHERE id = $2
+      RETURNING *
+    `, [notes || 'Reconteo solicitado', id]);
+
+    const businessId = req.headers['x-business-id'] || req.user?.businessId;
+    emitToBusiness(businessId, 'data_changed', { entity: 'inventory', action: 'reopened' });
+
+    res.json({ 
+      success: true, 
+      message: 'Inventario reabierto para reconteo',
+      inventory: result.rows[0]
+    });
+  } catch (err) {
+    console.error('Error in POST /physical/:id/reopen:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ─────────────────────────────────────────────
    PUT /api/inventory/physical/:id/items/:itemId
    Actualizar conteo de un producto
 ───────────────────────────────────────────── */
@@ -504,6 +568,8 @@ router.get('/closed/:id', authMiddleware, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+
 
 /* ─────────────────────────────────────────────
    POST /api/inventory/closed/:id/apply
