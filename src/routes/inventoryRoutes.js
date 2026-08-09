@@ -368,7 +368,7 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'Inventario cerrado no encontrado' });
     }
 
-    // 2. Obtener items con diferencias
+    // 2. Obtener items con diferencias que NO estén ajustados
     let itemsQuery = `
       SELECT 
         id, 
@@ -378,7 +378,9 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
         counted_stock, 
         difference
       FROM "${schema}".inventory_physical_items
-      WHERE inventory_id = $1 AND difference <> 0
+      WHERE inventory_id = $1 
+        AND difference <> 0 
+        AND status != 'adjusted'
     `;
 
     const params = [id];
@@ -390,11 +392,55 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
     const items = await query(itemsQuery, params);
 
     if (!items.rows.length) {
-      return res.status(400).json({ error: 'No hay diferencias para ajustar' });
+      // Verificar si hay productos que ya están ajustados
+      const alreadyAdjusted = await query(`
+        SELECT COUNT(*) as count
+        FROM "${schema}".inventory_physical_items
+        WHERE inventory_id = $1 AND status = 'adjusted'
+      `, [id]);
+
+      if (Number(alreadyAdjusted.rows[0].count) > 0) {
+        // Verificar si hay productos pendientes
+        const pendingItems = await query(`
+          SELECT COUNT(*) as count
+          FROM "${schema}".inventory_physical_items
+          WHERE inventory_id = $1 AND difference <> 0 AND status != 'adjusted'
+        `, [id]);
+
+        if (Number(pendingItems.rows[0].count) === 0) {
+          return res.status(400).json({ 
+            error: 'Todos los productos de este inventario ya han sido ajustados.',
+            code: 'ALL_ADJUSTED'
+          });
+        }
+      }
+
+      // Si no hay items con diferencias
+      const hasDifferences = await query(`
+        SELECT COUNT(*) as count
+        FROM "${schema}".inventory_physical_items
+        WHERE inventory_id = $1 AND difference <> 0
+      `, [id]);
+
+      if (Number(hasDifferences.rows[0].count) === 0) {
+        return res.status(400).json({ error: 'No hay diferencias para ajustar' });
+      }
+
+      // Si hay productos seleccionados pero ya están ajustados o no tienen diferencia
+      if (product_ids.length > 0) {
+        return res.status(400).json({ 
+          error: 'Los productos seleccionados ya han sido ajustados o no tienen diferencias.',
+          code: 'PRODUCTS_ALREADY_ADJUSTED'
+        });
+      }
+
+      return res.status(400).json({ error: 'No hay productos pendientes para ajustar' });
     }
 
-    // 3. Registrar movimientos y actualizar stock
+    // 3. Registrar movimientos y actualizar stock SOLO para los items seleccionados
     let adjustmentsCount = 0;
+    const adjustedProductIds = [];
+
     for (const item of items.rows) {
       const newStock = item.system_stock + item.difference;
 
@@ -418,23 +464,35 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
         WHERE id = $2
       `, [newStock, item.product_id]);
 
-      adjustmentsCount++;
-    }
+      // Marcar SOLO este item como ajustado
+      await query(`
+        UPDATE "${schema}".inventory_physical_items
+        SET status = 'adjusted', updated_at = NOW()
+        WHERE id = $1
+      `, [item.id]);
 
-    // 4. Marcar los items como ajustados
-    await query(`
-      UPDATE "${schema}".inventory_physical_items
-      SET status = 'adjusted', updated_at = NOW()
-      WHERE inventory_id = $1 AND difference <> 0
-    `, [id]);
+      adjustmentsCount++;
+      adjustedProductIds.push(item.product_id);
+    }
 
     const businessId = req.headers['x-business-id'] || req.user?.businessId;
     emitToBusiness(businessId, 'data_changed', { entity: 'inventory', action: 'adjustments_applied' });
 
+    // 4. Verificar si quedan productos pendientes
+    const remainingItems = await query(`
+      SELECT COUNT(*) as count
+      FROM "${schema}".inventory_physical_items
+      WHERE inventory_id = $1 AND difference <> 0 AND status != 'adjusted'
+    `, [id]);
+
+    const remainingCount = Number(remainingItems.rows[0].count);
+
     res.json({ 
       success: true, 
-      message: `Se aplicaron ${adjustmentsCount} ajuste(s) correctamente`,
-      adjustments: adjustmentsCount
+      message: `Se aplicaron ${adjustmentsCount} ajuste(s) correctamente. ${remainingCount > 0 ? `Quedan ${remainingCount} producto(s) pendientes por ajustar.` : 'Todos los productos han sido ajustados.'}`,
+      adjustments: adjustmentsCount,
+      remaining: remainingCount,
+      adjusted_products: adjustedProductIds
     });
   } catch (err) {
     console.error('Error in POST /closed/:id/apply:', err);
