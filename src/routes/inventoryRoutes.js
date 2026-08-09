@@ -213,6 +213,10 @@ router.put('/physical/:id/items/:itemId', authMiddleware, async (req, res) => {
    POST /api/inventory/physical/:id/close
    Cerrar inventario (guarda el usuario que cierra)
 ───────────────────────────────────────────── */
+/* ─────────────────────────────────────────────
+   POST /api/inventory/physical/:id/close
+   Cerrar inventario (guarda el usuario que cierra)
+───────────────────────────────────────────── */
 router.post('/physical/:id/close', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -221,10 +225,29 @@ router.post('/physical/:id/close', authMiddleware, async (req, res) => {
     }
 
     const { id } = req.params;
-    const userId = req.user?.id || req.user?.userId;
+    
+    // Obtener el user_id de diferentes fuentes posibles
+    let userId = req.user?.id || req.user?.userId || req.user?.sub;
+    
+    console.log('🔍 User ID obtenido:', userId);
+    console.log('🔍 User object completo:', JSON.stringify(req.user, null, 2));
 
     if (!userId) {
       return res.status(400).json({ error: 'Usuario no identificado' });
+    }
+
+    // Verificar que el usuario existe en la base de datos
+    const userExists = await query(`
+      SELECT id FROM "${schema}".users WHERE id = $1
+    `, [userId]);
+
+    console.log('🔍 Usuario encontrado:', userExists.rows);
+
+    if (!userExists.rows.length) {
+      return res.status(400).json({ 
+        error: 'Usuario no encontrado en el sistema',
+        user_id: userId 
+      });
     }
 
     // Verificar que no queden items pendientes
@@ -234,6 +257,8 @@ router.post('/physical/:id/close', authMiddleware, async (req, res) => {
       WHERE inventory_id = $1 AND status = 'pending'
     `, [id]);
 
+    console.log('🔍 Pendientes:', pending.rows[0].count);
+
     if (Number(pending.rows[0].count) > 0) {
       return res.status(400).json({ 
         error: `Inventario incompleto: ${pending.rows[0].count} productos pendientes` 
@@ -241,7 +266,7 @@ router.post('/physical/:id/close', authMiddleware, async (req, res) => {
     }
 
     // Cerrar el inventario guardando el usuario que lo cerró
-    await query(`
+    const result = await query(`
       UPDATE "${schema}".inventory_physical
       SET
         status = 'closed',
@@ -250,14 +275,18 @@ router.post('/physical/:id/close', authMiddleware, async (req, res) => {
         closed_by = $1,
         updated_at = NOW()
       WHERE id = $2
+      RETURNING *
     `, [userId, id]);
+
+    console.log('✅ Inventario cerrado:', result.rows[0]);
 
     const businessId = req.headers['x-business-id'] || req.user?.businessId;
     emitToBusiness(businessId, 'data_changed', { entity: 'inventory', action: 'closed' });
 
     res.json({ 
       success: true, 
-      message: 'Inventario cerrado correctamente'
+      message: 'Inventario cerrado correctamente',
+      closed_by: userId
     });
   } catch (err) {
     console.error('Error in POST /physical/:id/close:', err);
