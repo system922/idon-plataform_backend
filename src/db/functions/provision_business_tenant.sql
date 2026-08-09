@@ -592,28 +592,46 @@ BEGIN
     -- inventory_physical (sin FK)
     EXECUTE format('
       CREATE TABLE IF NOT EXISTS %I.inventory_physical (
-        id            SERIAL PRIMARY KEY,
-        name          VARCHAR(150),
-        status        VARCHAR(20) NOT NULL DEFAULT ''open'',
-        started_date  DATE        NOT NULL DEFAULT CURRENT_DATE,
-        started_time  TIME        NOT NULL DEFAULT CURRENT_TIME,
-        closed_date   DATE,
-        closed_time   TIME,
-        total_items   INT DEFAULT 0,
-        counted_items INT DEFAULT 0,
-        pending_items INT DEFAULT 0,
-        notes         TEXT,
-        closed_by     UUID          REFERENCES %I.users(id) ON DELETE SET NULL,
-        created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )', p_schema_name, p_schema_name);
-
+        id                  SERIAL PRIMARY KEY,
+        name                VARCHAR(150),
+        status              VARCHAR(20) NOT NULL DEFAULT ''open'',
+        started_date        DATE        NOT NULL DEFAULT CURRENT_DATE,
+        started_time        TIME        NOT NULL DEFAULT CURRENT_TIME,
+        closed_date         DATE,
+        closed_time         TIME,
+        total_items         INT DEFAULT 0,
+        counted_items       INT DEFAULT 0,
+        pending_items       INT DEFAULT 0,
+        notes               TEXT,
+        created_by_global   UUID        REFERENCES public.users(id) ON DELETE SET NULL,
+        created_by_tenant   UUID        REFERENCES %I.users(id) ON DELETE SET NULL,
+        closed_by_global    UUID        REFERENCES public.users(id) ON DELETE SET NULL,
+        closed_by_tenant    UUID        REFERENCES %I.users(id) ON DELETE SET NULL,
+        created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )', p_schema_name, p_schema_name, p_schema_name);
     EXECUTE format(
       'CREATE INDEX IF NOT EXISTS %I_inventory_physical_status_idx ON %I.inventory_physical (status)',
       p_schema_name, p_schema_name);
 
     EXECUTE format(
       'CREATE INDEX IF NOT EXISTS %I_inventory_physical_created_at_desc_idx ON %I.inventory_physical (created_at DESC)',
+      p_schema_name, p_schema_name);
+
+    EXECUTE format(
+      'CREATE INDEX IF NOT EXISTS %I_inventory_physical_created_by_global_idx ON %I.inventory_physical (created_by_global)',
+      p_schema_name, p_schema_name);
+
+    EXECUTE format(
+      'CREATE INDEX IF NOT EXISTS %I_inventory_physical_created_by_tenant_idx ON %I.inventory_physical (created_by_tenant)',
+      p_schema_name, p_schema_name);
+
+    EXECUTE format(
+      'CREATE INDEX IF NOT EXISTS %I_inventory_physical_closed_by_global_idx ON %I.inventory_physical (closed_by_global)',
+      p_schema_name, p_schema_name);
+
+    EXECUTE format(
+      'CREATE INDEX IF NOT EXISTS %I_inventory_physical_closed_by_tenant_idx ON %I.inventory_physical (closed_by_tenant)',
       p_schema_name, p_schema_name);
 
     v_table_count := v_table_count + 1;

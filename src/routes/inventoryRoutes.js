@@ -6,6 +6,43 @@ import { emitToBusiness } from '../socket.js';
 
 const router = express.Router();
 
+// ── Helper para obtener el usuario (global o tenant) ──────────────
+const getUserInfo = async (schema, userId) => {
+  if (!userId) return null;
+
+  // 1. Buscar en public.users (usuarios globales)
+  const globalUser = await query(`
+    SELECT id, email, first_name, last_name, 'global' as source
+    FROM public.users 
+    WHERE id = $1
+  `, [userId]);
+
+  if (globalUser.rows.length) {
+    return {
+      ...globalUser.rows[0],
+      is_global: true,
+      is_tenant: false
+    };
+  }
+
+  // 2. Buscar en tenant.users (usuarios del esquema)
+  const tenantUser = await query(`
+    SELECT id, email, first_name, last_name, 'tenant' as source
+    FROM "${schema}".users 
+    WHERE id = $1
+  `, [userId]);
+
+  if (tenantUser.rows.length) {
+    return {
+      ...tenantUser.rows[0],
+      is_global: false,
+      is_tenant: true
+    };
+  }
+
+  return null;
+};
+
 /* ─────────────────────────────────────────────
    GET /api/inventory/physical
    Listar todos los inventarios físicos
@@ -20,14 +57,31 @@ router.get('/physical', authMiddleware, async (req, res) => {
     const result = await query(`
       SELECT 
         ip.*,
-        u.first_name || ' ' || u.last_name AS closed_by_name,
+        COALESCE(u1.first_name, u3.first_name) || ' ' || 
+        COALESCE(u1.last_name, u3.last_name) AS created_by_name,
+        COALESCE(u2.first_name, u4.first_name) || ' ' || 
+        COALESCE(u2.last_name, u4.last_name) AS closed_by_name,
+        CASE 
+          WHEN u1.id IS NOT NULL THEN 'global'
+          WHEN u3.id IS NOT NULL THEN 'tenant'
+          ELSE NULL
+        END AS created_by_source,
+        CASE 
+          WHEN u2.id IS NOT NULL THEN 'global'
+          WHEN u4.id IS NOT NULL THEN 'tenant'
+          ELSE NULL
+        END AS closed_by_source,
         COUNT(ipi.id) as total_items,
         COUNT(CASE WHEN ipi.status = 'counted' THEN 1 END) as counted_items,
         COUNT(CASE WHEN ipi.status = 'pending' THEN 1 END) as pending_items
       FROM "${schema}".inventory_physical ip
       LEFT JOIN "${schema}".inventory_physical_items ipi ON ipi.inventory_id = ip.id
-      LEFT JOIN "${schema}".users u ON u.id = ip.closed_by
-      GROUP BY ip.id, u.first_name, u.last_name
+      LEFT JOIN public.users u1 ON u1.id = ip.created_by_global
+      LEFT JOIN public.users u2 ON u2.id = ip.closed_by_global
+      LEFT JOIN "${schema}".users u3 ON u3.id = ip.created_by_tenant
+      LEFT JOIN "${schema}".users u4 ON u4.id = ip.closed_by_tenant
+      GROUP BY ip.id, u1.first_name, u1.last_name, u2.first_name, u2.last_name,
+               u3.first_name, u3.last_name, u4.first_name, u4.last_name
       ORDER BY ip.created_at DESC
     `);
     res.json(result.rows);
@@ -49,18 +103,43 @@ router.post('/physical', authMiddleware, async (req, res) => {
     }
 
     const { categories } = req.body;
+    const userId = req.user?.id || req.user?.userId;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'Usuario no identificado' });
+    }
+
+    // Obtener información del usuario
+    const user = await getUserInfo(schema, userId);
+    if (!user) {
+      return res.status(400).json({ error: 'Usuario no encontrado en el sistema' });
+    }
 
     if (!categories?.length) {
       return res.status(400).json({ error: 'Categorías requeridas' });
     }
 
     // Crear el encabezado del inventario
-    const inv = await query(`
+    let insertQuery = `
       INSERT INTO "${schema}".inventory_physical 
-        (started_date, started_time, status)
-      VALUES (CURRENT_DATE, CURRENT_TIME, 'open')
-      RETURNING *
-    `);
+        (started_date, started_time, status
+    `;
+    let values = `VALUES (CURRENT_DATE, CURRENT_TIME, 'open'`;
+    let params = [];
+
+    if (user.is_global) {
+      insertQuery += `, created_by_global`;
+      values += `, $1`;
+      params.push(userId);
+    } else {
+      insertQuery += `, created_by_tenant`;
+      values += `, $1`;
+      params.push(userId);
+    }
+
+    insertQuery += `) ${values}) RETURNING *`;
+
+    const inv = await query(insertQuery, params);
     const inventoryId = inv.rows[0].id;
 
     // Guardar las categorías seleccionadas
@@ -124,7 +203,18 @@ router.get('/physical/:id', authMiddleware, async (req, res) => {
     const { id } = req.params;
 
     const inventory = await query(`
-      SELECT * FROM "${schema}".inventory_physical WHERE id = $1
+      SELECT 
+        ip.*,
+        COALESCE(u1.first_name, u3.first_name) || ' ' || 
+        COALESCE(u1.last_name, u3.last_name) AS created_by_name,
+        COALESCE(u2.first_name, u4.first_name) || ' ' || 
+        COALESCE(u2.last_name, u4.last_name) AS closed_by_name
+      FROM "${schema}".inventory_physical ip
+      LEFT JOIN public.users u1 ON u1.id = ip.created_by_global
+      LEFT JOIN public.users u2 ON u2.id = ip.closed_by_global
+      LEFT JOIN "${schema}".users u3 ON u3.id = ip.created_by_tenant
+      LEFT JOIN "${schema}".users u4 ON u4.id = ip.closed_by_tenant
+      WHERE ip.id = $1
     `, [id]);
 
     if (!inventory.rows.length) {
@@ -213,10 +303,6 @@ router.put('/physical/:id/items/:itemId', authMiddleware, async (req, res) => {
    POST /api/inventory/physical/:id/close
    Cerrar inventario (guarda el usuario que cierra)
 ───────────────────────────────────────────── */
-/* ─────────────────────────────────────────────
-   POST /api/inventory/physical/:id/close
-   Cerrar inventario (guarda el usuario que cierra)
-───────────────────────────────────────────── */
 router.post('/physical/:id/close', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -225,25 +311,15 @@ router.post('/physical/:id/close', authMiddleware, async (req, res) => {
     }
 
     const { id } = req.params;
-    
-    // Obtener el user_id de diferentes fuentes posibles
-    let userId = req.user?.id || req.user?.userId || req.user?.sub;
-    
-    console.log('🔍 User ID obtenido:', userId);
-    console.log('🔍 User object completo:', JSON.stringify(req.user, null, 2));
+    const userId = req.user?.id || req.user?.userId;
 
     if (!userId) {
       return res.status(400).json({ error: 'Usuario no identificado' });
     }
 
-    // Verificar que el usuario existe en la base de datos
-    const userExists = await query(`
-      SELECT id FROM "${schema}".users WHERE id = $1
-    `, [userId]);
-
-    console.log('🔍 Usuario encontrado:', userExists.rows);
-
-    if (!userExists.rows.length) {
+    // Obtener información del usuario
+    const user = await getUserInfo(schema, userId);
+    if (!user) {
       return res.status(400).json({ 
         error: 'Usuario no encontrado en el sistema',
         user_id: userId 
@@ -257,28 +333,31 @@ router.post('/physical/:id/close', authMiddleware, async (req, res) => {
       WHERE inventory_id = $1 AND status = 'pending'
     `, [id]);
 
-    console.log('🔍 Pendientes:', pending.rows[0].count);
-
     if (Number(pending.rows[0].count) > 0) {
       return res.status(400).json({ 
         error: `Inventario incompleto: ${pending.rows[0].count} productos pendientes` 
       });
     }
 
-    // Cerrar el inventario guardando el usuario que lo cerró
-    const result = await query(`
+    // Cerrar el inventario guardando en la columna correspondiente
+    let updateQuery = `
       UPDATE "${schema}".inventory_physical
       SET
         status = 'closed',
         closed_date = CURRENT_DATE,
         closed_time = CURRENT_TIME,
-        closed_by = $1,
         updated_at = NOW()
-      WHERE id = $2
-      RETURNING *
-    `, [userId, id]);
+    `;
 
-    console.log('✅ Inventario cerrado:', result.rows[0]);
+    if (user.is_global) {
+      updateQuery += `, closed_by_global = $1`;
+    } else {
+      updateQuery += `, closed_by_tenant = $1`;
+    }
+
+    updateQuery += ` WHERE id = $2 RETURNING *`;
+
+    const result = await query(updateQuery, [userId, id]);
 
     const businessId = req.headers['x-business-id'] || req.user?.businessId;
     emitToBusiness(businessId, 'data_changed', { entity: 'inventory', action: 'closed' });
@@ -286,7 +365,11 @@ router.post('/physical/:id/close', authMiddleware, async (req, res) => {
     res.json({ 
       success: true, 
       message: 'Inventario cerrado correctamente',
-      closed_by: userId
+      closed_by: {
+        id: user.id,
+        name: `${user.first_name} ${user.last_name}`,
+        source: user.source
+      }
     });
   } catch (err) {
     console.error('Error in POST /physical/:id/close:', err);
