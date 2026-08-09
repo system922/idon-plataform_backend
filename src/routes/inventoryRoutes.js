@@ -348,6 +348,10 @@ router.get('/closed/:id', authMiddleware, async (req, res) => {
    POST /api/inventory/closed/:id/apply
    Aplicar ajustes de inventario cerrado
 ───────────────────────────────────────────── */
+/* ─────────────────────────────────────────────
+   POST /api/inventory/closed/:id/apply
+   Aplicar ajustes de inventario cerrado
+───────────────────────────────────────────── */
 router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -392,7 +396,6 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
     const items = await query(itemsQuery, params);
 
     if (!items.rows.length) {
-      // Verificar si hay productos que ya están ajustados
       const alreadyAdjusted = await query(`
         SELECT COUNT(*) as count
         FROM "${schema}".inventory_physical_items
@@ -400,7 +403,6 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
       `, [id]);
 
       if (Number(alreadyAdjusted.rows[0].count) > 0) {
-        // Verificar si hay productos pendientes
         const pendingItems = await query(`
           SELECT COUNT(*) as count
           FROM "${schema}".inventory_physical_items
@@ -415,7 +417,6 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
         }
       }
 
-      // Si no hay items con diferencias
       const hasDifferences = await query(`
         SELECT COUNT(*) as count
         FROM "${schema}".inventory_physical_items
@@ -426,7 +427,6 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
         return res.status(400).json({ error: 'No hay diferencias para ajustar' });
       }
 
-      // Si hay productos seleccionados pero ya están ajustados o no tienen diferencia
       if (product_ids.length > 0) {
         return res.status(400).json({ 
           error: 'Los productos seleccionados ya han sido ajustados o no tienen diferencias.',
@@ -437,24 +437,30 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'No hay productos pendientes para ajustar' });
     }
 
-    // 3. Registrar movimientos y actualizar stock SOLO para los items seleccionados
+    // 3. Registrar movimientos y actualizar stock
     let adjustmentsCount = 0;
     const adjustedProductIds = [];
 
     for (const item of items.rows) {
       const newStock = item.system_stock + item.difference;
 
-      // Registrar en inventory_movements
+      // ✅ REGISTRAR COMO ADJUSTMENT (NO como entrada/salida)
+      // La cantidad siempre es positiva (valor absoluto de la diferencia)
+      // El signo se infiere del contexto (diferencia positiva = aumento de stock)
+      const adjustmentQuantity = Math.abs(item.difference);
+      const sign = item.difference > 0 ? '+' : '-';
+
+      // Registrar en inventory_movements como 'adjustment'
       await query(`
         INSERT INTO "${schema}".inventory_movements
         (product_id, type, quantity, unit_cost, reference_id, notes, applied)
         VALUES ($1, 'adjustment', $2, $3, $4, $5, true)
       `, [
         item.product_id,
-        Math.abs(item.difference),
-        null,
+        adjustmentQuantity,  // ✅ SIEMPRE POSITIVO
+        null,  // unit_cost
         parseInt(id),
-        `Ajuste aplicado desde inventario #${id} - ${item.product_name}`
+        `Ajuste aplicado desde inventario #${id} - ${item.product_name} (${sign}${adjustmentQuantity})`
       ]);
 
       // Actualizar stock del producto
@@ -472,7 +478,13 @@ router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
       `, [item.id]);
 
       adjustmentsCount++;
-      adjustedProductIds.push(item.product_id);
+      adjustedProductIds.push({
+        product_id: item.product_id,
+        product_name: item.product_name,
+        difference: item.difference,
+        adjustment_quantity: adjustmentQuantity,
+        sign: sign
+      });
     }
 
     const businessId = req.headers['x-business-id'] || req.user?.businessId;
