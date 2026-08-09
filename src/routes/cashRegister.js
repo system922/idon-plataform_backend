@@ -171,9 +171,6 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 // ===============================
 // 📦 POST /closing - CIERRE COMPLETO CON INVENTARIO
 // ===============================
-// ===============================
-// 📦 POST /closing - CIERRE COMPLETO CON INVENTARIO
-// ===============================
 router.post('/closing', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -333,6 +330,7 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
 
     const closingData = closingResult.rows[0];
     console.log('✅ CIERRE GUARDADO - ID:', closingData.id);
+    console.log('📅 FECHA CIERRE:', closingDate);
 
     // 📦 PROCESAR MOVIMIENTOS DE INVENTARIO
     let inventoryMovements = [];
@@ -449,12 +447,15 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
 
               console.log(`📊 Productos agrupados: ${productMovements.size}`);
 
-              // Formatear fecha para el note
-              const formattedDate = new Date(closingDate).toLocaleDateString('es-EC', {
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit'
-              });
+              // 🔥 FORMATO DE FECHA CORREGIDO
+              // La fecha viene como '2026-08-08', formatear a '08/08/2026'
+              const dateParts = closingDate.split('-');
+              const year = dateParts[0];
+              const month = dateParts[1];
+              const day = dateParts[2];
+              const formattedDate = `${day}/${month}/${year}`;
+              
+              console.log(`📅 Fecha formateada para notes: ${formattedDate}`);
 
               // Crear movimientos
               for (const [productId, data] of productMovements) {
@@ -484,7 +485,7 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
                   currentStock
                 });
 
-                // Insertar movimiento de inventario
+                // Insertar movimiento de inventario (sin reference_id)
                 const movementResult = await query(
                   `
                   INSERT INTO "${schema}".inventory_movements (
@@ -492,13 +493,12 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
                     type,
                     quantity,
                     unit_cost,
-                    reference_id,
                     notes,
                     applied,
                     created_at
                   )
                   VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, NOW()
+                    $1, $2, $3, $4, $5, $6, NOW()
                   )
                   RETURNING *
                   `,
@@ -507,7 +507,6 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
                     'venta',
                     quantity,
                     unitCost,
-                    null,
                     notes,
                     true
                   ]
