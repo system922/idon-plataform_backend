@@ -962,7 +962,9 @@ BEGIN
     -- ============================================================
     EXECUTE format('
       CREATE OR REPLACE FUNCTION %I.generate_order_number()
-      RETURNS VARCHAR AS $$
+      RETURNS VARCHAR
+      LANGUAGE plpgsql
+      AS $func$
       DECLARE
           v_order_number VARCHAR;
           v_year VARCHAR;
@@ -986,7 +988,7 @@ BEGIN
           
           RETURN v_order_number;
       END;
-      $$ LANGUAGE plpgsql
+      $func$;
     ', p_schema_name, p_schema_name);
 
     -- ============================================================
