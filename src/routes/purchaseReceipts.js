@@ -188,33 +188,61 @@ router.get('/:id', authMiddleware, async (req, res) => {
 });
 
 // ============================================================
-// GET /api/purchase-receipts/suppliers/:productId
-// Obtener proveedores que han vendido un producto
+// GET /api/purchase-orders/suppliers/:productId
+// Obtener proveedores para un producto (con fallback a todos)
 // ============================================================
 router.get('/suppliers/:productId', authMiddleware, async (req, res) => {
   try {
     const { productId } = req.params;
     const schema = await getSchemaName(req);
     
-    const result = await query(`
-      SELECT DISTINCT
+    // Primero, buscar proveedores con historial para este producto
+    const historyResult = await query(`
+      SELECT 
         s.id,
         s.name,
         s.tax_id,
         s.phone,
         s.email,
+        s.is_active,
         psh.last_unit_cost,
         psh.total_orders,
-        psh.last_order_date
+        psh.last_order_date,
+        true as has_history
       FROM "${schema}".suppliers s
-      JOIN "${schema}".product_supplier_history psh ON s.id = psh.supplier_id
+      INNER JOIN "${schema}".product_supplier_history psh ON s.id = psh.supplier_id
       WHERE psh.product_id = $1
+        AND s.is_active = true
       ORDER BY psh.total_orders DESC, psh.last_order_date DESC
     `, [productId]);
     
-    res.json(result.rows);
+    // Si hay proveedores con historial, devolverlos
+    if (historyResult.rows.length > 0) {
+      return res.json(historyResult.rows);
+    }
+    
+    // Si NO hay historial, devolver TODOS los proveedores activos
+    const allSuppliers = await query(`
+      SELECT 
+        id,
+        name,
+        tax_id,
+        phone,
+        email,
+        is_active,
+        NULL as last_unit_cost,
+        0 as total_orders,
+        NULL as last_order_date,
+        false as has_history
+      FROM "${schema}".suppliers
+      WHERE is_active = true
+      ORDER BY name ASC
+    `);
+    
+    res.json(allSuppliers.rows);
+    
   } catch (err) {
-    console.error('Error en GET /purchase-receipts/suppliers/:productId:', err);
+    console.error('Error en GET /purchase-orders/suppliers/:productId:', err);
     res.status(500).json({ error: err.message });
   }
 });
