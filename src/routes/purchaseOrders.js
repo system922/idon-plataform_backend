@@ -1103,9 +1103,9 @@ router.put('/:id/status', authMiddleware, async (req, res) => {
     
     const currentStatus = checkResult.rows[0].status;
     
-    // Validar transiciones de estado
+    // ✅ MODIFICADO: Permitir draft → approved directamente
     const validTransitions = {
-      'draft': ['pending', 'cancelled'],
+      'draft': ['pending', 'approved', 'cancelled'],  // ← Agregar 'approved'
       'pending': ['approved', 'cancelled'],
       'approved': ['received', 'cancelled'],
       'received': [],
