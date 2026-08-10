@@ -842,8 +842,8 @@ router.post('/', authMiddleware, async (req, res) => {
 });
 
 // ============================================================
-// PUT /api/purchase-orders/:id
-// Actualizar una orden de compra
+// PUT /api/purchase-orders/:id 
+// actualización de órdenes  de compra
 // ============================================================
 router.put('/:id', authMiddleware, async (req, res) => {
   try {
@@ -881,6 +881,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
       }
     }
 
+    // Verificar que la orden existe y está en draft
     const orderResult = await query(`
       SELECT *
       FROM "${schema}".purchase_orders
@@ -904,6 +905,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
     await query('BEGIN');
 
     try {
+      // 1. Actualizar notas de la orden
       await query(`
         UPDATE "${schema}".purchase_orders
         SET
@@ -915,37 +917,87 @@ router.put('/:id', authMiddleware, async (req, res) => {
         id
       ]);
 
+      // 2. Obtener los IDs actuales de los items
       const currentItemsResult = await query(`
         SELECT id
         FROM "${schema}".purchase_order_items
         WHERE purchase_order_id = $1
       `, [id]);
 
-      const currentItemIds = currentItemsResult.rows.map(
-        row => row.id
-      );
+      const currentItemIds = currentItemsResult.rows.map(row => row.id);
+      const incomingItemIds = items.filter(item => item.id).map(item => item.id);
 
-      const incomingItemIds = items
-        .filter(item => item.id)
-        .map(item => item.id);
-
+      // 3. Eliminar items que ya no están en la lista
       const itemsToDelete = currentItemIds.filter(
         currentId => !incomingItemIds.includes(currentId)
       );
 
       if (itemsToDelete.length > 0) {
+        // Primero eliminar de purchase_order_item_suppliers (por FK)
+        await query(`
+          DELETE FROM "${schema}".purchase_order_item_suppliers
+          WHERE purchase_order_item_id = ANY($1::uuid[])
+        `, [itemsToDelete]);
+
+        // Luego eliminar de purchase_order_items
         await query(`
           DELETE FROM "${schema}".purchase_order_items
           WHERE id = ANY($1::uuid[])
           AND purchase_order_id = $2
-        `, [
-          itemsToDelete,
-          id
-        ]);
+        `, [itemsToDelete, id]);
       }
 
+      // 4. Procesar cada item (insertar o actualizar)
       for (const item of items) {
+        let productId = item.product_id || null;
+        let recipeId = item.recipe_id || null;
+
+        // 🔥 CORREGIDO: Para MANUFACTURED, obtener el product_id desde la receta
+        if (item.source_type === 'MANUFACTURED' && recipeId) {
+          const recipeProductResult = await query(`
+            SELECT product_id FROM "${schema}".recipes 
+            WHERE id = $1 AND is_active = true
+          `, [recipeId]);
+          
+          if (recipeProductResult.rows.length > 0) {
+            productId = recipeProductResult.rows[0].product_id;
+            console.log(`📦 [PUT] Producto MANUFACTURED: ${item.product_name} → product_id: ${productId} (desde receta ${recipeId})`);
+          } else {
+            console.warn(`⚠️ [PUT] Receta ${recipeId} no encontrada para ${item.product_name}`);
+          }
+        }
+
+        // 🔥 CORREGIDO: Para COMMERCIAL, buscar el product_id por código o nombre
+        if (item.source_type === 'COMMERCIAL' && !productId) {
+          const productResult = await query(`
+            SELECT id FROM "${schema}".products 
+            WHERE code = $1 OR name = $2 OR barcode = $3
+          `, [item.product_code, item.product_name, item.barcode]);
+          
+          if (productResult.rows.length > 0) {
+            productId = productResult.rows[0].id;
+            console.log(`📦 [PUT] Producto COMMERCIAL: ${item.product_name} → product_id: ${productId}`);
+          } else {
+            console.warn(`⚠️ [PUT] Producto COMMERCIAL no encontrado: ${item.product_name} (${item.product_code})`);
+          }
+        }
+
+        // Si es MANUFACTURED y no tiene recipe_id, buscarlo
+        if (item.source_type === 'MANUFACTURED' && !recipeId && productId) {
+          const recipeResult = await query(`
+            SELECT id FROM "${schema}".recipes 
+            WHERE product_id = $1 AND is_active = true
+          `, [productId]);
+          
+          if (recipeResult.rows.length > 0) {
+            recipeId = recipeResult.rows[0].id;
+            console.log(`📦 [PUT] Receta encontrada para ${item.product_name}: ${recipeId}`);
+          }
+        }
+
+        // Verificar si el item ya existe (por ID) o es nuevo
         if (item.id && currentItemIds.includes(item.id)) {
+          // ✅ UPDATE: Actualizar item existente
           await query(`
             UPDATE "${schema}".purchase_order_items
             SET
@@ -962,8 +1014,8 @@ router.put('/:id', authMiddleware, async (req, res) => {
             AND purchase_order_id = $10
           `, [
             item.source_type,
-            item.product_id || null,
-            item.recipe_id || null,
+            productId,
+            recipeId,
             item.product_name,
             item.product_code || null,
             item.barcode || null,
@@ -972,8 +1024,12 @@ router.put('/:id', authMiddleware, async (req, res) => {
             item.id,
             id
           ]);
+
+          console.log(`✅ [PUT] Item actualizado: ${item.product_name} (${item.id})`);
+
         } else {
-          await query(`
+          // ✅ INSERT: Crear nuevo item
+          const newItemResult = await query(`
             INSERT INTO "${schema}".purchase_order_items (
               purchase_order_id,
               source_type,
@@ -985,38 +1041,35 @@ router.put('/:id', authMiddleware, async (req, res) => {
               quantity,
               notes
             )
-            VALUES (
-              $1,
-              $2,
-              $3,
-              $4,
-              $5,
-              $6,
-              $7,
-              $8,
-              $9
-            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id
           `, [
             id,
             item.source_type,
-            item.product_id || null,
-            item.recipe_id || null,
+            productId,
+            recipeId,
             item.product_name,
             item.product_code || null,
             item.barcode || null,
             item.quantity,
             item.notes || null
           ]);
+
+          console.log(`✅ [PUT] Nuevo item creado: ${item.product_name} (${newItemResult.rows[0].id})`);
         }
       }
 
       await query('COMMIT');
 
+      console.log(`✅ [PUT] Orden ${id} actualizada correctamente`);
+
     } catch (transactionError) {
       await query('ROLLBACK');
+      console.error('❌ [PUT] Error en transacción:', transactionError);
       throw transactionError;
     }
 
+    // 5. Obtener la orden actualizada con el conteo de items
     const result = await query(`
       SELECT
         po.*,
@@ -1031,12 +1084,13 @@ router.put('/:id', authMiddleware, async (req, res) => {
     res.json(result.rows[0]);
 
   } catch (err) {
-    console.error('Error en PUT /purchase-orders/:id:', err);
+    console.error('❌ [PUT] Error en PUT /purchase-orders/:id:', err);
     try {
       await query('ROLLBACK');
     } catch (_) {}
     res.status(500).json({
-      error: err.message
+      error: err.message,
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
     });
   }
 });
