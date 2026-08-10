@@ -1009,28 +1009,38 @@ router.put('/:id', authMiddleware, async (req, res) => {
 // ============================================================
 // PUT /api/purchase-orders/:id/status
 // Cambiar estado de una orden
-// ============================================================
+// routes/purchaseOrders.js
 router.put('/:id/status', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
     const schema = await getSchemaName(req);
     
+    // Validar que el estado sea válido
     const validStatuses = ['draft', 'pending', 'approved', 'received', 'cancelled'];
     if (!validStatuses.includes(status)) {
-      return res.status(400).json({ error: 'Estado no válido' });
+      return res.status(400).json({ 
+        error: 'Estado no válido. Debe ser: draft, pending, approved, received o cancelled' 
+      });
     }
     
+    // 1. Verificar que la orden existe y obtener su estado actual
     const checkResult = await query(`
-      SELECT status FROM "${schema}".purchase_orders WHERE id = $1
-    `, [id]);
+      SELECT id, status, order_number 
+      FROM "${schema}".purchase_orders 
+      WHERE id = $1::uuid
+    `, [id]); // ← IMPORTANTE: CAST a uuid
     
     if (checkResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Orden no encontrada' });
+      return res.status(404).json({ 
+        error: 'Orden no encontrada' 
+      });
     }
     
     const currentStatus = checkResult.rows[0].status;
+    const orderNumber = checkResult.rows[0].order_number;
     
+    // 2. Validar transición de estado
     const validTransitions = {
       'draft': ['pending', 'approved', 'cancelled'],
       'pending': ['approved', 'cancelled'],
@@ -1041,26 +1051,30 @@ router.put('/:id/status', authMiddleware, async (req, res) => {
     
     if (!validTransitions[currentStatus].includes(status)) {
       return res.status(400).json({ 
-        error: `No se puede cambiar de "${currentStatus}" a "${status}"` 
+        error: `No se puede cambiar de "${currentStatus}" a "${status}" para la orden #${orderNumber}` 
       });
     }
     
-    await query(`
+    // 3. Actualizar estado
+    const updateResult = await query(`
       UPDATE "${schema}".purchase_orders 
       SET 
-        status = $1,
-        received_at = CASE WHEN $1 = 'received' THEN CURRENT_TIMESTAMP ELSE received_at END,
+        status = $1::text,
+        received_at = CASE WHEN $1::text = 'received' THEN CURRENT_TIMESTAMP ELSE received_at END,
         updated_at = CURRENT_TIMESTAMP
-      WHERE id = $2
+      WHERE id = $2::uuid
+      RETURNING *
     `, [status, id]);
     
+    // 4. Obtener la orden actualizada con el conteo de items
     const result = await query(`
       SELECT 
         po.*,
         COUNT(DISTINCT poi.id) as item_count
       FROM "${schema}".purchase_orders po
-      LEFT JOIN "${schema}".purchase_order_items poi ON po.id = poi.purchase_order_id
-      WHERE po.id = $1
+      LEFT JOIN "${schema}".purchase_order_items poi 
+        ON po.id = poi.purchase_order_id
+      WHERE po.id = $1::uuid
       GROUP BY po.id
     `, [id]);
     
@@ -1068,7 +1082,10 @@ router.put('/:id/status', authMiddleware, async (req, res) => {
     
   } catch (err) {
     console.error('Error en PUT /purchase-orders/:id/status:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ 
+      error: err.message,
+      detail: 'Error al cambiar el estado de la orden'
+    });
   }
 });
 
