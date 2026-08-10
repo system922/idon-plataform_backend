@@ -761,6 +761,41 @@ router.post('/', authMiddleware, async (req, res) => {
     const order = orderResult.rows[0];
     
     for (const item of items) {
+      let productId = item.product_id || null;
+      let recipeId = item.recipe_id || null;
+      
+      // Para MANUFACTURED, obtener el product_id desde la receta
+      if (item.source_type === 'MANUFACTURED' && recipeId) {
+        // Buscar el product_id asociado a la receta
+        const recipeProductResult = await query(`
+          SELECT product_id FROM "${schema}".recipes 
+          WHERE id = $1 AND is_active = true
+        `, [recipeId]);
+        
+        if (recipeProductResult.rows.length > 0) {
+          productId = recipeProductResult.rows[0].product_id;
+          console.log(`Producto MANUFACTURED: ${item.product_name} → product_id: ${productId} (desde receta ${recipeId})`);
+        } else {
+          console.warn(`Receta ${recipeId} no encontrada para ${item.product_name}`);
+        }
+      }
+      
+      // Para COMMERCIAL, buscar el product_id por código o nombre
+      if (item.source_type === 'COMMERCIAL' && !productId) {
+        const productResult = await query(`
+          SELECT id FROM "${schema}".products 
+          WHERE code = $1 OR name = $2 OR barcode = $3
+        `, [item.product_code, item.product_name, item.barcode]);
+        
+        if (productResult.rows.length > 0) {
+          productId = productResult.rows[0].id;
+          console.log(`📦 Producto COMMERCIAL: ${item.product_name} → product_id: ${productId}`);
+        } else {
+          console.warn(`⚠️ Producto COMMERCIAL no encontrado: ${item.product_name} (${item.product_code})`);
+        }
+      }
+      
+      // Insertar el item con los IDs corregidos
       await query(`
         INSERT INTO "${schema}".purchase_order_items (
           purchase_order_id,
@@ -776,8 +811,8 @@ router.post('/', authMiddleware, async (req, res) => {
       `, [
         order.id,
         item.source_type,
-        item.product_id || null,
-        item.recipe_id || null,
+        productId,
+        recipeId,
         item.product_name,
         item.product_code || null,
         item.barcode || null,
