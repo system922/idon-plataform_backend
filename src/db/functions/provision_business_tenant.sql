@@ -882,31 +882,23 @@ BEGIN
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_po_items_man_raw_material_id_idx ON %I.purchase_order_items_man (raw_material_id)', p_schema_name, p_schema_name);
         
     -- ============================================================
-    -- 4. ASIGNACIÓN DE PROVEEDORES POR ITEM (MODIFICADA)
+    -- 4. ASIGNACIÓN DE PROVEEDORES POR ITEM
     -- ============================================================
     EXECUTE format('
       CREATE TABLE IF NOT EXISTS %I.purchase_order_item_suppliers (
         id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        purchase_order_item_id  UUID NOT NULL,
-        supplier_id             UUID NOT NULL,
         item_comm_id            UUID,
         item_man_id             UUID,
-        quantity                INTEGER NOT NULL,
+        supplier_id             UUID NOT NULL,
+        quantity                NUMERIC(12, 3) NOT NULL,
         unit_cost               NUMERIC(12, 2) NOT NULL,
         line_total              NUMERIC(12, 2) NOT NULL,
-        received_qty            INTEGER DEFAULT 0,
+        received_qty            NUMERIC(12, 3) DEFAULT 0,
         notes                   TEXT,
         created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         
-        CONSTRAINT purchase_order_item_suppliers_purchase_order_item_id_fkey 
-          FOREIGN KEY (purchase_order_item_id) 
-          REFERENCES %I.purchase_order_items_comm(id) ON DELETE CASCADE,
-          
-        CONSTRAINT purchase_order_item_suppliers_supplier_id_fkey 
-          FOREIGN KEY (supplier_id) 
-          REFERENCES %I.suppliers(id) ON DELETE RESTRICT,
-          
+        -- ✅ Solo FK a comm y man, no a purchase_order_item_id
         CONSTRAINT purchase_order_item_suppliers_item_comm_id_fkey 
           FOREIGN KEY (item_comm_id) 
           REFERENCES %I.purchase_order_items_comm(id) ON DELETE CASCADE,
@@ -915,14 +907,22 @@ BEGIN
           FOREIGN KEY (item_man_id) 
           REFERENCES %I.purchase_order_items_man(id) ON DELETE CASCADE,
           
+        CONSTRAINT purchase_order_item_suppliers_supplier_id_fkey 
+          FOREIGN KEY (supplier_id) 
+          REFERENCES %I.suppliers(id) ON DELETE RESTRICT,
+          
         CONSTRAINT purchase_order_item_suppliers_quantity_check 
           CHECK (quantity > 0),
           
         CONSTRAINT purchase_order_item_suppliers_unit_cost_check 
           CHECK (unit_cost >= 0),
           
-        CONSTRAINT purchase_order_item_suppliers_unique 
-          UNIQUE (purchase_order_item_id, supplier_id),
+        -- ✅ Unique compuesto para evitar duplicados
+        CONSTRAINT purchase_order_item_suppliers_unique_comm 
+          UNIQUE (item_comm_id, supplier_id),
+          
+        CONSTRAINT purchase_order_item_suppliers_unique_man 
+          UNIQUE (item_man_id, supplier_id),
           
         CONSTRAINT purchase_order_item_suppliers_item_check 
           CHECK (
@@ -932,39 +932,51 @@ BEGIN
       )', 
       p_schema_name,  -- purchase_order_item_suppliers
       p_schema_name,  -- purchase_order_items_comm (FK)
-      p_schema_name,  -- suppliers (FK)
-      p_schema_name,  -- purchase_order_items_comm (FK item_comm)
-      p_schema_name   -- purchase_order_items_man (FK item_man)
+      p_schema_name,  -- purchase_order_items_man (FK)
+      p_schema_name   -- suppliers (FK)
     );
 
     v_table_count := v_table_count + 1;
 
-    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_po_item_suppliers_item_id_idx ON %I.purchase_order_item_suppliers (purchase_order_item_id)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_po_item_suppliers_supplier_id_idx ON %I.purchase_order_item_suppliers (supplier_id)', p_schema_name, p_schema_name);
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_po_item_suppliers_item_comm_id_idx ON %I.purchase_order_item_suppliers (item_comm_id)', p_schema_name, p_schema_name);
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_po_item_suppliers_item_man_id_idx ON %I.purchase_order_item_suppliers (item_man_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_po_item_suppliers_supplier_id_idx ON %I.purchase_order_item_suppliers (supplier_id)', p_schema_name, p_schema_name);
 
 
     -- ============================================================
-    -- 5. RECEPCIÓN DE MERCADERÍA
+    -- 5. RECEPCIÓN DE MERCADERÍA (CORREGIDA)
     -- ============================================================
 
     EXECUTE format('
       CREATE TABLE IF NOT EXISTS %I.purchase_receipts (
         id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         receipt_number      VARCHAR(50) UNIQUE NOT NULL,
-        purchase_order_id   UUID NOT NULL REFERENCES %I.purchase_orders(id) ON DELETE RESTRICT,
-        supplier_id         UUID NOT NULL REFERENCES %I.suppliers(id) ON DELETE RESTRICT,
+        purchase_order_id   UUID NOT NULL,
+        supplier_id         UUID NOT NULL,
         receipt_date        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         status              VARCHAR(20) DEFAULT ''draft'',
+        total               NUMERIC(12, 2) DEFAULT 0,
         notes               TEXT,
         created_by          UUID,
         created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         
+        CONSTRAINT purchase_receipts_purchase_order_id_fkey 
+          FOREIGN KEY (purchase_order_id) 
+          REFERENCES %I.purchase_orders(id) ON DELETE RESTRICT,
+          
+        CONSTRAINT purchase_receipts_supplier_id_fkey 
+          FOREIGN KEY (supplier_id) 
+          REFERENCES %I.suppliers(id) ON DELETE RESTRICT,
+          
         CONSTRAINT purchase_receipts_status_check 
           CHECK (status IN (''draft'', ''completed'', ''cancelled''))
-      )', p_schema_name, p_schema_name, p_schema_name);
+      )', 
+      p_schema_name,  -- purchase_receipts
+      p_schema_name,  -- purchase_orders (FK)
+      p_schema_name   -- suppliers (FK)
+    );
+
     v_table_count := v_table_count + 1;
 
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_purchase_receipts_order_id_idx ON %I.purchase_receipts (purchase_order_id)', p_schema_name, p_schema_name);
@@ -974,63 +986,109 @@ BEGIN
 
 
     -- ============================================================
-    -- 6. ITEMS RECIBIDOS
+    -- 6. ITEMS RECIBIDOS (CORREGIDA)
     -- ============================================================
 
     EXECUTE format('
       CREATE TABLE IF NOT EXISTS %I.purchase_receipt_items (
         id                              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        receipt_id                      UUID NOT NULL REFERENCES %I.purchase_receipts(id) ON DELETE CASCADE,
-        purchase_order_item_id          UUID NOT NULL REFERENCES %I.purchase_order_items(id) ON DELETE RESTRICT,
-        purchase_order_item_supplier_id UUID REFERENCES %I.purchase_order_item_suppliers(id) ON DELETE RESTRICT,
-        product_id                      UUID REFERENCES %I.products(id) ON DELETE RESTRICT,
-        
-        -- Copia de datos para histórico
+        receipt_id                      UUID NOT NULL,
+        purchase_order_item_comm_id     UUID,
+        purchase_order_item_man_id      UUID,
+        purchase_order_item_supplier_id UUID,
+        product_id                      UUID NOT NULL,
         product_name                    VARCHAR(255) NOT NULL,
-        quantity                        INTEGER NOT NULL,
+        quantity                        NUMERIC(12, 3) NOT NULL,
         unit_cost                       NUMERIC(12, 2) NOT NULL,
         line_total                      NUMERIC(12, 2) NOT NULL,
-        
         notes                           TEXT,
         created_at                      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at                      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         
-        -- Restricciones
+        CONSTRAINT purchase_receipt_items_receipt_id_fkey 
+          FOREIGN KEY (receipt_id) 
+          REFERENCES %I.purchase_receipts(id) ON DELETE CASCADE,
+          
+        CONSTRAINT purchase_receipt_items_comm_id_fkey 
+          FOREIGN KEY (purchase_order_item_comm_id) 
+          REFERENCES %I.purchase_order_items_comm(id) ON DELETE RESTRICT,
+          
+        CONSTRAINT purchase_receipt_items_man_id_fkey 
+          FOREIGN KEY (purchase_order_item_man_id) 
+          REFERENCES %I.purchase_order_items_man(id) ON DELETE RESTRICT,
+          
+        CONSTRAINT purchase_receipt_items_supplier_id_fkey 
+          FOREIGN KEY (purchase_order_item_supplier_id) 
+          REFERENCES %I.purchase_order_item_suppliers(id) ON DELETE RESTRICT,
+          
+        CONSTRAINT purchase_receipt_items_product_id_fkey 
+          FOREIGN KEY (product_id) 
+          REFERENCES %I.products(id) ON DELETE RESTRICT,
+          
         CONSTRAINT purchase_receipt_items_quantity_check 
           CHECK (quantity > 0),
+          
         CONSTRAINT purchase_receipt_items_unit_cost_check 
-          CHECK (unit_cost >= 0)
-      )', p_schema_name, p_schema_name, p_schema_name, p_schema_name, p_schema_name);
+          CHECK (unit_cost >= 0),
+          
+        -- ✅ Check: solo un tipo de item puede estar presente
+        CONSTRAINT purchase_receipt_items_item_check 
+          CHECK (
+            (purchase_order_item_comm_id IS NOT NULL AND purchase_order_item_man_id IS NULL) OR
+            (purchase_order_item_comm_id IS NULL AND purchase_order_item_man_id IS NOT NULL)
+          )
+      )', 
+      p_schema_name,  -- purchase_receipt_items
+      p_schema_name,  -- purchase_receipts (FK)
+      p_schema_name,  -- purchase_order_items_comm (FK)
+      p_schema_name,  -- purchase_order_items_man (FK)
+      p_schema_name,  -- purchase_order_item_suppliers (FK)
+      p_schema_name   -- products (FK)
+    );
+
     v_table_count := v_table_count + 1;
 
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_purchase_receipt_items_receipt_id_idx ON %I.purchase_receipt_items (receipt_id)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_purchase_receipt_items_order_item_id_idx ON %I.purchase_receipt_items (purchase_order_item_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_purchase_receipt_items_comm_id_idx ON %I.purchase_receipt_items (purchase_order_item_comm_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_purchase_receipt_items_man_id_idx ON %I.purchase_receipt_items (purchase_order_item_man_id)', p_schema_name, p_schema_name);
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_purchase_receipt_items_product_id_idx ON %I.purchase_receipt_items (product_id)', p_schema_name, p_schema_name);
 
 
     -- ============================================================
     -- 7. HISTORIAL DE PROVEEDORES POR PRODUCTO
-    -- (Para sugerir proveedores en futuras compras)
     -- ============================================================
 
     EXECUTE format('
       CREATE TABLE IF NOT EXISTS %I.product_supplier_history (
         id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        product_id      UUID NOT NULL REFERENCES %I.products(id) ON DELETE CASCADE,
-        supplier_id     UUID NOT NULL REFERENCES %I.suppliers(id) ON DELETE CASCADE,
+        product_id      UUID NOT NULL,
+        supplier_id     UUID NOT NULL,
         last_unit_cost  NUMERIC(12, 2),
         last_order_date TIMESTAMP,
         total_orders    INTEGER DEFAULT 0,
         created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         
+        CONSTRAINT product_supplier_history_product_id_fkey 
+          FOREIGN KEY (product_id) 
+          REFERENCES %I.products(id) ON DELETE CASCADE,
+          
+        CONSTRAINT product_supplier_history_supplier_id_fkey 
+          FOREIGN KEY (supplier_id) 
+          REFERENCES %I.suppliers(id) ON DELETE CASCADE,
+          
         CONSTRAINT product_supplier_history_unique 
           UNIQUE (product_id, supplier_id)
-      )', p_schema_name, p_schema_name, p_schema_name);
+      )', 
+      p_schema_name,  -- product_supplier_history
+      p_schema_name,  -- products (FK)
+      p_schema_name   -- suppliers (FK)
+    );
+
     v_table_count := v_table_count + 1;
 
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_product_supplier_history_product_id_idx ON %I.product_supplier_history (product_id)', p_schema_name, p_schema_name);
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_product_supplier_history_supplier_id_idx ON %I.product_supplier_history (supplier_id)', p_schema_name, p_schema_name);
-
   END IF;
 
   -- â”€â”€â”€ ACCOUNTING (gastos operativos + cuentas por cobrar/pagar) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

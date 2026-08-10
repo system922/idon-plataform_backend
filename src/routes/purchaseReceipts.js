@@ -14,7 +14,6 @@ const router = express.Router();
  * Actualiza o crea el historial de producto-proveedor
  */
 async function updateProductSupplierHistory(schema, productId, supplierId, unitCost) {
-  // Verificar si existe el registro
   const existing = await query(`
     SELECT id, total_orders, last_unit_cost, last_order_date
     FROM "${schema}".product_supplier_history
@@ -22,7 +21,6 @@ async function updateProductSupplierHistory(schema, productId, supplierId, unitC
   `, [productId, supplierId]);
 
   if (existing.rows.length > 0) {
-    // Actualizar existente
     await query(`
       UPDATE "${schema}".product_supplier_history
       SET 
@@ -33,7 +31,6 @@ async function updateProductSupplierHistory(schema, productId, supplierId, unitC
       WHERE product_id = $1 AND supplier_id = $2
     `, [productId, supplierId, unitCost]);
   } else {
-    // Crear nuevo
     await query(`
       INSERT INTO "${schema}".product_supplier_history (
         product_id,
@@ -68,7 +65,6 @@ async function createInventoryMovement(schema, productId, quantity, unitCost, re
     `Recepción #${receiptNumber} - ${productName} (${quantity} unidades)`
   ]);
 
-  // Actualizar stock del producto
   await query(`
     UPDATE "${schema}".products
     SET 
@@ -125,12 +121,28 @@ router.get('/pending', authMiddleware, async (req, res) => {
         COUNT(DISTINCT poi.id) as total_items,
         SUM(CASE WHEN poi.received_qty < poi.quantity THEN 1 ELSE 0 END) as pending_items
       FROM "${schema}".purchase_orders po
-      JOIN "${schema}".purchase_order_items poi ON po.id = poi.purchase_order_id
+      JOIN "${schema}".purchase_order_items_comm poi ON po.id = poi.purchase_order_id
       WHERE po.status = 'approved'
         AND poi.quantity > poi.received_qty
       GROUP BY po.id
       HAVING SUM(CASE WHEN poi.received_qty < poi.quantity THEN 1 ELSE 0 END) > 0
-      ORDER BY po.created_at ASC
+      
+      UNION ALL
+      
+      SELECT 
+        po.id,
+        po.order_number,
+        po.created_at,
+        COUNT(DISTINCT poi.id) as total_items,
+        SUM(CASE WHEN poi.received_qty < poi.quantity THEN 1 ELSE 0 END) as pending_items
+      FROM "${schema}".purchase_orders po
+      JOIN "${schema}".purchase_order_items_man poi ON po.id = poi.purchase_order_id
+      WHERE po.status = 'approved'
+        AND poi.quantity > poi.received_qty
+      GROUP BY po.id
+      HAVING SUM(CASE WHEN poi.received_qty < poi.quantity THEN 1 ELSE 0 END) > 0
+      
+      ORDER BY created_at ASC
     `);
     
     res.json(result.rows);
@@ -149,7 +161,6 @@ router.get('/:id', authMiddleware, async (req, res) => {
     const { id } = req.params;
     const schema = await getSchemaName(req);
     
-    // Obtener la recepción
     const receiptResult = await query(`
       SELECT 
         pr.*,
@@ -165,7 +176,6 @@ router.get('/:id', authMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'Recepción no encontrada' });
     }
     
-    // Obtener items
     const itemsResult = await query(`
       SELECT 
         pri.*,
@@ -188,7 +198,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
 });
 
 // ============================================================
-// GET /api/purchase-orders/suppliers/:productId
+// GET /api/purchase-receipts/suppliers/:productId
 // Obtener proveedores para un producto (con fallback a todos)
 // ============================================================
 router.get('/suppliers/:productId', authMiddleware, async (req, res) => {
@@ -196,7 +206,6 @@ router.get('/suppliers/:productId', authMiddleware, async (req, res) => {
     const { productId } = req.params;
     const schema = await getSchemaName(req);
     
-    // Primero, buscar proveedores con historial para este producto
     const historyResult = await query(`
       SELECT 
         s.id,
@@ -216,12 +225,10 @@ router.get('/suppliers/:productId', authMiddleware, async (req, res) => {
       ORDER BY psh.total_orders DESC, psh.last_order_date DESC
     `, [productId]);
     
-    // Si hay proveedores con historial, devolverlos
     if (historyResult.rows.length > 0) {
       return res.json(historyResult.rows);
     }
     
-    // Si NO hay historial, devolver TODOS los proveedores activos
     const allSuppliers = await query(`
       SELECT 
         id,
@@ -242,7 +249,7 @@ router.get('/suppliers/:productId', authMiddleware, async (req, res) => {
     res.json(allSuppliers.rows);
     
   } catch (err) {
-    console.error('Error en GET /purchase-orders/suppliers/:productId:', err);
+    console.error('Error en GET /purchase-receipts/suppliers/:productId:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -263,7 +270,6 @@ router.post('/', authMiddleware, async (req, res) => {
     
     console.log('📦 Recibiendo recepción:', { purchase_order_id, supplier_groups: supplier_groups?.length });
     
-    // Validaciones
     if (!purchase_order_id) {
       return res.status(400).json({ error: 'Orden de compra requerida' });
     }
@@ -272,7 +278,6 @@ router.post('/', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Se requieren grupos de proveedores' });
     }
     
-    // Verificar que todos los grupos tengan proveedor y items
     for (const group of supplier_groups) {
       if (!group.supplier_id) {
         return res.status(400).json({ error: 'Todos los grupos deben tener un proveedor asignado' });
@@ -282,9 +287,8 @@ router.post('/', authMiddleware, async (req, res) => {
       }
     }
     
-    // Verificar que la orden existe y está aprobada
     const orderCheck = await query(`
-      SELECT status, order_number FROM "${schema}".purchase_orders WHERE id = $1
+      SELECT status, order_number, order_type FROM "${schema}".purchase_orders WHERE id = $1
     `, [purchase_order_id]);
     
     if (orderCheck.rows.length === 0) {
@@ -298,8 +302,8 @@ router.post('/', authMiddleware, async (req, res) => {
     }
     
     const orderNumber = orderCheck.rows[0].order_number;
+    const orderType = orderCheck.rows[0].order_type;
     
-    // Generar número de recepción (único para todas las recepciones de esta orden)
     const numberResult = await query(`
       SELECT 'RC-' || TO_CHAR(NOW(), 'YYYYMMDD') || '-' || 
       LPAD(COALESCE(MAX(CAST(SUBSTRING(receipt_number FROM '-(\\d+)$') AS INTEGER)), 0) + 1, 4, '0') as receipt_number
@@ -314,11 +318,9 @@ router.post('/', authMiddleware, async (req, res) => {
     const createdReceipts = [];
     const allProcessedItems = [];
     
-    // Procesar cada grupo de proveedor
     for (const group of supplier_groups) {
       const { supplier_id, items } = group;
       
-      // Verificar que el proveedor existe
       const supplierCheck = await query(`
         SELECT id, name FROM "${schema}".suppliers WHERE id = $1 AND is_active = true
       `, [supplier_id]);
@@ -329,10 +331,8 @@ router.post('/', authMiddleware, async (req, res) => {
       
       const supplierName = supplierCheck.rows[0].name;
       
-      // Calcular total del grupo
       const groupTotal = items.reduce((sum, item) => sum + (Number(item.line_total) || 0), 0);
       
-      // Crear recepción para este proveedor
       const receiptResult = await query(`
         INSERT INTO "${schema}".purchase_receipts (
           receipt_number,
@@ -358,30 +358,66 @@ router.post('/', authMiddleware, async (req, res) => {
       
       console.log(`✅ Recepción creada para ${supplierName}: ${receiptNumber}`);
       
-      // Procesar cada item del grupo
       for (const item of items) {
-        // Obtener el item de la orden
-        const orderItemResult = await query(`
-          SELECT 
-            poi.*,
-            p.id as product_id,
-            p.name as product_name,
-            p.code as product_code,
-            p.unit_cost as default_cost,
-            p.barcode
-          FROM "${schema}".purchase_order_items poi
-          LEFT JOIN "${schema}".products p ON poi.product_id = p.id
-          WHERE poi.id = $1
-        `, [item.purchase_order_item_id]);
+        let orderItemResult;
+        let productId;
+        let productName;
+        let defaultCost = 0;
+        let itemCommId = null;
+        let itemManId = null;
         
-        if (orderItemResult.rows.length === 0) {
-          throw new Error(`Item de orden ${item.purchase_order_item_id} no encontrado`);
+        if (orderType === 'COMMERCIAL') {
+          orderItemResult = await query(`
+            SELECT 
+              poi.*,
+              p.id as product_id,
+              p.name as product_name,
+              p.code as product_code,
+              p.unit_cost as default_cost,
+              p.barcode
+            FROM "${schema}".purchase_order_items_comm poi
+            LEFT JOIN "${schema}".products p ON poi.product_id = p.id
+            WHERE poi.id = $1
+          `, [item.purchase_order_item_id]);
+          
+          if (orderItemResult.rows.length === 0) {
+            throw new Error(`Item de orden ${item.purchase_order_item_id} no encontrado`);
+          }
+          
+          const data = orderItemResult.rows[0];
+          productId = data.product_id;
+          productName = data.product_name;
+          defaultCost = data.default_cost || 0;
+          itemCommId = item.purchase_order_item_id;
+        } else {
+          orderItemResult = await query(`
+            SELECT 
+              poi.*,
+              p.id as product_id,
+              p.name as product_name,
+              p.code as product_code,
+              p.unit_cost as default_cost,
+              p.barcode,
+              rm.name as raw_material_name,
+              rm.code as raw_material_code
+            FROM "${schema}".purchase_order_items_man poi
+            LEFT JOIN "${schema}".products p ON poi.product_id = p.id
+            LEFT JOIN "${schema}".raw_materials rm ON poi.raw_material_id = rm.id
+            WHERE poi.id = $1
+          `, [item.purchase_order_item_id]);
+          
+          if (orderItemResult.rows.length === 0) {
+            throw new Error(`Item de orden ${item.purchase_order_item_id} no encontrado`);
+          }
+          
+          const data = orderItemResult.rows[0];
+          productId = data.raw_material_id;
+          productName = data.raw_material_name || data.product_name;
+          defaultCost = data.default_cost || 0;
+          itemManId = item.purchase_order_item_id;
         }
         
-        const orderItemData = orderItemResult.rows[0];
-        const productId = orderItemData.product_id;
-        const productName = orderItemData.product_name || orderItemData.product_name;
-        const unitCost = item.unit_cost || orderItemData.default_cost || 0;
+        const unitCost = item.unit_cost || defaultCost || 0;
         const quantity = item.quantity || 0;
         const lineTotal = quantity * unitCost;
         
@@ -394,18 +430,22 @@ router.post('/', authMiddleware, async (req, res) => {
         const receiptItemResult = await query(`
           INSERT INTO "${schema}".purchase_receipt_items (
             receipt_id,
-            purchase_order_item_id,
+            purchase_order_item_comm_id,
+            purchase_order_item_man_id,
+            purchase_order_item_supplier_id,
             product_id,
             product_name,
             quantity,
             unit_cost,
             line_total,
             notes
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
           RETURNING id
         `, [
           receipt.id,
-          item.purchase_order_item_id,
+          itemCommId,
+          itemManId,
+          null, // purchase_order_item_supplier_id se asignará después
           productId,
           productName,
           quantity,
@@ -417,44 +457,65 @@ router.post('/', authMiddleware, async (req, res) => {
         const receiptItemId = receiptItemResult.rows[0].id;
         
         // 2. Guardar/actualizar en purchase_order_item_suppliers
-        await query(`
+        const supplierResult = await query(`
           INSERT INTO "${schema}".purchase_order_item_suppliers (
-            purchase_order_item_id,
+            item_comm_id,
+            item_man_id,
             supplier_id,
             quantity,
             unit_cost,
             line_total,
             received_qty,
             notes
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-          ON CONFLICT (purchase_order_item_id, supplier_id) 
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          ON CONFLICT (item_comm_id, supplier_id) WHERE item_comm_id IS NOT NULL
           DO UPDATE SET
             quantity = purchase_order_item_suppliers.quantity + EXCLUDED.quantity,
             received_qty = purchase_order_item_suppliers.received_qty + EXCLUDED.received_qty,
             line_total = purchase_order_item_suppliers.line_total + EXCLUDED.line_total,
             updated_at = CURRENT_TIMESTAMP
+          RETURNING id
         `, [
-          item.purchase_order_item_id,
+          itemCommId,
+          itemManId,
           supplier_id,
           quantity,
           unitCost,
           lineTotal,
-          quantity, // received_qty
+          quantity,
           `Recepción #${receiptNumber} - ${item.notes || ''}`
         ]);
         
-        // 3. Actualizar received_qty en purchase_order_items
-        await query(`
-          UPDATE "${schema}".purchase_order_items 
-          SET received_qty = received_qty + $1,
-              updated_at = CURRENT_TIMESTAMP
-          WHERE id = $2
-        `, [quantity, item.purchase_order_item_id]);
+        const supplierItemId = supplierResult.rows[0].id;
         
-        // 4. Actualizar/crear historial de producto-proveedor
+        // 3. Actualizar purchase_receipt_items con el supplier_id
+        await query(`
+          UPDATE "${schema}".purchase_receipt_items
+          SET purchase_order_item_supplier_id = $1
+          WHERE id = $2
+        `, [supplierItemId, receiptItemId]);
+        
+        // 4. Actualizar received_qty en purchase_order_items
+        if (orderType === 'COMMERCIAL') {
+          await query(`
+            UPDATE "${schema}".purchase_order_items_comm 
+            SET received_qty = received_qty + $1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $2
+          `, [quantity, itemCommId]);
+        } else {
+          await query(`
+            UPDATE "${schema}".purchase_order_items_man 
+            SET received_qty = received_qty + $1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $2
+          `, [quantity, itemManId]);
+        }
+        
+        // 5. Actualizar/crear historial de producto-proveedor
         await updateProductSupplierHistory(schema, productId, supplier_id, unitCost);
         
-        // 5. Crear movimiento de inventario (ENTRADA)
+        // 6. Crear movimiento de inventario (ENTRADA)
         await createInventoryMovement(
           schema, 
           productId, 
@@ -479,15 +540,26 @@ router.post('/', authMiddleware, async (req, res) => {
       }
     }
     
-    // 6. Verificar si todos los items de la orden fueron recibidos
-    const pendingResult = await query(`
-      SELECT COUNT(*) as pending
-      FROM "${schema}".purchase_order_items
-      WHERE purchase_order_id = $1
-        AND quantity > received_qty
-    `, [purchase_order_id]);
+    // 7. Verificar si todos los items de la orden fueron recibidos
+    let pendingCount = 0;
     
-    const pendingCount = parseInt(pendingResult.rows[0].pending);
+    if (orderType === 'COMMERCIAL') {
+      const pendingResult = await query(`
+        SELECT COUNT(*) as pending
+        FROM "${schema}".purchase_order_items_comm
+        WHERE purchase_order_id = $1
+          AND quantity > received_qty
+      `, [purchase_order_id]);
+      pendingCount = parseInt(pendingResult.rows[0].pending);
+    } else {
+      const pendingResult = await query(`
+        SELECT COUNT(*) as pending
+        FROM "${schema}".purchase_order_items_man
+        WHERE purchase_order_id = $1
+          AND quantity > received_qty
+      `, [purchase_order_id]);
+      pendingCount = parseInt(pendingResult.rows[0].pending);
+    }
     
     if (pendingCount === 0) {
       await query(`
@@ -506,7 +578,6 @@ router.post('/', authMiddleware, async (req, res) => {
     
     await query('COMMIT');
     
-    // Emitir evento de socket para actualizar inventario
     try {
       const businessId = req.headers['x-business-id'] || req.user?.businessId;
       if (businessId && global.io) {
@@ -550,7 +621,6 @@ router.delete('/:id', authMiddleware, async (req, res) => {
     const { id } = req.params;
     const schema = await getSchemaName(req);
     
-    // Verificar que la recepción está en draft
     const checkResult = await query(`
       SELECT status, receipt_number FROM "${schema}".purchase_receipts WHERE id = $1
     `, [id]);
@@ -563,7 +633,6 @@ router.delete('/:id', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Solo se pueden eliminar recepciones en borrador' });
     }
     
-    // Eliminar items de la recepción (cascade lo hará automáticamente)
     await query(`
       DELETE FROM "${schema}".purchase_receipts WHERE id = $1
     `, [id]);
