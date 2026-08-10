@@ -96,13 +96,13 @@ router.get('/:id', authMiddleware, async (req, res) => {
 
 // ============================================================
 // GET /api/purchase-orders/suggestions/items
-// Obtener sugerencias de productos con min_stock bajo
+// Obtener sugerencias de productos con stock bajo (CON STOCK CALCULADO)
 // ============================================================
 router.get('/suggestions/items', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
     
-    // 1. Productos COMMERCIAL con min_stock bajo o igual
+    // 1. Productos COMMERCIAL con min_stock bajo
     const commercialResult = await query(`
       SELECT 
         p.id,
@@ -116,7 +116,9 @@ router.get('/suggestions/items', authMiddleware, async (req, res) => {
         NULL as recipe_id,
         NULL as yield_qty,
         NULL as yield_unit,
-        NULL::jsonb as ingredients
+        NULL::jsonb as ingredients,
+        p.stock as calculated_stock,
+        p.min_stock as calculated_min_stock
       FROM "${schema}".products p
       WHERE p.product_type = 'COMMERCIAL' 
         AND p.is_active = true
@@ -124,15 +126,45 @@ router.get('/suggestions/items', authMiddleware, async (req, res) => {
       ORDER BY (p.min_stock - p.stock) DESC
     `);
     
-    // 2. Productos MANUFACTURED con min_stock bajo
+    // 2. Productos MANUFACTURED con stock calculado basado en materias primas
     const manufacturedResult = await query(`
+      WITH 
+      -- Calcular cuántas unidades se pueden producir con cada materia prima
+      material_capacity AS (
+        SELECT 
+          r.product_id,
+          MIN(
+            CASE 
+              WHEN ri.quantity > 0 
+              THEN FLOOR(COALESCE(rm.stock, 0) / ri.quantity)
+              ELSE 0
+            END
+          ) as max_units_producible,
+          MIN(
+            CASE 
+              WHEN ri.quantity > 0 
+              THEN FLOOR(COALESCE(rm.min_stock, 0) / ri.quantity)
+              ELSE 0
+            END
+          ) as max_units_for_min_stock
+        FROM "${schema}".recipes r
+        INNER JOIN "${schema}".recipe_ingredients ri 
+          ON ri.recipe_id = r.id
+        INNER JOIN "${schema}".raw_materials rm 
+          ON rm.id = ri.raw_material_id 
+          AND rm.is_active = true
+        WHERE r.is_active = true
+        GROUP BY r.product_id
+      )
       SELECT 
         p.id,
         p.code,
         p.name,
         p.barcode,
-        p.stock,
-        p.min_stock,
+        -- Stock calculado basado en materias primas
+        COALESCE(mc.max_units_producible, 0) as stock,
+        -- Min stock calculado basado en materias primas
+        COALESCE(mc.max_units_for_min_stock, 0) as min_stock,
         p.unit_cost,
         'MANUFACTURED' as source_type,
         r.id as recipe_id,
@@ -141,28 +173,44 @@ router.get('/suggestions/items', authMiddleware, async (req, res) => {
         COALESCE(
           json_agg(
             json_build_object(
-              'raw_material_id', ri.raw_material_id,
+              'raw_material_id', rm.id,
               'raw_material_name', rm.name,
               'raw_material_code', rm.code,
-              'quantity', ri.quantity,
-              'unit', ri.unit,
+              'quantity_needed', ri.quantity,
+              'stock_available', rm.stock,
+              'units_producible',
+                CASE 
+                  WHEN ri.quantity > 0 
+                  THEN FLOOR(COALESCE(rm.stock, 0) / ri.quantity)
+                  ELSE 0
+                END,
+              'unit', rm.unit,
               'unit_cost', rm.unit_cost,
               'total_cost', ri.quantity * rm.unit_cost,
-              'stock', rm.stock,
               'min_stock', rm.min_stock
             )
-          ) FILTER (WHERE ri.raw_material_id IS NOT NULL),
+          ) FILTER (WHERE rm.id IS NOT NULL),
           '[]'::json
-        ) as ingredients
+        ) as ingredients,
+        COALESCE(mc.max_units_producible, 0) as calculated_stock,
+        COALESCE(mc.max_units_for_min_stock, 0) as calculated_min_stock
       FROM "${schema}".products p
-      INNER JOIN "${schema}".recipes r ON p.id = r.product_id AND r.is_active = true
-      LEFT JOIN "${schema}".recipe_ingredients ri ON r.id = ri.recipe_id
-      LEFT JOIN "${schema}".raw_materials rm ON ri.raw_material_id = rm.id AND rm.is_active = true
+      INNER JOIN "${schema}".recipes r 
+        ON p.id = r.product_id 
+        AND r.is_active = true
+      INNER JOIN material_capacity mc 
+        ON mc.product_id = p.id
+      LEFT JOIN "${schema}".recipe_ingredients ri 
+        ON r.id = ri.recipe_id
+      LEFT JOIN "${schema}".raw_materials rm 
+        ON ri.raw_material_id = rm.id 
+        AND rm.is_active = true
       WHERE p.product_type = 'MANUFACTURED' 
         AND p.is_active = true
-        AND p.stock <= p.min_stock
-      GROUP BY p.id, r.id
-      ORDER BY (p.min_stock - p.stock) DESC
+        -- Solo productos que están por debajo del min_stock calculado
+        AND COALESCE(mc.max_units_producible, 0) <= COALESCE(mc.max_units_for_min_stock, 0)
+      GROUP BY p.id, r.id, mc.max_units_producible, mc.max_units_for_min_stock
+      ORDER BY (COALESCE(mc.max_units_for_min_stock, 0) - COALESCE(mc.max_units_producible, 0)) DESC
     `);
     
     res.json({
@@ -209,7 +257,7 @@ router.get('/suppliers/:productId', authMiddleware, async (req, res) => {
 
 // ============================================================
 // GET /api/purchase-orders/products/with-recipe
-// Obtener productos con sus recetas y materiales (OPTIMIZADO)
+// Obtener productos con sus recetas y materiales (CON STOCK CALCULADO)
 // ============================================================
 router.get('/products/with-recipe', authMiddleware, async (req, res) => {
   try {
@@ -224,6 +272,34 @@ router.get('/products/with-recipe', authMiddleware, async (req, res) => {
     const schema = await getSchemaName(req);
     
     const result = await query(`
+      WITH 
+      -- Calcular cuántas unidades se pueden producir con cada materia prima
+      material_production_capacity AS (
+        SELECT 
+          r.product_id,
+          MIN(
+            CASE 
+              WHEN ri.quantity > 0 
+              THEN FLOOR(COALESCE(rm.stock, 0) / ri.quantity)
+              ELSE 0
+            END
+          ) as max_units_producible,
+          MIN(
+            CASE 
+              WHEN ri.quantity > 0 
+              THEN FLOOR(COALESCE(rm.min_stock, 0) / ri.quantity)
+              ELSE 0
+            END
+          ) as max_units_for_min_stock
+        FROM "${schema}".recipes r
+        INNER JOIN "${schema}".recipe_ingredients ri 
+          ON ri.recipe_id = r.id
+        INNER JOIN "${schema}".raw_materials rm 
+          ON rm.id = ri.raw_material_id 
+          AND rm.is_active = true
+        WHERE r.is_active = true
+        GROUP BY r.product_id
+      )
       SELECT
         p.id,
         p.code,
@@ -237,8 +313,18 @@ router.get('/products/with-recipe', authMiddleware, async (req, res) => {
         p.is_active,
         p.sku,
         p.barcode,
-        p.stock,
-        p.min_stock,
+        -- STOCK CALCULADO: para MANUFACTURED usa el cálculo basado en materias primas
+        CASE 
+          WHEN p.product_type = 'MANUFACTURED' 
+          THEN COALESCE(mpc.max_units_producible, 0)
+          ELSE p.stock
+        END AS stock,
+        -- MIN_STOCK CALCULADO: basado en el min_stock de las materias primas
+        CASE 
+          WHEN p.product_type = 'MANUFACTURED' 
+          THEN COALESCE(mpc.max_units_for_min_stock, 0)
+          ELSE p.min_stock
+        END AS min_stock,
         p.created_at,
         p.updated_at,
         p.product_type,
@@ -259,11 +345,17 @@ router.get('/products/with-recipe', authMiddleware, async (req, res) => {
                         'name', rm.name,
                         'description', rm.description,
                         'unit', rm.unit,
-                        'quantity', ri.quantity,
+                        'quantity_needed', ri.quantity,
+                        'stock_available', rm.stock,
+                        'units_producible',
+                          CASE 
+                            WHEN ri.quantity > 0 
+                            THEN FLOOR(COALESCE(rm.stock, 0) / ri.quantity)
+                            ELSE 0
+                          END,
                         'conversion_factor', ri.conversion_factor,
                         'unit_cost', ri.unit_cost,
                         'total_cost', ri.total_cost,
-                        'stock', rm.stock,
                         'min_stock', rm.min_stock,
                         'is_active', rm.is_active,
                         'barcode', rm.barcode,
@@ -288,6 +380,9 @@ router.get('/products/with-recipe', authMiddleware, async (req, res) => {
     LEFT JOIN "${schema}".raw_materials rm
         ON rm.id = ri.raw_material_id
         AND rm.is_active = true
+
+    LEFT JOIN material_production_capacity mpc
+        ON mpc.product_id = p.id
 
     WHERE
         p.is_active = true
@@ -322,7 +417,9 @@ router.get('/products/with-recipe', authMiddleware, async (req, res) => {
         r.description,
         r.yield_qty,
         r.yield_unit,
-        r.total_cost
+        r.total_cost,
+        mpc.max_units_producible,
+        mpc.max_units_for_min_stock
 
     ORDER BY p.name
     `, [product_type]);
@@ -391,7 +488,7 @@ router.get('/products/commercial', authMiddleware, async (req, res) => {
 
 // ============================================================
 // GET /api/purchase-orders/products/manufactured
-// Obtener solo productos manufacturados con su receta
+// Obtener solo productos manufacturados con su receta (CON STOCK CALCULADO)
 // ============================================================
 router.get('/products/manufactured', authMiddleware, async (req, res) => {
   try {
@@ -415,6 +512,32 @@ router.get('/products/manufactured', authMiddleware, async (req, res) => {
     }
     
     const result = await query(`
+      WITH material_capacity AS (
+        SELECT 
+          r.product_id,
+          MIN(
+            CASE 
+              WHEN ri.quantity > 0 
+              THEN FLOOR(COALESCE(rm.stock, 0) / ri.quantity)
+              ELSE 0
+            END
+          ) as max_units_producible,
+          MIN(
+            CASE 
+              WHEN ri.quantity > 0 
+              THEN FLOOR(COALESCE(rm.min_stock, 0) / ri.quantity)
+              ELSE 0
+            END
+          ) as max_units_for_min_stock
+        FROM "${schema}".recipes r
+        INNER JOIN "${schema}".recipe_ingredients ri 
+          ON ri.recipe_id = r.id
+        INNER JOIN "${schema}".raw_materials rm 
+          ON rm.id = ri.raw_material_id 
+          AND rm.is_active = true
+        WHERE r.is_active = true
+        GROUP BY r.product_id
+      )
       SELECT 
         p.id,
         p.code,
@@ -422,8 +545,10 @@ router.get('/products/manufactured', authMiddleware, async (req, res) => {
         p.description,
         p.barcode,
         p.sku,
-        p.stock,
-        p.min_stock,
+        -- STOCK CALCULADO basado en materias primas
+        COALESCE(mc.max_units_producible, 0) as stock,
+        -- MIN_STOCK CALCULADO basado en materias primas
+        COALESCE(mc.max_units_for_min_stock, 0) as min_stock,
         p.unit_cost,
         p.selling_price,
         p.category_id,
@@ -444,11 +569,17 @@ router.get('/products/manufactured', authMiddleware, async (req, res) => {
               'name', rm.name,
               'description', rm.description,
               'unit', rm.unit,
-              'quantity', ri.quantity,
+              'quantity_needed', ri.quantity,
+              'stock_available', rm.stock,
+              'units_producible',
+                CASE 
+                  WHEN ri.quantity > 0 
+                  THEN FLOOR(COALESCE(rm.stock, 0) / ri.quantity)
+                  ELSE 0
+                END,
               'conversion_factor', ri.conversion_factor,
               'unit_cost', ri.unit_cost,
               'total_cost', ri.total_cost,
-              'stock', rm.stock,
               'min_stock', rm.min_stock,
               'barcode', rm.barcode,
               'sku', rm.sku
@@ -458,12 +589,20 @@ router.get('/products/manufactured', authMiddleware, async (req, res) => {
           '[]'::json
         ) as materials
       FROM "${schema}".products p
-      INNER JOIN "${schema}".recipes r ON p.id = r.product_id AND r.is_active = true
-      LEFT JOIN "${schema}".recipe_ingredients ri ON r.id = ri.recipe_id
-      LEFT JOIN "${schema}".raw_materials rm ON ri.raw_material_id = rm.id AND rm.is_active = true
-      LEFT JOIN "${schema}".categories c ON p.category_id = c.id
+      INNER JOIN "${schema}".recipes r 
+        ON p.id = r.product_id 
+        AND r.is_active = true
+      INNER JOIN material_capacity mc 
+        ON mc.product_id = p.id
+      LEFT JOIN "${schema}".recipe_ingredients ri 
+        ON r.id = ri.recipe_id
+      LEFT JOIN "${schema}".raw_materials rm 
+        ON ri.raw_material_id = rm.id 
+        AND rm.is_active = true
+      LEFT JOIN "${schema}".categories c 
+        ON p.category_id = c.id
       WHERE ${whereClause}
-      GROUP BY p.id, c.name, r.id
+      GROUP BY p.id, c.name, r.id, mc.max_units_producible, mc.max_units_for_min_stock
       ORDER BY p.name ASC
     `, params);
     
