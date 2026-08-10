@@ -761,41 +761,59 @@ router.post('/', authMiddleware, async (req, res) => {
     const order = orderResult.rows[0];
     
     for (const item of items) {
-      let productId = item.product_id || null;
-      let recipeId = item.recipe_id || null;
+      let productId = null;
+      let recipeId = null;
       
-      // Para MANUFACTURED, obtener el product_id desde la receta
-      if (item.source_type === 'MANUFACTURED' && recipeId) {
-        // Buscar el product_id asociado a la receta
-        const recipeProductResult = await query(`
-          SELECT product_id FROM "${schema}".recipes 
-          WHERE id = $1 AND is_active = true
-        `, [recipeId]);
-        
-        if (recipeProductResult.rows.length > 0) {
-          productId = recipeProductResult.rows[0].product_id;
-          console.log(`Producto MANUFACTURED: ${item.product_name} → product_id: ${productId} (desde receta ${recipeId})`);
+      // 🔥 CORREGIDO: MANUFACTURED SOLO usa recipe_id, product_id = NULL
+      if (item.source_type === 'MANUFACTURED') {
+        if (item.recipe_id) {
+          // Verificar que la receta existe
+          const recipeResult = await query(`
+            SELECT id FROM "${schema}".recipes 
+            WHERE id = $1 AND is_active = true
+          `, [item.recipe_id]);
+          
+          if (recipeResult.rows.length === 0) {
+            throw new Error(`Receta no encontrada: ${item.recipe_id}`);
+          }
+          
+          recipeId = item.recipe_id;
+          productId = null; // ✅ CONSTRAINT: product_id NULL para MANUFACTURED
+          
+          console.log(`📦 [POST] MANUFACTURED: ${item.product_name} → recipe_id: ${recipeId}`);
         } else {
-          console.warn(`Receta ${recipeId} no encontrada para ${item.product_name}`);
+          throw new Error(`Item MANUFACTURED sin recipe_id: ${item.product_name}`);
         }
       }
       
-      // Para COMMERCIAL, buscar el product_id por código o nombre
-      if (item.source_type === 'COMMERCIAL' && !productId) {
-        const productResult = await query(`
-          SELECT id FROM "${schema}".products 
-          WHERE code = $1 OR name = $2 OR barcode = $3
-        `, [item.product_code, item.product_name, item.barcode]);
-        
-        if (productResult.rows.length > 0) {
-          productId = productResult.rows[0].id;
-          console.log(`📦 Producto COMMERCIAL: ${item.product_name} → product_id: ${productId}`);
+      // 🔥 CORREGIDO: COMMERCIAL SOLO usa product_id, recipe_id = NULL
+      if (item.source_type === 'COMMERCIAL') {
+        if (item.product_id) {
+          productId = item.product_id;
+          recipeId = null; // ✅ CONSTRAINT: recipe_id NULL para COMMERCIAL
+          
+          console.log(`📦 [POST] COMMERCIAL: ${item.product_name} → product_id: ${productId}`);
+        } else if (item.product_code || item.product_name) {
+          // Buscar producto por código o nombre
+          const productResult = await query(`
+            SELECT id FROM "${schema}".products 
+            WHERE code = $1 OR name = $2 OR barcode = $3
+          `, [item.product_code, item.product_name, item.barcode]);
+          
+          if (productResult.rows.length > 0) {
+            productId = productResult.rows[0].id;
+            recipeId = null; // ✅ CONSTRAINT: recipe_id NULL para COMMERCIAL
+            
+            console.log(`📦 [POST] COMMERCIAL por búsqueda: ${item.product_name} → product_id: ${productId}`);
+          } else {
+            throw new Error(`Producto COMMERCIAL no encontrado: ${item.product_name} (${item.product_code})`);
+          }
         } else {
-          console.warn(`⚠️ Producto COMMERCIAL no encontrado: ${item.product_name} (${item.product_code})`);
+          throw new Error(`Item COMMERCIAL sin identificación: ${item.product_name}`);
         }
       }
       
-      // Insertar el item con los IDs corregidos
+      // ✅ INSERT con valores correctos según constraint
       await query(`
         INSERT INTO "${schema}".purchase_order_items (
           purchase_order_id,
@@ -811,8 +829,8 @@ router.post('/', authMiddleware, async (req, res) => {
       `, [
         order.id,
         item.source_type,
-        productId,
-        recipeId,
+        productId,   // ✅ NULL para MANUFACTURED, NOT NULL para COMMERCIAL
+        recipeId,    // ✅ NOT NULL para MANUFACTURED, NULL para COMMERCIAL
         item.product_name,
         item.product_code || null,
         item.barcode || null,
@@ -836,7 +854,7 @@ router.post('/', authMiddleware, async (req, res) => {
     res.status(201).json(result.rows[0]);
   } catch (err) {
     await query('ROLLBACK');
-    console.error('Error en POST /purchase-orders:', err);
+    console.error('❌ Error en POST /purchase-orders:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -881,7 +899,6 @@ router.put('/:id', authMiddleware, async (req, res) => {
       }
     }
 
-    // Verificar que la orden existe y está en draft
     const orderResult = await query(`
       SELECT *
       FROM "${schema}".purchase_orders
@@ -905,19 +922,14 @@ router.put('/:id', authMiddleware, async (req, res) => {
     await query('BEGIN');
 
     try {
-      // 1. Actualizar notas de la orden
       await query(`
         UPDATE "${schema}".purchase_orders
         SET
           notes = $1,
           updated_at = CURRENT_TIMESTAMP
         WHERE id = $2
-      `, [
-        notes || null,
-        id
-      ]);
+      `, [notes || null, id]);
 
-      // 2. Obtener los IDs actuales de los items
       const currentItemsResult = await query(`
         SELECT id
         FROM "${schema}".purchase_order_items
@@ -927,19 +939,16 @@ router.put('/:id', authMiddleware, async (req, res) => {
       const currentItemIds = currentItemsResult.rows.map(row => row.id);
       const incomingItemIds = items.filter(item => item.id).map(item => item.id);
 
-      // 3. Eliminar items que ya no están en la lista
       const itemsToDelete = currentItemIds.filter(
         currentId => !incomingItemIds.includes(currentId)
       );
 
       if (itemsToDelete.length > 0) {
-        // Primero eliminar de purchase_order_item_suppliers (por FK)
         await query(`
           DELETE FROM "${schema}".purchase_order_item_suppliers
           WHERE purchase_order_item_id = ANY($1::uuid[])
         `, [itemsToDelete]);
 
-        // Luego eliminar de purchase_order_items
         await query(`
           DELETE FROM "${schema}".purchase_order_items
           WHERE id = ANY($1::uuid[])
@@ -947,57 +956,52 @@ router.put('/:id', authMiddleware, async (req, res) => {
         `, [itemsToDelete, id]);
       }
 
-      // 4. Procesar cada item (insertar o actualizar)
       for (const item of items) {
-        let productId = item.product_id || null;
-        let recipeId = item.recipe_id || null;
+        let productId = null;
+        let recipeId = null;
 
-        // 🔥 CORREGIDO: Para MANUFACTURED, obtener el product_id desde la receta
-        if (item.source_type === 'MANUFACTURED' && recipeId) {
-          const recipeProductResult = await query(`
-            SELECT product_id FROM "${schema}".recipes 
-            WHERE id = $1 AND is_active = true
-          `, [recipeId]);
-          
-          if (recipeProductResult.rows.length > 0) {
-            productId = recipeProductResult.rows[0].product_id;
-            console.log(`📦 [PUT] Producto MANUFACTURED: ${item.product_name} → product_id: ${productId} (desde receta ${recipeId})`);
+        // 🔥 CORREGIDO: MANUFACTURED SOLO usa recipe_id
+        if (item.source_type === 'MANUFACTURED') {
+          if (item.recipe_id) {
+            const recipeResult = await query(`
+              SELECT id FROM "${schema}".recipes 
+              WHERE id = $1 AND is_active = true
+            `, [item.recipe_id]);
+            
+            if (recipeResult.rows.length === 0) {
+              throw new Error(`Receta no encontrada: ${item.recipe_id}`);
+            }
+            
+            recipeId = item.recipe_id;
+            productId = null; // ✅ CONSTRAINT: product_id NULL para MANUFACTURED
           } else {
-            console.warn(`⚠️ [PUT] Receta ${recipeId} no encontrada para ${item.product_name}`);
+            throw new Error(`Item MANUFACTURED sin recipe_id: ${item.product_name}`);
           }
         }
 
-        // 🔥 CORREGIDO: Para COMMERCIAL, buscar el product_id por código o nombre
-        if (item.source_type === 'COMMERCIAL' && !productId) {
-          const productResult = await query(`
-            SELECT id FROM "${schema}".products 
-            WHERE code = $1 OR name = $2 OR barcode = $3
-          `, [item.product_code, item.product_name, item.barcode]);
-          
-          if (productResult.rows.length > 0) {
-            productId = productResult.rows[0].id;
-            console.log(`📦 [PUT] Producto COMMERCIAL: ${item.product_name} → product_id: ${productId}`);
+        // 🔥 CORREGIDO: COMMERCIAL SOLO usa product_id
+        if (item.source_type === 'COMMERCIAL') {
+          if (item.product_id) {
+            productId = item.product_id;
+            recipeId = null; // ✅ CONSTRAINT: recipe_id NULL para COMMERCIAL
+          } else if (item.product_code || item.product_name) {
+            const productResult = await query(`
+              SELECT id FROM "${schema}".products 
+              WHERE code = $1 OR name = $2 OR barcode = $3
+            `, [item.product_code, item.product_name, item.barcode]);
+            
+            if (productResult.rows.length > 0) {
+              productId = productResult.rows[0].id;
+              recipeId = null; // ✅ CONSTRAINT: recipe_id NULL para COMMERCIAL
+            } else {
+              throw new Error(`Producto COMMERCIAL no encontrado: ${item.product_name}`);
+            }
           } else {
-            console.warn(`⚠️ [PUT] Producto COMMERCIAL no encontrado: ${item.product_name} (${item.product_code})`);
+            throw new Error(`Item COMMERCIAL sin identificación: ${item.product_name}`);
           }
         }
 
-        // Si es MANUFACTURED y no tiene recipe_id, buscarlo
-        if (item.source_type === 'MANUFACTURED' && !recipeId && productId) {
-          const recipeResult = await query(`
-            SELECT id FROM "${schema}".recipes 
-            WHERE product_id = $1 AND is_active = true
-          `, [productId]);
-          
-          if (recipeResult.rows.length > 0) {
-            recipeId = recipeResult.rows[0].id;
-            console.log(`📦 [PUT] Receta encontrada para ${item.product_name}: ${recipeId}`);
-          }
-        }
-
-        // Verificar si el item ya existe (por ID) o es nuevo
         if (item.id && currentItemIds.includes(item.id)) {
-          // ✅ UPDATE: Actualizar item existente
           await query(`
             UPDATE "${schema}".purchase_order_items
             SET
@@ -1024,12 +1028,8 @@ router.put('/:id', authMiddleware, async (req, res) => {
             item.id,
             id
           ]);
-
-          console.log(`✅ [PUT] Item actualizado: ${item.product_name} (${item.id})`);
-
         } else {
-          // ✅ INSERT: Crear nuevo item
-          const newItemResult = await query(`
+          await query(`
             INSERT INTO "${schema}".purchase_order_items (
               purchase_order_id,
               source_type,
@@ -1042,7 +1042,6 @@ router.put('/:id', authMiddleware, async (req, res) => {
               notes
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            RETURNING id
           `, [
             id,
             item.source_type,
@@ -1054,22 +1053,16 @@ router.put('/:id', authMiddleware, async (req, res) => {
             item.quantity,
             item.notes || null
           ]);
-
-          console.log(`✅ [PUT] Nuevo item creado: ${item.product_name} (${newItemResult.rows[0].id})`);
         }
       }
 
       await query('COMMIT');
 
-      console.log(`✅ [PUT] Orden ${id} actualizada correctamente`);
-
     } catch (transactionError) {
       await query('ROLLBACK');
-      console.error('❌ [PUT] Error en transacción:', transactionError);
       throw transactionError;
     }
 
-    // 5. Obtener la orden actualizada con el conteo de items
     const result = await query(`
       SELECT
         po.*,
@@ -1084,13 +1077,12 @@ router.put('/:id', authMiddleware, async (req, res) => {
     res.json(result.rows[0]);
 
   } catch (err) {
-    console.error('❌ [PUT] Error en PUT /purchase-orders/:id:', err);
+    console.error('❌ Error en PUT /purchase-orders/:id:', err);
     try {
       await query('ROLLBACK');
     } catch (_) {}
     res.status(500).json({
-      error: err.message,
-      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+      error: err.message
     });
   }
 });

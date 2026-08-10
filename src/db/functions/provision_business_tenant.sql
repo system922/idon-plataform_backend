@@ -793,14 +793,17 @@ BEGIN
         id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         purchase_order_id   UUID NOT NULL REFERENCES %I.purchase_orders(id) ON DELETE CASCADE,
         
-        -- Tipo: COMMERCIAL o MANUFACTURED
+        -- Tipo: COMMERCIAL, MANUFACTURED o RAW_MATERIAL
         source_type         VARCHAR(20) NOT NULL,
         
         -- Para COMMERCIAL: producto directo
         product_id          UUID REFERENCES %I.products(id) ON DELETE RESTRICT,
         
-        -- Para MANUFACTURED: receta
+        -- Para MANUFACTURED: receta (solo como referencia, no se guarda en compra)
         recipe_id           UUID REFERENCES %I.recipes(id) ON DELETE RESTRICT,
+        
+        -- Para RAW_MATERIAL: materia prima
+        raw_material_id     UUID REFERENCES %I.raw_materials(id) ON DELETE RESTRICT,
         
         -- Datos del producto (copia para histórico)
         product_name        VARCHAR(255) NOT NULL,
@@ -819,23 +822,34 @@ BEGIN
         
         -- Restricciones
         CONSTRAINT purchase_order_items_source_type_check 
-          CHECK (source_type IN (''COMMERCIAL'', ''MANUFACTURED'')),
-        CONSTRAINT purchase_order_items_product_or_recipe_check 
+          CHECK (source_type IN (''COMMERCIAL'', ''MANUFACTURED'', ''RAW_MATERIAL'')),
+        
+        -- Constraint para COMMERCIAL: product_id NOT NULL, recipe_id NULL, raw_material_id NULL
+        -- Constraint para MANUFACTURED: recipe_id NOT NULL, product_id NULL, raw_material_id NULL (solo referencia)
+        -- Constraint para RAW_MATERIAL: raw_material_id NOT NULL, product_id NULL, recipe_id NULL
+        CONSTRAINT purchase_order_items_source_check 
           CHECK (
-            (source_type = ''COMMERCIAL'' AND product_id IS NOT NULL AND recipe_id IS NULL) OR
-            (source_type = ''MANUFACTURED'' AND recipe_id IS NOT NULL AND product_id IS NULL)
+            (source_type = ''COMMERCIAL'' AND product_id IS NOT NULL AND recipe_id IS NULL AND raw_material_id IS NULL) OR
+            (source_type = ''MANUFACTURED'' AND recipe_id IS NOT NULL AND product_id IS NULL AND raw_material_id IS NULL) OR
+            (source_type = ''RAW_MATERIAL'' AND raw_material_id IS NOT NULL AND product_id IS NULL AND recipe_id IS NULL)
           )
-      )', p_schema_name, p_schema_name, p_schema_name, p_schema_name);
+      )', 
+      p_schema_name,      -- purchase_order_items
+      p_schema_name,      -- purchase_orders (FK)
+      p_schema_name,      -- products (FK)
+      p_schema_name,      -- recipes (FK)
+      p_schema_name       -- raw_materials (FK)
+    );
+
     v_table_count := v_table_count + 1;
 
+    -- Índices
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_purchase_order_items_order_id_idx ON %I.purchase_order_items (purchase_order_id)', p_schema_name, p_schema_name);
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_purchase_order_items_product_id_idx ON %I.purchase_order_items (product_id)', p_schema_name, p_schema_name);
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_purchase_order_items_recipe_id_idx ON %I.purchase_order_items (recipe_id)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_purchase_order_items_source_type_idx ON %I.purchase_order_items (source_type)', p_schema_name, p_schema_name);
-
-
-    -- ============================================================
-    -- 3. ASIGNACIÓN DE PROVEEDORES POR ITEM
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_purchase_order_items_raw_material_id_idx ON %I.purchase_order_items (raw_material_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_purchase_order_items_source_type_idx ON %I.purchase_order_items (source_type)', p_schema_name, p_schema_name);-- ============================================================
+        -- 3. ASIGNACIÓN DE PROVEEDORES POR ITEM
     -- ============================================================
 
     EXECUTE format('
