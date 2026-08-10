@@ -3,6 +3,7 @@ import express from 'express';
 import { query } from '../config/database.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 import { authMiddleware } from '../middleware/auth.js';
+import { generateOrderNumber } from '../utils/orderNumberGenerator.js';
 
 const router = express.Router();
 
@@ -129,7 +130,6 @@ router.get('/suggestions/items', authMiddleware, async (req, res) => {
     // 2. Productos MANUFACTURED con stock calculado basado en materias primas
     const manufacturedResult = await query(`
       WITH 
-      -- Calcular cuántas unidades se pueden producir con cada materia prima
       material_capacity AS (
         SELECT 
           r.product_id,
@@ -161,9 +161,7 @@ router.get('/suggestions/items', authMiddleware, async (req, res) => {
         p.code,
         p.name,
         p.barcode,
-        -- Stock calculado basado en materias primas
         COALESCE(mc.max_units_producible, 0) as stock,
-        -- Min stock calculado basado en materias primas
         COALESCE(mc.max_units_for_min_stock, 0) as min_stock,
         p.unit_cost,
         'MANUFACTURED' as source_type,
@@ -207,7 +205,6 @@ router.get('/suggestions/items', authMiddleware, async (req, res) => {
         AND rm.is_active = true
       WHERE p.product_type = 'MANUFACTURED' 
         AND p.is_active = true
-        -- Solo productos que están por debajo del min_stock calculado
         AND COALESCE(mc.max_units_producible, 0) <= COALESCE(mc.max_units_for_min_stock, 0)
       GROUP BY p.id, r.id, mc.max_units_producible, mc.max_units_for_min_stock
       ORDER BY (COALESCE(mc.max_units_for_min_stock, 0) - COALESCE(mc.max_units_producible, 0)) DESC
@@ -273,7 +270,6 @@ router.get('/products/with-recipe', authMiddleware, async (req, res) => {
     
     const result = await query(`
       WITH 
-      -- Calcular cuántas unidades se pueden producir con cada materia prima
       material_production_capacity AS (
         SELECT 
           r.product_id,
@@ -313,13 +309,11 @@ router.get('/products/with-recipe', authMiddleware, async (req, res) => {
         p.is_active,
         p.sku,
         p.barcode,
-        -- STOCK CALCULADO: para MANUFACTURED usa el cálculo basado en materias primas
         CASE 
           WHEN p.product_type = 'MANUFACTURED' 
           THEN COALESCE(mpc.max_units_producible, 0)
           ELSE p.stock
         END AS stock,
-        -- MIN_STOCK CALCULADO: basado en el min_stock de las materias primas
         CASE 
           WHEN p.product_type = 'MANUFACTURED' 
           THEN COALESCE(mpc.max_units_for_min_stock, 0)
@@ -545,9 +539,7 @@ router.get('/products/manufactured', authMiddleware, async (req, res) => {
         p.description,
         p.barcode,
         p.sku,
-        -- STOCK CALCULADO basado en materias primas
         COALESCE(mc.max_units_producible, 0) as stock,
-        -- MIN_STOCK CALCULADO basado en materias primas
         COALESCE(mc.max_units_for_min_stock, 0) as min_stock,
         p.unit_cost,
         p.selling_price,
@@ -746,21 +738,10 @@ router.post('/', authMiddleware, async (req, res) => {
       }
     }
     
-    // Generar número de orden
-    const numberResult = await query(`
-      SELECT 
-        'OC-' || TO_CHAR(NOW(), 'YYYYMMDD') || '-' || 
-        LPAD(COALESCE(
-          (SELECT MAX(CAST(SUBSTRING(order_number FROM '-(\\d+)$') AS INTEGER)) 
-           FROM "${schema}".purchase_orders 
-           WHERE order_number LIKE 'OC-' || TO_CHAR(NOW(), 'YYYYMMDD') || '-%'), 
-          0)::text, 
-        4, 
-        '0'
-        ) as order_number
-    `);
-    
-    const orderNumber = numberResult.rows[0].order_number;
+    // ============================================================
+    // GENERAR NÚMERO DE ORDEN USANDO EL HELPER
+    // ============================================================
+    const orderNumber = await generateOrderNumber(schema);
     
     await query('BEGIN');
     
