@@ -18,12 +18,9 @@ router.get('/', authMiddleware, async (req, res) => {
     const result = await query(`
       SELECT 
         po.*,
-        COUNT(DISTINCT poi.id) as item_count,
-        COUNT(DISTINCT pois.supplier_id) as supplier_count,
-        COALESCE(SUM(pois.line_total), 0) as total
+        COUNT(DISTINCT poi.id) as item_count
       FROM "${schema}".purchase_orders po
       LEFT JOIN "${schema}".purchase_order_items poi ON po.id = poi.purchase_order_id
-      LEFT JOIN "${schema}".purchase_order_item_suppliers pois ON poi.id = pois.purchase_order_item_id
       GROUP BY po.id
       ORDER BY po.created_at DESC
     `);
@@ -123,7 +120,7 @@ router.get('/suggestions/items', authMiddleware, async (req, res) => {
       FROM "${schema}".products p
       WHERE p.product_type = 'COMMERCIAL' 
         AND p.is_active = true
-        AND p.stock <= p.min_stock  -- Stock menor o igual al mínimo
+        AND p.stock <= p.min_stock
       ORDER BY (p.min_stock - p.stock) DESC
     `);
     
@@ -205,20 +202,17 @@ router.get('/suggestions/items', authMiddleware, async (req, res) => {
         AND rm.is_active = true
       WHERE p.product_type = 'MANUFACTURED' 
         AND p.is_active = true
-        -- CAMBIO IMPORTANTE: Mostrar productos donde el stock calculado es menor o igual al mínimo
         AND COALESCE(mc.max_units_producible, 0) <= COALESCE(mc.max_units_for_min_stock, 0)
-        -- Asegurar que hay al menos un ingrediente
         AND EXISTS (
           SELECT 1 
           FROM "${schema}".recipe_ingredients ri2 
           WHERE ri2.recipe_id = r.id
         )
       GROUP BY p.id, r.id, mc.max_units_producible, mc.max_units_for_min_stock
-      HAVING COUNT(rm.id) > 0  -- Asegurar que tiene ingredientes
+      HAVING COUNT(rm.id) > 0
       ORDER BY (COALESCE(mc.max_units_for_min_stock, 0) - COALESCE(mc.max_units_producible, 0)) DESC
     `);
     
-    // Log para debug
     console.log(`Sugerencias encontradas: ${commercialResult.rows.length} comerciales, ${manufacturedResult.rows.length} manufacturados`);
     
     res.json({
@@ -739,7 +733,6 @@ router.post('/', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Se requieren items para la orden' });
     }
     
-    // Validar items
     for (const item of items) {
       if (!item.source_type || !['COMMERCIAL', 'MANUFACTURED'].includes(item.source_type)) {
         return res.status(400).json({ error: 'Tipo de fuente inválido' });
@@ -749,14 +742,10 @@ router.post('/', authMiddleware, async (req, res) => {
       }
     }
     
-    // ============================================================
-    // GENERAR NÚMERO DE ORDEN USANDO EL HELPER
-    // ============================================================
     const orderNumber = await generateOrderNumber(schema);
     
     await query('BEGIN');
     
-    // 1. Crear orden
     const orderResult = await query(`
       INSERT INTO "${schema}".purchase_orders (
         order_number,
@@ -771,7 +760,6 @@ router.post('/', authMiddleware, async (req, res) => {
     
     const order = orderResult.rows[0];
     
-    // 2. Insertar items
     for (const item of items) {
       await query(`
         INSERT INTO "${schema}".purchase_order_items (
@@ -800,16 +788,12 @@ router.post('/', authMiddleware, async (req, res) => {
     
     await query('COMMIT');
     
-    // Obtener la orden creada con sus items
     const result = await query(`
       SELECT 
         po.*,
-        COUNT(DISTINCT poi.id) as item_count,
-        COUNT(DISTINCT pois.supplier_id) as supplier_count,
-        COALESCE(SUM(pois.line_total), 0) as total
+        COUNT(DISTINCT poi.id) as item_count
       FROM "${schema}".purchase_orders po
       LEFT JOIN "${schema}".purchase_order_items poi ON po.id = poi.purchase_order_id
-      LEFT JOIN "${schema}".purchase_order_item_suppliers pois ON poi.id = pois.purchase_order_item_id
       WHERE po.id = $1
       GROUP BY po.id
     `, [order.id]);
@@ -833,16 +817,12 @@ router.put('/:id', authMiddleware, async (req, res) => {
 
     const schema = await getSchemaName(req);
 
-    // ------------------------------------------------------------
-    // Validaciones
-    // ------------------------------------------------------------
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({
         error: 'Se requieren items para la orden'
       });
     }
 
-    // Validar items
     for (const item of items) {
       if (
         !item.source_type ||
@@ -866,9 +846,6 @@ router.put('/:id', authMiddleware, async (req, res) => {
       }
     }
 
-    // ------------------------------------------------------------
-    // Verificar que la orden exista
-    // ------------------------------------------------------------
     const orderResult = await query(`
       SELECT *
       FROM "${schema}".purchase_orders
@@ -883,25 +860,15 @@ router.put('/:id', authMiddleware, async (req, res) => {
 
     const order = orderResult.rows[0];
 
-    // ------------------------------------------------------------
-    // Solo permitir edición de borradores
-    // ------------------------------------------------------------
     if (order.status !== 'draft') {
       return res.status(400).json({
         error: `No se puede editar una orden en estado "${order.status}"`
       });
     }
 
-    // ------------------------------------------------------------
-    // Iniciar transacción
-    // ------------------------------------------------------------
     await query('BEGIN');
 
     try {
-
-      // ----------------------------------------------------------
-      // 1. Actualizar información de la orden
-      // ----------------------------------------------------------
       await query(`
         UPDATE "${schema}".purchase_orders
         SET
@@ -913,9 +880,6 @@ router.put('/:id', authMiddleware, async (req, res) => {
         id
       ]);
 
-      // ----------------------------------------------------------
-      // 2. Obtener items actuales
-      // ----------------------------------------------------------
       const currentItemsResult = await query(`
         SELECT id
         FROM "${schema}".purchase_order_items
@@ -926,14 +890,10 @@ router.put('/:id', authMiddleware, async (req, res) => {
         row => row.id
       );
 
-      // IDs que vienen desde el frontend
       const incomingItemIds = items
         .filter(item => item.id)
         .map(item => item.id);
 
-      // ----------------------------------------------------------
-      // 3. Eliminar items que ya no existen en la edición
-      // ----------------------------------------------------------
       const itemsToDelete = currentItemIds.filter(
         currentId => !incomingItemIds.includes(currentId)
       );
@@ -949,16 +909,8 @@ router.put('/:id', authMiddleware, async (req, res) => {
         ]);
       }
 
-      // ----------------------------------------------------------
-      // 4. Actualizar / insertar items
-      // ----------------------------------------------------------
       for (const item of items) {
-
-        // ----------------------------------------
-        // Item existente
-        // ----------------------------------------
         if (item.id && currentItemIds.includes(item.id)) {
-
           await query(`
             UPDATE "${schema}".purchase_order_items
             SET
@@ -985,12 +937,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
             item.id,
             id
           ]);
-
         } else {
-
-          // ----------------------------------------
-          // Item nuevo
-          // ----------------------------------------
           await query(`
             INSERT INTO "${schema}".purchase_order_items (
               purchase_order_id,
@@ -1028,32 +975,20 @@ router.put('/:id', authMiddleware, async (req, res) => {
         }
       }
 
-      // ----------------------------------------------------------
-      // 5. Commit
-      // ----------------------------------------------------------
       await query('COMMIT');
 
     } catch (transactionError) {
-
       await query('ROLLBACK');
-
       throw transactionError;
     }
 
-    // ------------------------------------------------------------
-    // 6. Devolver orden actualizada
-    // ------------------------------------------------------------
     const result = await query(`
       SELECT
         po.*,
-        COUNT(DISTINCT poi.id) AS item_count,
-        COUNT(DISTINCT pois.supplier_id) AS supplier_count,
-        COALESCE(SUM(pois.line_total), 0) AS total
+        COUNT(DISTINCT poi.id) AS item_count
       FROM "${schema}".purchase_orders po
       LEFT JOIN "${schema}".purchase_order_items poi
         ON po.id = poi.purchase_order_id
-      LEFT JOIN "${schema}".purchase_order_item_suppliers pois
-        ON poi.id = pois.purchase_order_item_id
       WHERE po.id = $1
       GROUP BY po.id
     `, [id]);
@@ -1061,16 +996,10 @@ router.put('/:id', authMiddleware, async (req, res) => {
     res.json(result.rows[0]);
 
   } catch (err) {
-
-    console.error(
-      'Error en PUT /purchase-orders/:id:',
-      err
-    );
-
+    console.error('Error en PUT /purchase-orders/:id:', err);
     try {
       await query('ROLLBACK');
     } catch (_) {}
-
     res.status(500).json({
       error: err.message
     });
@@ -1092,7 +1021,6 @@ router.put('/:id/status', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Estado no válido' });
     }
     
-    // Verificar que la orden existe
     const checkResult = await query(`
       SELECT status FROM "${schema}".purchase_orders WHERE id = $1
     `, [id]);
@@ -1103,9 +1031,8 @@ router.put('/:id/status', authMiddleware, async (req, res) => {
     
     const currentStatus = checkResult.rows[0].status;
     
-    // ✅ MODIFICADO: Permitir draft → approved directamente
     const validTransitions = {
-      'draft': ['pending', 'approved', 'cancelled'],  // ← Agregar 'approved'
+      'draft': ['pending', 'approved', 'cancelled'],
       'pending': ['approved', 'cancelled'],
       'approved': ['received', 'cancelled'],
       'received': [],
@@ -1118,19 +1045,74 @@ router.put('/:id/status', authMiddleware, async (req, res) => {
       });
     }
     
-    const result = await query(`
+    await query(`
       UPDATE "${schema}".purchase_orders 
       SET 
         status = $1,
         received_at = CASE WHEN $1 = 'received' THEN CURRENT_TIMESTAMP ELSE received_at END,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = $2
-      RETURNING *
     `, [status, id]);
     
+    const result = await query(`
+      SELECT 
+        po.*,
+        COUNT(DISTINCT poi.id) as item_count
+      FROM "${schema}".purchase_orders po
+      LEFT JOIN "${schema}".purchase_order_items poi ON po.id = poi.purchase_order_id
+      WHERE po.id = $1
+      GROUP BY po.id
+    `, [id]);
+    
     res.json(result.rows[0]);
+    
   } catch (err) {
     console.error('Error en PUT /purchase-orders/:id/status:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// DELETE /api/purchase-orders/:orderId/items/:itemId
+// Eliminar un item de una orden
+// ============================================================
+router.delete('/:orderId/items/:itemId', authMiddleware, async (req, res) => {
+  try {
+    const { orderId, itemId } = req.params;
+    const schema = await getSchemaName(req);
+
+    const orderCheck = await query(`
+      SELECT status FROM "${schema}".purchase_orders WHERE id = $1
+    `, [orderId]);
+
+    if (orderCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Orden no encontrada' });
+    }
+
+    if (orderCheck.rows[0].status !== 'draft') {
+      return res.status(400).json({ 
+        error: 'Solo se pueden eliminar items de órdenes en estado "Borrador"' 
+      });
+    }
+
+    const itemCheck = await query(`
+      SELECT id FROM "${schema}".purchase_order_items 
+      WHERE id = $1::uuid AND purchase_order_id = $2::uuid
+    `, [itemId, orderId]);
+
+    if (itemCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Item no encontrado en esta orden' });
+    }
+
+    await query(`
+      DELETE FROM "${schema}".purchase_order_items 
+      WHERE id = $1::uuid AND purchase_order_id = $2::uuid
+    `, [itemId, orderId]);
+
+    res.json({ success: true, message: 'Item eliminado correctamente' });
+
+  } catch (err) {
+    console.error('Error en DELETE /purchase-orders/:orderId/items/:itemId:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1144,7 +1126,6 @@ router.delete('/:id', authMiddleware, async (req, res) => {
     const { id } = req.params;
     const schema = await getSchemaName(req);
     
-    // Verificar que la orden esté en draft
     const checkResult = await query(`
       SELECT status FROM "${schema}".purchase_orders WHERE id = $1
     `, [id]);
@@ -1157,12 +1138,10 @@ router.delete('/:id', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Solo se pueden eliminar órdenes en borrador' });
     }
     
-    // Eliminar los items primero (por FK)
     await query(`
       DELETE FROM "${schema}".purchase_order_items WHERE purchase_order_id = $1
     `, [id]);
     
-    // Eliminar la orden
     await query(`
       DELETE FROM "${schema}".purchase_orders WHERE id = $1
     `, [id]);
@@ -1189,11 +1168,8 @@ router.get('/stats', authMiddleware, async (req, res) => {
         COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_count,
         COUNT(CASE WHEN status = 'approved' THEN 1 END) as approved_count,
         COUNT(CASE WHEN status = 'received' THEN 1 END) as received_count,
-        COUNT(CASE WHEN status = 'cancelled' THEN 1 END) as cancelled_count,
-        COALESCE(SUM(pois.line_total), 0) as total_value
+        COUNT(CASE WHEN status = 'cancelled' THEN 1 END) as cancelled_count
       FROM "${schema}".purchase_orders po
-      LEFT JOIN "${schema}".purchase_order_items poi ON po.id = poi.purchase_order_id
-      LEFT JOIN "${schema}".purchase_order_item_suppliers pois ON poi.id = pois.purchase_order_item_id
     `);
     
     res.json(result.rows[0]);
