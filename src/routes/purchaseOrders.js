@@ -29,6 +29,7 @@ router.get('/', authMiddleware, async (req, res) => {
     
     res.json(result.rows);
   } catch (err) {
+    console.error('Error en GET /purchase-orders:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -88,6 +89,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
       items: itemsResult.rows
     });
   } catch (err) {
+    console.error('Error en GET /purchase-orders/:id:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -145,15 +147,17 @@ router.get('/suggestions/items', authMiddleware, async (req, res) => {
               'quantity', ri.quantity,
               'unit', ri.unit,
               'unit_cost', rm.unit_cost,
-              'total_cost', ri.quantity * rm.unit_cost
+              'total_cost', ri.quantity * rm.unit_cost,
+              'stock', rm.stock,
+              'min_stock', rm.min_stock
             )
           ) FILTER (WHERE ri.raw_material_id IS NOT NULL),
           '[]'::json
         ) as ingredients
       FROM "${schema}".products p
-      JOIN "${schema}".recipes r ON p.id = r.product_id
+      INNER JOIN "${schema}".recipes r ON p.id = r.product_id AND r.is_active = true
       LEFT JOIN "${schema}".recipe_ingredients ri ON r.id = ri.recipe_id
-      LEFT JOIN "${schema}".raw_materials rm ON ri.raw_material_id = rm.id
+      LEFT JOIN "${schema}".raw_materials rm ON ri.raw_material_id = rm.id AND rm.is_active = true
       WHERE p.product_type = 'MANUFACTURED' 
         AND p.is_active = true
         AND p.stock <= p.min_stock
@@ -166,6 +170,7 @@ router.get('/suggestions/items', authMiddleware, async (req, res) => {
       manufactured: manufacturedResult.rows
     });
   } catch (err) {
+    console.error('Error en GET /purchase-orders/suggestions/items:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -197,6 +202,377 @@ router.get('/suppliers/:productId', authMiddleware, async (req, res) => {
     
     res.json(result.rows);
   } catch (err) {
+    console.error('Error en GET /purchase-orders/suppliers/:productId:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// GET /api/purchase-orders/products/with-recipe
+// Obtener productos con sus recetas y materiales (OPTIMIZADO)
+// ============================================================
+router.get('/products/with-recipe', authMiddleware, async (req, res) => {
+  try {
+    const { product_type } = req.query;
+    
+    if (!['COMMERCIAL', 'MANUFACTURED'].includes(product_type)) {
+      return res.status(400).json({
+        error: 'product_type debe ser COMMERCIAL o MANUFACTURED'
+      });
+    }
+    
+    const schema = await getSchemaName(req);
+    
+    const result = await query(`
+      SELECT
+        p.id,
+        p.code,
+        p.name,
+        p.description,
+        p.category_id,
+        p.unit_cost,
+        p.selling_price,
+        p.tax_rate,
+        p.is_taxable,
+        p.is_active,
+        p.sku,
+        p.barcode,
+        p.stock,
+        p.min_stock,
+        p.created_at,
+        p.updated_at,
+        p.product_type,
+
+        r.id AS recipe_id,
+        r.description AS recipe_description,
+        r.yield_qty,
+        r.yield_unit,
+        r.total_cost AS recipe_total_cost,
+
+        CASE
+            WHEN p.product_type = 'MANUFACTURED'
+            THEN COALESCE(
+                jsonb_agg(
+                    jsonb_build_object(
+                        'id', rm.id,
+                        'code', rm.code,
+                        'name', rm.name,
+                        'description', rm.description,
+                        'unit', rm.unit,
+                        'quantity', ri.quantity,
+                        'conversion_factor', ri.conversion_factor,
+                        'unit_cost', ri.unit_cost,
+                        'total_cost', ri.total_cost,
+                        'stock', rm.stock,
+                        'min_stock', rm.min_stock,
+                        'is_active', rm.is_active,
+                        'barcode', rm.barcode,
+                        'sku', rm.sku
+                    )
+                    ORDER BY rm.name
+                ) FILTER (WHERE rm.id IS NOT NULL),
+                '[]'::jsonb
+            )
+            ELSE '[]'::jsonb
+        END AS materials
+
+    FROM "${schema}".products p
+
+    LEFT JOIN "${schema}".recipes r
+        ON r.product_id = p.id
+        AND r.is_active = true
+
+    LEFT JOIN "${schema}".recipe_ingredients ri
+        ON ri.recipe_id = r.id
+
+    LEFT JOIN "${schema}".raw_materials rm
+        ON rm.id = ri.raw_material_id
+        AND rm.is_active = true
+
+    WHERE
+        p.is_active = true
+        AND p.product_type = $1
+        AND (
+            p.product_type = 'COMMERCIAL'
+            OR (
+                p.product_type = 'MANUFACTURED'
+                AND r.id IS NOT NULL
+            )
+        )
+
+    GROUP BY
+        p.id,
+        p.code,
+        p.name,
+        p.description,
+        p.category_id,
+        p.unit_cost,
+        p.selling_price,
+        p.tax_rate,
+        p.is_taxable,
+        p.is_active,
+        p.sku,
+        p.barcode,
+        p.stock,
+        p.min_stock,
+        p.created_at,
+        p.updated_at,
+        p.product_type,
+        r.id,
+        r.description,
+        r.yield_qty,
+        r.yield_unit,
+        r.total_cost
+
+    ORDER BY p.name
+    `, [product_type]);
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error en GET /purchase-orders/products/with-recipe:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// GET /api/purchase-orders/products/commercial
+// Obtener solo productos comerciales con su stock
+// ============================================================
+router.get('/products/commercial', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    const { search, category_id } = req.query;
+    
+    let whereClause = `p.product_type = 'COMMERCIAL' AND p.is_active = true`;
+    const params = [];
+    let paramIndex = 1;
+    
+    if (search) {
+      whereClause += ` AND (p.name ILIKE $${paramIndex} OR p.code ILIKE $${paramIndex} OR p.barcode ILIKE $${paramIndex})`;
+      params.push(`%${search}%`);
+      paramIndex++;
+    }
+    
+    if (category_id) {
+      whereClause += ` AND p.category_id = $${paramIndex}`;
+      params.push(category_id);
+      paramIndex++;
+    }
+    
+    const result = await query(`
+      SELECT 
+        p.id,
+        p.code,
+        p.name,
+        p.description,
+        p.barcode,
+        p.sku,
+        p.stock,
+        p.min_stock,
+        p.unit_cost,
+        p.selling_price,
+        p.category_id,
+        c.name as category_name,
+        p.is_active,
+        p.created_at,
+        p.updated_at
+      FROM "${schema}".products p
+      LEFT JOIN "${schema}".categories c ON p.category_id = c.id
+      WHERE ${whereClause}
+      ORDER BY p.name ASC
+    `, params);
+    
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error en GET /purchase-orders/products/commercial:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// GET /api/purchase-orders/products/manufactured
+// Obtener solo productos manufacturados con su receta
+// ============================================================
+router.get('/products/manufactured', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    const { search, category_id } = req.query;
+    
+    let whereClause = `p.product_type = 'MANUFACTURED' AND p.is_active = true`;
+    const params = [];
+    let paramIndex = 1;
+    
+    if (search) {
+      whereClause += ` AND (p.name ILIKE $${paramIndex} OR p.code ILIKE $${paramIndex} OR p.barcode ILIKE $${paramIndex})`;
+      params.push(`%${search}%`);
+      paramIndex++;
+    }
+    
+    if (category_id) {
+      whereClause += ` AND p.category_id = $${paramIndex}`;
+      params.push(category_id);
+      paramIndex++;
+    }
+    
+    const result = await query(`
+      SELECT 
+        p.id,
+        p.code,
+        p.name,
+        p.description,
+        p.barcode,
+        p.sku,
+        p.stock,
+        p.min_stock,
+        p.unit_cost,
+        p.selling_price,
+        p.category_id,
+        c.name as category_name,
+        p.is_active,
+        p.created_at,
+        p.updated_at,
+        r.id as recipe_id,
+        r.description as recipe_description,
+        r.yield_qty,
+        r.yield_unit,
+        r.total_cost as recipe_total_cost,
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'id', rm.id,
+              'code', rm.code,
+              'name', rm.name,
+              'description', rm.description,
+              'unit', rm.unit,
+              'quantity', ri.quantity,
+              'conversion_factor', ri.conversion_factor,
+              'unit_cost', ri.unit_cost,
+              'total_cost', ri.total_cost,
+              'stock', rm.stock,
+              'min_stock', rm.min_stock,
+              'barcode', rm.barcode,
+              'sku', rm.sku
+            )
+            ORDER BY rm.name
+          ) FILTER (WHERE rm.id IS NOT NULL),
+          '[]'::json
+        ) as materials
+      FROM "${schema}".products p
+      INNER JOIN "${schema}".recipes r ON p.id = r.product_id AND r.is_active = true
+      LEFT JOIN "${schema}".recipe_ingredients ri ON r.id = ri.recipe_id
+      LEFT JOIN "${schema}".raw_materials rm ON ri.raw_material_id = rm.id AND rm.is_active = true
+      LEFT JOIN "${schema}".categories c ON p.category_id = c.id
+      WHERE ${whereClause}
+      GROUP BY p.id, c.name, r.id
+      ORDER BY p.name ASC
+    `, params);
+    
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error en GET /purchase-orders/products/manufactured:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// GET /api/purchase-orders/raw-materials
+// Obtener materias primas con su stock
+// ============================================================
+router.get('/raw-materials', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    const { search, is_active } = req.query;
+    
+    let whereClause = `1 = 1`;
+    const params = [];
+    let paramIndex = 1;
+    
+    if (search) {
+      whereClause += ` AND (rm.name ILIKE $${paramIndex} OR rm.code ILIKE $${paramIndex} OR rm.barcode ILIKE $${paramIndex})`;
+      params.push(`%${search}%`);
+      paramIndex++;
+    }
+    
+    if (is_active !== undefined) {
+      whereClause += ` AND rm.is_active = $${paramIndex}`;
+      params.push(is_active === 'true');
+      paramIndex++;
+    }
+    
+    const result = await query(`
+      SELECT 
+        rm.id,
+        rm.code,
+        rm.name,
+        rm.description,
+        rm.unit,
+        rm.stock,
+        rm.min_stock,
+        rm.unit_cost,
+        rm.barcode,
+        rm.sku,
+        rm.is_active,
+        rm.is_composite,
+        rm.recipe_id,
+        rm.created_at,
+        rm.updated_at,
+        r.description as recipe_description,
+        r.yield_qty as recipe_yield_qty,
+        r.yield_unit as recipe_yield_unit
+      FROM "${schema}".raw_materials rm
+      LEFT JOIN "${schema}".recipes r ON rm.recipe_id = r.id AND r.is_active = true
+      WHERE ${whereClause}
+      ORDER BY rm.name ASC
+    `, params);
+    
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error en GET /purchase-orders/raw-materials:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// GET /api/purchase-orders/raw-materials/:id
+// Obtener una materia prima específica
+// ============================================================
+router.get('/raw-materials/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const schema = await getSchemaName(req);
+    
+    const result = await query(`
+      SELECT 
+        rm.id,
+        rm.code,
+        rm.name,
+        rm.description,
+        rm.unit,
+        rm.stock,
+        rm.min_stock,
+        rm.unit_cost,
+        rm.barcode,
+        rm.sku,
+        rm.is_active,
+        rm.is_composite,
+        rm.recipe_id,
+        rm.created_at,
+        rm.updated_at,
+        r.description as recipe_description,
+        r.yield_qty as recipe_yield_qty,
+        r.yield_unit as recipe_yield_unit
+      FROM "${schema}".raw_materials rm
+      LEFT JOIN "${schema}".recipes r ON rm.recipe_id = r.id AND r.is_active = true
+      WHERE rm.id = $1
+    `, [id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Materia prima no encontrada' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Error en GET /purchase-orders/raw-materials/:id:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -221,7 +597,17 @@ router.post('/', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Se requieren items para la orden' });
     }
     
-    // Generar número de orden - CORREGIDO
+    // Validar items
+    for (const item of items) {
+      if (!item.source_type || !['COMMERCIAL', 'MANUFACTURED'].includes(item.source_type)) {
+        return res.status(400).json({ error: 'Tipo de fuente inválido' });
+      }
+      if (!item.quantity || item.quantity <= 0) {
+        return res.status(400).json({ error: 'Cantidad debe ser mayor a 0' });
+      }
+    }
+    
+    // Generar número de orden
     const numberResult = await query(`
       SELECT 
         'OC-' || TO_CHAR(NOW(), 'YYYYMMDD') || '-' || 
@@ -300,6 +686,7 @@ router.post('/', authMiddleware, async (req, res) => {
     res.status(201).json(result.rows[0]);
   } catch (err) {
     await query('ROLLBACK');
+    console.error('Error en POST /purchase-orders:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -319,6 +706,32 @@ router.put('/:id/status', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Estado no válido' });
     }
     
+    // Verificar que la orden existe
+    const checkResult = await query(`
+      SELECT status FROM "${schema}".purchase_orders WHERE id = $1
+    `, [id]);
+    
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Orden no encontrada' });
+    }
+    
+    const currentStatus = checkResult.rows[0].status;
+    
+    // Validar transiciones de estado
+    const validTransitions = {
+      'draft': ['pending', 'cancelled'],
+      'pending': ['approved', 'cancelled'],
+      'approved': ['received', 'cancelled'],
+      'received': [],
+      'cancelled': []
+    };
+    
+    if (!validTransitions[currentStatus].includes(status)) {
+      return res.status(400).json({ 
+        error: `No se puede cambiar de "${currentStatus}" a "${status}"` 
+      });
+    }
+    
     const result = await query(`
       UPDATE "${schema}".purchase_orders 
       SET 
@@ -329,12 +742,9 @@ router.put('/:id/status', authMiddleware, async (req, res) => {
       RETURNING *
     `, [status, id]);
     
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Orden no encontrada' });
-    }
-    
     res.json(result.rows[0]);
   } catch (err) {
+    console.error('Error en PUT /purchase-orders/:id/status:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -361,12 +771,48 @@ router.delete('/:id', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Solo se pueden eliminar órdenes en borrador' });
     }
     
+    // Eliminar los items primero (por FK)
+    await query(`
+      DELETE FROM "${schema}".purchase_order_items WHERE purchase_order_id = $1
+    `, [id]);
+    
+    // Eliminar la orden
     await query(`
       DELETE FROM "${schema}".purchase_orders WHERE id = $1
     `, [id]);
     
     res.json({ success: true, message: 'Orden eliminada correctamente' });
   } catch (err) {
+    console.error('Error en DELETE /purchase-orders/:id:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// GET /api/purchase-orders/stats
+// Obtener estadísticas de órdenes
+// ============================================================
+router.get('/stats', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    
+    const result = await query(`
+      SELECT 
+        COUNT(*) as total_orders,
+        COUNT(CASE WHEN status = 'draft' THEN 1 END) as draft_count,
+        COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_count,
+        COUNT(CASE WHEN status = 'approved' THEN 1 END) as approved_count,
+        COUNT(CASE WHEN status = 'received' THEN 1 END) as received_count,
+        COUNT(CASE WHEN status = 'cancelled' THEN 1 END) as cancelled_count,
+        COALESCE(SUM(pois.line_total), 0) as total_value
+      FROM "${schema}".purchase_orders po
+      LEFT JOIN "${schema}".purchase_order_items poi ON po.id = poi.purchase_order_id
+      LEFT JOIN "${schema}".purchase_order_item_suppliers pois ON poi.id = pois.purchase_order_item_id
+    `);
+    
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Error en GET /purchase-orders/stats:', err);
     res.status(500).json({ error: err.message });
   }
 });
