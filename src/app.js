@@ -75,7 +75,8 @@ import accountingPayableRoutes     from './routes/accountingPayable.js';
 import pushRoutes                 from './routes/pushRoutes.js';
 import scheduledNotificationsRoutes from './routes/scheduledNotificationsRoutes.js';
 import notificationsEmailRoutes   from './routes/notificationsEmailRoutes.js';
-import purchasesOrders            from './routes/purchaseOrders.js';
+import purchaseOrdersRoutes from './routes/purchaseOrders.js';
+import purchaseReceiptsRoutes from './routes/purchaseReceipts.js';
 
 // ============================================================
 // IMPORTAR RUTAS DE ODONTOLOGÍA - CONFIGURACIÓN
@@ -160,26 +161,27 @@ app.use('/api/subscriptions',       ...authBusiness, subscriptionRoutes);
 app.use('/api/customers',           ...authBusiness, CustomersRoutes);
 app.use('/api/products',            ...authBusiness, productosRoutes);
 app.use('/api/productos',           ...authBusiness, productosRoutes);
-app.use('/api/categories',          ...authBusiness, categoriesRoutes);
+app.use('/api/categories',            ...authBusiness, categoriesRoutes);
 
-app.use('/api/graphs',              ...authBusiness, graphRoutes);
-app.use('/api/inventory',           ...authBusiness, inventoryRoutes);
-app.use('/api/suppliers',           ...authBusiness, suppliersRoutes);
-app.use('/api/recipes',             ...authBusiness, recipesRoutes);
-app.use('/api/raw-materials',       ...authBusiness, rawMateriaPrimaRoutes);
-app.use('/api/employees',           ...authBusiness, employeesRoutes);
-app.use('/api/attendance',          ...authBusiness, attendanceRoutes);
-app.use('/api/payroll',             ...authBusiness, payrollRoutes);
-app.use('/api/ordenes',             ...authBusiness, ordenesRoutes);
-app.use('/api/retail',              ...authBusiness, retailRoutes);
-app.use('/api/discounts',           ...authBusiness, discountsRoutes);
-app.use('/api/crm',                 ...authBusiness, crmRoutes);
-app.use('/api/dashboard',           ...authBusiness, dashboardRouter);
+app.use('/api/graphs',                ...authBusiness, graphRoutes);
+app.use('/api/inventory',             ...authBusiness, inventoryRoutes);
+app.use('/api/suppliers',             ...authBusiness, suppliersRoutes);
+app.use('/api/recipes',               ...authBusiness, recipesRoutes);
+app.use('/api/raw-materials',         ...authBusiness, rawMateriaPrimaRoutes);
+app.use('/api/employees',             ...authBusiness, employeesRoutes);
+app.use('/api/attendance',            ...authBusiness, attendanceRoutes);
+app.use('/api/payroll',               ...authBusiness, payrollRoutes);
+app.use('/api/ordenes',               ...authBusiness, ordenesRoutes);
+app.use('/api/retail',                ...authBusiness, retailRoutes);
+app.use('/api/discounts',             ...authBusiness, discountsRoutes);
+app.use('/api/crm',                   ...authBusiness, crmRoutes);
+app.use('/api/dashboard',             ...authBusiness, dashboardRouter);
 app.use('/api/accounting',            ...authBusiness, accountingRoutes);
 app.use('/api/accounting-receivable', ...authBusiness, accountingReceivableRoutes);
 app.use('/api/accounting-payable',    ...authBusiness, accountingPayableRoutes);
 app.use('/api/notifications',         ...authBusiness, notificationsEmailRoutes);
-app.use('/api/purchase-orders',         ...authBusiness, purchasesOrders);
+app.use('/api/purchase-orders',       ...authBusiness, purchaseOrdersRoutes);
+app.use('/api/purchase-receipts',     ...authBusiness, purchaseReceiptsRoutes);
 
 
 app.use('/api/reports',             ...authBusiness, reportsRoutes);
