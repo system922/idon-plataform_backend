@@ -3,6 +3,7 @@ import express from 'express';
 import { query } from '../config/database.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 import { authMiddleware } from '../middleware/auth.js';
+import { generateOrderNumber } from '../utils/orderNumberGenerator.js'; // ← 🔥 IMPORTAR LA FUNCIÓN
 
 const router = express.Router();
 
@@ -104,19 +105,6 @@ async function getOrderItems(schema, orderId, orderType) {
             ORDER BY mi.created_at ASC
         `, [orderId]);
     }
-}
-
-/**
- * Genera número de orden
- */
-async function generateOrderNumber(schema) {
-    const result = await query(`
-        SELECT 'OC-' || TO_CHAR(CURRENT_DATE, 'YYYYMMDD') || '-' || 
-        LPAD(COALESCE(MAX(CAST(SUBSTRING(order_number FROM '-(\\d+)$') AS INTEGER)), 0) + 1, 4, '0') as order_number
-        FROM "${schema}".purchase_orders
-        WHERE order_number LIKE 'OC-' || TO_CHAR(CURRENT_DATE, 'YYYYMMDD') || '%'
-    `);
-    return result.rows[0].order_number;
 }
 
 // ============================================================
@@ -602,6 +590,7 @@ router.post('/', authMiddleware, async (req, res) => {
             }
         }
         
+        // 🔥 USAR LA FUNCIÓN DE NODE.JS
         const orderNumber = await generateOrderNumber(schema);
         
         await query('BEGIN');
