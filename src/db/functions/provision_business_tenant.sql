@@ -760,133 +760,234 @@ BEGIN
   -- â”€â”€â”€ PURCHASES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   IF ANY_MATCH(v_modules, 'purchases') THEN
 
-    -- purchase_orders (FK â†’ suppliers)
     -- ============================================================
-    -- 1. ÓRDENES DE COMPRA
+    -- 1. ÓRDENES DE COMPRA (MODIFICADA - AGREGAR order_type)
     -- ============================================================
     EXECUTE format('
       CREATE TABLE IF NOT EXISTS %I.purchase_orders (
-        id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        order_number   VARCHAR(50) UNIQUE NOT NULL,
-        status         VARCHAR(20) DEFAULT ''draft'',
-        order_date     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        expected_at    TIMESTAMP,
-        received_at    TIMESTAMP,
-        notes          TEXT,
-        created_by     UUID,
-        created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )', p_schema_name, p_schema_name);
+        id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        order_number        VARCHAR(50) UNIQUE NOT NULL,
+        order_type          VARCHAR(20) NOT NULL DEFAULT ''COMMERCIAL'',
+        status              VARCHAR(20) DEFAULT ''draft'',
+        order_date          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        expected_at         TIMESTAMP,
+        received_at         TIMESTAMP,
+        notes               TEXT,
+        created_by          UUID,
+        created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        
+        CONSTRAINT purchase_orders_order_type_check 
+          CHECK (order_type IN (''COMMERCIAL'', ''MANUFACTURED'')),
+          
+        CONSTRAINT purchase_orders_status_check 
+          CHECK (status IN (''draft'', ''pending'', ''approved'', ''received'', ''cancelled''))
+      )', p_schema_name);
+
     v_table_count := v_table_count + 1;
 
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_purchase_orders_status_idx ON %I.purchase_orders (status)', p_schema_name, p_schema_name);
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_purchase_orders_order_date_idx ON %I.purchase_orders (order_date DESC)', p_schema_name, p_schema_name);
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_purchase_orders_created_at_idx ON %I.purchase_orders (created_at DESC)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_purchase_orders_order_type_idx ON %I.purchase_orders (order_type)', p_schema_name, p_schema_name);
 
 
     -- ============================================================
-    -- 2. ITEMS DE LA ORDEN DE COMPRA
+    -- 2. ITEMS DE ÓRDENES COMMERCIAL
     -- ============================================================
-
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS %I.purchase_order_items (
-        id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        purchase_order_id   UUID NOT NULL REFERENCES %I.purchase_orders(id) ON DELETE CASCADE,
-        
-        -- Tipo: COMMERCIAL, MANUFACTURED o RAW_MATERIAL
-        source_type         VARCHAR(20) NOT NULL,
-        
-        -- Para COMMERCIAL: producto directo
-        product_id          UUID REFERENCES %I.products(id) ON DELETE RESTRICT,
-        
-        -- Para MANUFACTURED: receta (solo como referencia, no se guarda en compra)
-        recipe_id           UUID REFERENCES %I.recipes(id) ON DELETE RESTRICT,
-        
-        -- Para RAW_MATERIAL: materia prima
-        raw_material_id     UUID REFERENCES %I.raw_materials(id) ON DELETE RESTRICT,
-        
-        -- Datos del producto (copia para histórico)
-        product_name        VARCHAR(255) NOT NULL,
-        product_code        VARCHAR(50),
-        barcode             VARCHAR(100),
-        
-        -- Cantidades
+      CREATE TABLE IF NOT EXISTS %I.purchase_order_items_comm (
+        id                  UUID DEFAULT gen_random_uuid(),
+        purchase_order_id   UUID NOT NULL,
+        product_id          UUID NOT NULL,
         quantity            INTEGER NOT NULL DEFAULT 1,
         received_qty        INTEGER DEFAULT 0,
-        
-        -- Notas
+        unit_cost           NUMERIC(12, 2) DEFAULT 0,
+        line_total          NUMERIC(12, 2) DEFAULT 0,
         notes               TEXT,
-        
         created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         
-        -- Restricciones
-        CONSTRAINT purchase_order_items_source_type_check 
-          CHECK (source_type IN (''COMMERCIAL'', ''MANUFACTURED'', ''RAW_MATERIAL'')),
+        CONSTRAINT purchase_order_items_comm_pkey PRIMARY KEY (id),
         
-        -- Constraint para COMMERCIAL: product_id NOT NULL, recipe_id NULL, raw_material_id NULL
-        -- Constraint para MANUFACTURED: recipe_id NOT NULL, product_id NULL, raw_material_id NULL (solo referencia)
-        -- Constraint para RAW_MATERIAL: raw_material_id NOT NULL, product_id NULL, recipe_id NULL
-        CONSTRAINT purchase_order_items_source_check 
-          CHECK (
-            (source_type = ''COMMERCIAL'' AND product_id IS NOT NULL AND recipe_id IS NULL AND raw_material_id IS NULL) OR
-            (source_type = ''MANUFACTURED'' AND recipe_id IS NOT NULL AND product_id IS NULL AND raw_material_id IS NULL) OR
-            (source_type = ''RAW_MATERIAL'' AND raw_material_id IS NOT NULL AND product_id IS NULL AND recipe_id IS NULL)
-          )
+        CONSTRAINT purchase_order_items_comm_purchase_order_id_fkey 
+          FOREIGN KEY (purchase_order_id) 
+          REFERENCES %I.purchase_orders(id) ON DELETE CASCADE,
+          
+        CONSTRAINT purchase_order_items_comm_product_id_fkey 
+          FOREIGN KEY (product_id) 
+          REFERENCES %I.products(id) ON DELETE RESTRICT,
+          
+        CONSTRAINT purchase_order_items_comm_quantity_check 
+          CHECK (quantity > 0),
+          
+        CONSTRAINT purchase_order_items_comm_unit_cost_check 
+          CHECK (unit_cost >= 0)
       )', 
-      p_schema_name,      -- purchase_order_items
-      p_schema_name,      -- purchase_orders (FK)
-      p_schema_name,      -- products (FK)
-      p_schema_name,      -- recipes (FK)
-      p_schema_name       -- raw_materials (FK)
+      p_schema_name,  -- purchase_order_items_comm
+      p_schema_name,  -- purchase_orders (FK)
+      p_schema_name   -- products (FK)
     );
 
     v_table_count := v_table_count + 1;
 
-    -- Índices
-    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_purchase_order_items_order_id_idx ON %I.purchase_order_items (purchase_order_id)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_purchase_order_items_product_id_idx ON %I.purchase_order_items (product_id)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_purchase_order_items_recipe_id_idx ON %I.purchase_order_items (recipe_id)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_purchase_order_items_raw_material_id_idx ON %I.purchase_order_items (raw_material_id)', p_schema_name, p_schema_name);
-    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_purchase_order_items_source_type_idx ON %I.purchase_order_items (source_type)', p_schema_name, p_schema_name);-- ============================================================
-        -- 3. ASIGNACIÓN DE PROVEEDORES POR ITEM
-    -- ============================================================
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_po_items_comm_order_id_idx ON %I.purchase_order_items_comm (purchase_order_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_po_items_comm_product_id_idx ON %I.purchase_order_items_comm (product_id)', p_schema_name, p_schema_name);
 
+
+    -- ============================================================
+    -- 3. ITEMS DE ÓRDENES MANUFACTURED
+    -- ============================================================
     EXECUTE format('
-      CREATE TABLE IF NOT EXISTS %I.purchase_order_item_suppliers (
-        id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        purchase_order_item_id  UUID NOT NULL REFERENCES %I.purchase_order_items(id) ON DELETE CASCADE,
-        supplier_id             UUID NOT NULL REFERENCES %I.suppliers(id) ON DELETE RESTRICT,
-        
-        -- Cantidad asignada a este proveedor
-        quantity                INTEGER NOT NULL,
-        
-        -- Costos
-        unit_cost               NUMERIC(12, 2) NOT NULL,
-        line_total              NUMERIC(12, 2) NOT NULL,
-        
-        -- Cantidad recibida de este proveedor
-        received_qty            INTEGER DEFAULT 0,
-        
-        -- Notas
+      CREATE TABLE IF NOT EXISTS %I.purchase_order_items_man (
+        id                      UUID DEFAULT gen_random_uuid(),
+        purchase_order_id       UUID NOT NULL,
+        product_id              UUID NOT NULL,
+        recipe_id               UUID NOT NULL,
+        raw_material_id         UUID NOT NULL,
+        quantity                NUMERIC(12, 3) NOT NULL DEFAULT 0,
+        required_quantity       NUMERIC(12, 3) NOT NULL DEFAULT 0,
+        received_qty            NUMERIC(12, 3) DEFAULT 0,
+        unit_cost               NUMERIC(12, 2) DEFAULT 0,
+        line_total              NUMERIC(12, 2) DEFAULT 0,
         notes                   TEXT,
-        
         created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         
-        -- Restricciones
+        CONSTRAINT purchase_order_items_man_pkey PRIMARY KEY (id),
+        
+        CONSTRAINT purchase_order_items_man_purchase_order_id_fkey 
+          FOREIGN KEY (purchase_order_id) 
+          REFERENCES %I.purchase_orders(id) ON DELETE CASCADE,
+          
+        CONSTRAINT purchase_order_items_man_product_id_fkey 
+          FOREIGN KEY (product_id) 
+          REFERENCES %I.products(id) ON DELETE RESTRICT,
+          
+        CONSTRAINT purchase_order_items_man_recipe_id_fkey 
+          FOREIGN KEY (recipe_id) 
+          REFERENCES %I.recipes(id) ON DELETE RESTRICT,
+          
+        CONSTRAINT purchase_order_items_man_raw_material_id_fkey 
+          FOREIGN KEY (raw_material_id) 
+          REFERENCES %I.raw_materials(id) ON DELETE RESTRICT,
+          
+        CONSTRAINT purchase_order_items_man_quantity_check 
+          CHECK (quantity >= 0),
+          
+        CONSTRAINT purchase_order_items_man_unit_cost_check 
+          CHECK (unit_cost >= 0)
+      )', 
+      p_schema_name,  -- purchase_order_items_man
+      p_schema_name,  -- purchase_orders (FK)
+      p_schema_name,  -- products (FK)
+      p_schema_name,  -- recipes (FK)
+      p_schema_name   -- raw_materials (FK)
+    );
+
+    v_table_count := v_table_count + 1;
+
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_po_items_man_order_id_idx ON %I.purchase_order_items_man (purchase_order_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_po_items_man_product_id_idx ON %I.purchase_order_items_man (product_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_po_items_man_recipe_id_idx ON %I.purchase_order_items_man (recipe_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_po_items_man_raw_material_id_idx ON %I.purchase_order_items_man (raw_material_id)', p_schema_name, p_schema_name);
+
+
+    -- ============================================================
+    -- 4. ASIGNACIÓN DE PROVEEDORES POR ITEM (MODIFICADA)
+    -- ============================================================
+    EXECUTE format('
+      CREATE TABLE IF NOT EXISTS %I.purchase_order_item_suppliers (
+        id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        purchase_order_item_id  UUID NOT NULL,
+        supplier_id             UUID NOT NULL,
+        item_comm_id            UUID,
+        item_man_id             UUID,
+        quantity                INTEGER NOT NULL,
+        unit_cost               NUMERIC(12, 2) NOT NULL,
+        line_total              NUMERIC(12, 2) NOT NULL,
+        received_qty            INTEGER DEFAULT 0,
+        notes                   TEXT,
+        created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        
+        CONSTRAINT purchase_order_item_suppliers_purchase_order_item_id_fkey 
+          FOREIGN KEY (purchase_order_item_id) 
+          REFERENCES %I.purchase_order_items_comm(id) ON DELETE CASCADE,
+          
+        CONSTRAINT purchase_order_item_suppliers_supplier_id_fkey 
+          FOREIGN KEY (supplier_id) 
+          REFERENCES %I.suppliers(id) ON DELETE RESTRICT,
+          
+        CONSTRAINT purchase_order_item_suppliers_item_comm_id_fkey 
+          FOREIGN KEY (item_comm_id) 
+          REFERENCES %I.purchase_order_items_comm(id) ON DELETE CASCADE,
+          
+        CONSTRAINT purchase_order_item_suppliers_item_man_id_fkey 
+          FOREIGN KEY (item_man_id) 
+          REFERENCES %I.purchase_order_items_man(id) ON DELETE CASCADE,
+          
         CONSTRAINT purchase_order_item_suppliers_quantity_check 
           CHECK (quantity > 0),
+          
         CONSTRAINT purchase_order_item_suppliers_unit_cost_check 
           CHECK (unit_cost >= 0),
+          
         CONSTRAINT purchase_order_item_suppliers_unique 
-          UNIQUE (purchase_order_item_id, supplier_id)
-      )', p_schema_name, p_schema_name, p_schema_name);
+          UNIQUE (purchase_order_item_id, supplier_id),
+          
+        CONSTRAINT purchase_order_item_suppliers_item_check 
+          CHECK (
+            (item_comm_id IS NOT NULL AND item_man_id IS NULL) OR
+            (item_comm_id IS NULL AND item_man_id IS NOT NULL)
+          )
+      )', 
+      p_schema_name,  -- purchase_order_item_suppliers
+      p_schema_name,  -- purchase_order_items_comm (FK)
+      p_schema_name,  -- suppliers (FK)
+      p_schema_name,  -- purchase_order_items_comm (FK item_comm)
+      p_schema_name   -- purchase_order_items_man (FK item_man)
+    );
+
     v_table_count := v_table_count + 1;
 
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_po_item_suppliers_item_id_idx ON %I.purchase_order_item_suppliers (purchase_order_item_id)', p_schema_name, p_schema_name);
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_po_item_suppliers_supplier_id_idx ON %I.purchase_order_item_suppliers (supplier_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_po_item_suppliers_item_comm_id_idx ON %I.purchase_order_item_suppliers (item_comm_id)', p_schema_name, p_schema_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I_po_item_suppliers_item_man_id_idx ON %I.purchase_order_item_suppliers (item_man_id)', p_schema_name, p_schema_name);
 
+
+    -- ============================================================
+    -- 5. FUNCIÓN PARA GENERAR NÚMERO DE ORDEN
+    -- ============================================================
+    EXECUTE format('
+      CREATE OR REPLACE FUNCTION %I.generate_order_number()
+      RETURNS VARCHAR AS $$
+      DECLARE
+          v_order_number VARCHAR;
+          v_year VARCHAR;
+          v_month VARCHAR;
+          v_day VARCHAR;
+          v_counter INTEGER;
+      BEGIN
+          v_year := TO_CHAR(CURRENT_DATE, ''YYYY'');
+          v_month := TO_CHAR(CURRENT_DATE, ''MM'');
+          v_day := TO_CHAR(CURRENT_DATE, ''DD'');
+          
+          SELECT COALESCE(
+              MAX(CAST(SUBSTRING(order_number FROM ''-([0-9]{4})$'') AS INTEGER)),
+              0
+          ) + 1
+          INTO v_counter
+          FROM %I.purchase_orders
+          WHERE order_number LIKE ''OC-'' || v_year || v_month || v_day || ''-%'';
+          
+          v_order_number := ''OC-'' || v_year || v_month || v_day || ''-'' || LPAD(v_counter::TEXT, 4, ''0'');
+          
+          RETURN v_order_number;
+      END;
+      $$ LANGUAGE plpgsql
+    ', p_schema_name, p_schema_name);
 
     -- ============================================================
     -- 4. RECEPCIÓN DE MERCADERÍA
