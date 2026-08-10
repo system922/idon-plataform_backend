@@ -123,7 +123,7 @@ router.get('/suggestions/items', authMiddleware, async (req, res) => {
       FROM "${schema}".products p
       WHERE p.product_type = 'COMMERCIAL' 
         AND p.is_active = true
-        AND p.stock <= p.min_stock
+        AND p.stock <= p.min_stock  -- Stock menor o igual al mínimo
       ORDER BY (p.min_stock - p.stock) DESC
     `);
     
@@ -205,10 +205,21 @@ router.get('/suggestions/items', authMiddleware, async (req, res) => {
         AND rm.is_active = true
       WHERE p.product_type = 'MANUFACTURED' 
         AND p.is_active = true
+        -- CAMBIO IMPORTANTE: Mostrar productos donde el stock calculado es menor o igual al mínimo
         AND COALESCE(mc.max_units_producible, 0) <= COALESCE(mc.max_units_for_min_stock, 0)
+        -- Asegurar que hay al menos un ingrediente
+        AND EXISTS (
+          SELECT 1 
+          FROM "${schema}".recipe_ingredients ri2 
+          WHERE ri2.recipe_id = r.id
+        )
       GROUP BY p.id, r.id, mc.max_units_producible, mc.max_units_for_min_stock
+      HAVING COUNT(rm.id) > 0  -- Asegurar que tiene ingredientes
       ORDER BY (COALESCE(mc.max_units_for_min_stock, 0) - COALESCE(mc.max_units_producible, 0)) DESC
     `);
+    
+    // Log para debug
+    console.log(`Sugerencias encontradas: ${commercialResult.rows.length} comerciales, ${manufacturedResult.rows.length} manufacturados`);
     
     res.json({
       commercial: commercialResult.rows,
