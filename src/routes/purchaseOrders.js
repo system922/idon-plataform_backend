@@ -1,15 +1,15 @@
 // routes/purchaseOrders.js
 import express from 'express';
 import { query } from '../config/database.js';
-import { successResponse, errorResponse } from '../utils/response.js';
-import { requireAuth } from '../middleware/authMiddleware.js';
+import { getSchemaName } from '../utils/tenantHelper.js';
+import { authMiddleware } from '../middleware/auth.js';
 
 const router = express.Router();
 
 // GET /api/purchase-orders
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', authMiddleware, async (req, res) => {
   try {
-    const schema = req.user.schemaName;
+    const schema = await getSchemaName(req);
     const result = await query(`
       SELECT 
         po.*,
@@ -23,17 +23,17 @@ router.get('/', requireAuth, async (req, res) => {
       ORDER BY po.created_at DESC
     `);
     
-    res.json(successResponse(result.rows));
-  } catch (error) {
-    res.status(500).json(errorResponse(error.message));
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
 // GET /api/purchase-orders/:id
-router.get('/:id', requireAuth, async (req, res) => {
+router.get('/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const schema = req.user.schemaName;
+    const schema = await getSchemaName(req);
     
     // Obtener la orden
     const orderResult = await query(`
@@ -46,7 +46,7 @@ router.get('/:id', requireAuth, async (req, res) => {
     `, [id]);
     
     if (orderResult.rows.length === 0) {
-      return res.status(404).json(errorResponse('Orden no encontrada'));
+      return res.status(404).json({ error: 'Orden no encontrada' });
     }
     
     // Obtener los items
@@ -61,23 +61,23 @@ router.get('/:id', requireAuth, async (req, res) => {
       ORDER BY poi.created_at ASC
     `, [id]);
     
-    res.json(successResponse({
+    res.json({
       order: orderResult.rows[0],
       items: itemsResult.rows
-    }));
-  } catch (error) {
-    res.status(500).json(errorResponse(error.message));
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
 // POST /api/purchase-orders
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', authMiddleware, async (req, res) => {
   try {
     const { supplier_id, expected_at, notes, items } = req.body;
-    const schema = req.user.schemaName;
+    const schema = await getSchemaName(req);
     
     if (!supplier_id || !items || items.length === 0) {
-      return res.status(400).json(errorResponse('Proveedor y items son requeridos'));
+      return res.status(400).json({ error: 'Proveedor y items son requeridos' });
     }
     
     // Generar número de orden
@@ -147,19 +147,19 @@ router.post('/', requireAuth, async (req, res) => {
       WHERE po.id = $1
     `, [order.id]);
     
-    res.status(201).json(successResponse(result.rows[0]));
-  } catch (error) {
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
     await query('ROLLBACK');
-    res.status(500).json(errorResponse(error.message));
+    res.status(500).json({ error: err.message });
   }
 });
 
 // PUT /api/purchase-orders/:id
-router.put('/:id', requireAuth, async (req, res) => {
+router.put('/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { supplier_id, expected_at, notes, status } = req.body;
-    const schema = req.user.schemaName;
+    const schema = await getSchemaName(req);
     
     const result = await query(`
       UPDATE "${schema}".purchase_orders 
@@ -174,25 +174,25 @@ router.put('/:id', requireAuth, async (req, res) => {
     `, [supplier_id, expected_at, notes, status, id]);
     
     if (result.rows.length === 0) {
-      return res.status(404).json(errorResponse('Orden no encontrada'));
+      return res.status(404).json({ error: 'Orden no encontrada' });
     }
     
-    res.json(successResponse(result.rows[0]));
-  } catch (error) {
-    res.status(500).json(errorResponse(error.message));
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
 // PUT /api/purchase-orders/:id/status
-router.put('/:id/status', requireAuth, async (req, res) => {
+router.put('/:id/status', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
-    const schema = req.user.schemaName;
+    const schema = await getSchemaName(req);
     
     const validStatuses = ['draft', 'pending', 'approved', 'received', 'cancelled'];
     if (!validStatuses.includes(status)) {
-      return res.status(400).json(errorResponse('Estado no válido'));
+      return res.status(400).json({ error: 'Estado no válido' });
     }
     
     const result = await query(`
@@ -203,20 +203,20 @@ router.put('/:id/status', requireAuth, async (req, res) => {
     `, [status, id]);
     
     if (result.rows.length === 0) {
-      return res.status(404).json(errorResponse('Orden no encontrada'));
+      return res.status(404).json({ error: 'Orden no encontrada' });
     }
     
-    res.json(successResponse(result.rows[0]));
-  } catch (error) {
-    res.status(500).json(errorResponse(error.message));
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
 // DELETE /api/purchase-orders/:id
-router.delete('/:id', requireAuth, async (req, res) => {
+router.delete('/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    const schema = req.user.schemaName;
+    const schema = await getSchemaName(req);
     
     // Verificar que la orden esté en draft
     const checkResult = await query(`
@@ -224,29 +224,48 @@ router.delete('/:id', requireAuth, async (req, res) => {
     `, [id]);
     
     if (checkResult.rows.length === 0) {
-      return res.status(404).json(errorResponse('Orden no encontrada'));
+      return res.status(404).json({ error: 'Orden no encontrada' });
     }
     
     if (checkResult.rows[0].status !== 'draft') {
-      return res.status(400).json(errorResponse('Solo se pueden eliminar órdenes en borrador'));
+      return res.status(400).json({ error: 'Solo se pueden eliminar órdenes en borrador' });
     }
     
-    await query(`
-      DELETE FROM "${schema}".purchase_orders WHERE id = $1
+    const result = await query(`
+      DELETE FROM "${schema}".purchase_orders 
+      WHERE id = $1
+      RETURNING id
     `, [id]);
     
-    res.json(successResponse({ id }, 'Orden eliminada correctamente'));
-  } catch (error) {
-    res.status(500).json(errorResponse(error.message));
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Orden no encontrada' });
+    }
+    
+    res.json({ success: true, message: 'Orden eliminada correctamente' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
 // POST /api/purchase-orders/:id/receive
-router.post('/:id/receive', requireAuth, async (req, res) => {
+router.post('/:id/receive', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { items } = req.body; // [{item_id, received_qty}]
-    const schema = req.user.schemaName;
+    const schema = await getSchemaName(req);
+    
+    // Verificar que la orden existe
+    const checkOrder = await query(`
+      SELECT status FROM "${schema}".purchase_orders WHERE id = $1
+    `, [id]);
+    
+    if (checkOrder.rows.length === 0) {
+      return res.status(404).json({ error: 'Orden no encontrada' });
+    }
+    
+    if (checkOrder.rows[0].status !== 'approved') {
+      return res.status(400).json({ error: 'Solo se pueden recibir órdenes aprobadas' });
+    }
     
     await query('BEGIN');
     
@@ -268,10 +287,10 @@ router.post('/:id/receive', requireAuth, async (req, res) => {
     
     await query('COMMIT');
     
-    res.json(successResponse({ id }, 'Orden recibida correctamente'));
-  } catch (error) {
+    res.json({ success: true, message: 'Orden recibida correctamente' });
+  } catch (err) {
     await query('ROLLBACK');
-    res.status(500).json(errorResponse(error.message));
+    res.status(500).json({ error: err.message });
   }
 });
 
