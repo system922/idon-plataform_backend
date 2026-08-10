@@ -75,6 +75,7 @@ import accountingPayableRoutes     from './routes/accountingPayable.js';
 import pushRoutes                 from './routes/pushRoutes.js';
 import scheduledNotificationsRoutes from './routes/scheduledNotificationsRoutes.js';
 import notificationsEmailRoutes   from './routes/notificationsEmailRoutes.js';
+import purchasesOrders            from './routes/purchaseOrders.js';
 
 // ============================================================
 // IMPORTAR RUTAS DE ODONTOLOGÍA - CONFIGURACIÓN
@@ -178,6 +179,8 @@ app.use('/api/accounting',            ...authBusiness, accountingRoutes);
 app.use('/api/accounting-receivable', ...authBusiness, accountingReceivableRoutes);
 app.use('/api/accounting-payable',    ...authBusiness, accountingPayableRoutes);
 app.use('/api/notifications',         ...authBusiness, notificationsEmailRoutes);
+app.use('/api/purchase-orders',         ...authBusiness, purchasesOrders);
+
 
 app.use('/api/reports',             ...authBusiness, reportsRoutes);
 app.use('/api/print',               ...authBusiness, printRoutes);
