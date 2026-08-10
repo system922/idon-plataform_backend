@@ -60,16 +60,19 @@ router.get('/:id', authMiddleware, async (req, res) => {
         p.min_stock,
         p.product_type,
         p.unit_cost as default_unit_cost,
-        json_agg(
-          json_build_object(
-            'id', pois.id,
-            'supplier_id', pois.supplier_id,
-            'supplier_name', s.name,
-            'quantity', pois.quantity,
-            'unit_cost', pois.unit_cost,
-            'line_total', pois.line_total,
-            'received_qty', pois.received_qty
-          )
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'id', pois.id,
+              'supplier_id', pois.supplier_id,
+              'supplier_name', s.name,
+              'quantity', pois.quantity,
+              'unit_cost', pois.unit_cost,
+              'line_total', pois.line_total,
+              'received_qty', pois.received_qty
+            )
+          ) FILTER (WHERE pois.id IS NOT NULL),
+          '[]'::json
         ) as suppliers
       FROM "${schema}".purchase_order_items poi
       LEFT JOIN "${schema}".products p ON poi.product_id = p.id
@@ -208,8 +211,7 @@ router.post('/', authMiddleware, async (req, res) => {
       order_date, 
       expected_at,
       notes, 
-      items,
-      supplier_assignments // { item_index: { supplier_id, quantity, unit_cost } }
+      items
     } = req.body;
     
     const schema = await getSchemaName(req);
@@ -247,10 +249,8 @@ router.post('/', authMiddleware, async (req, res) => {
     const order = orderResult.rows[0];
     
     // 2. Insertar items
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-      
-      const itemResult = await query(`
+    for (const item of items) {
+      await query(`
         INSERT INTO "${schema}".purchase_order_items (
           purchase_order_id,
           source_type,
@@ -262,7 +262,6 @@ router.post('/', authMiddleware, async (req, res) => {
           quantity,
           notes
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        RETURNING id
       `, [
         order.id,
         item.source_type,
@@ -274,34 +273,25 @@ router.post('/', authMiddleware, async (req, res) => {
         item.quantity,
         item.notes || null
       ]);
-      
-      const itemId = itemResult.rows[0].id;
-      
-      // 3. Asignar proveedores si existen
-      if (supplier_assignments && supplier_assignments[i]) {
-        const assignment = supplier_assignments[i];
-        
-        await query(`
-          INSERT INTO "${schema}".purchase_order_item_suppliers (
-            purchase_order_item_id,
-            supplier_id,
-            quantity,
-            unit_cost,
-            line_total
-          ) VALUES ($1, $2, $3, $4, $5)
-        `, [
-          itemId,
-          assignment.supplier_id,
-          assignment.quantity || item.quantity,
-          assignment.unit_cost || 0,
-          (assignment.quantity || item.quantity) * (assignment.unit_cost || 0)
-        ]);
-      }
     }
     
     await query('COMMIT');
     
-    res.status(201).json(order);
+    // Obtener la orden creada con sus items
+    const result = await query(`
+      SELECT 
+        po.*,
+        COUNT(DISTINCT poi.id) as item_count,
+        COUNT(DISTINCT pois.supplier_id) as supplier_count,
+        COALESCE(SUM(pois.line_total), 0) as total
+      FROM "${schema}".purchase_orders po
+      LEFT JOIN "${schema}".purchase_order_items poi ON po.id = poi.purchase_order_id
+      LEFT JOIN "${schema}".purchase_order_item_suppliers pois ON poi.id = pois.purchase_order_item_id
+      WHERE po.id = $1
+      GROUP BY po.id
+    `, [order.id]);
+    
+    res.status(201).json(result.rows[0]);
   } catch (err) {
     await query('ROLLBACK');
     res.status(500).json({ error: err.message });
@@ -352,7 +342,6 @@ router.delete('/:id', authMiddleware, async (req, res) => {
     const { id } = req.params;
     const schema = await getSchemaName(req);
     
-    // Verificar que la orden esté en draft
     const checkResult = await query(`
       SELECT status FROM "${schema}".purchase_orders WHERE id = $1
     `, [id]);
