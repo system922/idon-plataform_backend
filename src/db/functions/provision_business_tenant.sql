@@ -761,7 +761,7 @@ BEGIN
   IF ANY_MATCH(v_modules, 'purchases') THEN
 
     -- ============================================================
-    -- 1. ÓRDENES DE COMPRA (MODIFICADA - AGREGAR order_type)
+    -- 1. ÓRDENES DE COMPRA 
     -- ============================================================
     EXECUTE format('
       CREATE TABLE IF NOT EXISTS %I.purchase_orders (
@@ -793,7 +793,7 @@ BEGIN
 
 
     -- ============================================================
-    -- 2. ITEMS DE ÓRDENES COMMERCIAL
+    -- 2. ITEMS DE ÓRDENES COMMERCIAL (SIN PRECIOS)
     -- ============================================================
     EXECUTE format('
       CREATE TABLE IF NOT EXISTS %I.purchase_order_items_comm (
@@ -802,8 +802,6 @@ BEGIN
         product_id          UUID NOT NULL,
         quantity            INTEGER NOT NULL DEFAULT 1,
         received_qty        INTEGER DEFAULT 0,
-        unit_cost           NUMERIC(12, 2) DEFAULT 0,
-        line_total          NUMERIC(12, 2) DEFAULT 0,
         notes               TEXT,
         created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -819,10 +817,7 @@ BEGIN
           REFERENCES %I.products(id) ON DELETE RESTRICT,
           
         CONSTRAINT purchase_order_items_comm_quantity_check 
-          CHECK (quantity > 0),
-          
-        CONSTRAINT purchase_order_items_comm_unit_cost_check 
-          CHECK (unit_cost >= 0)
+          CHECK (quantity > 0)
       )', 
       p_schema_name,  -- purchase_order_items_comm
       p_schema_name,  -- purchase_orders (FK)
@@ -834,9 +829,8 @@ BEGIN
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_po_items_comm_order_id_idx ON %I.purchase_order_items_comm (purchase_order_id)', p_schema_name, p_schema_name);
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_po_items_comm_product_id_idx ON %I.purchase_order_items_comm (product_id)', p_schema_name, p_schema_name);
 
-
     -- ============================================================
-    -- 3. ITEMS DE ÓRDENES MANUFACTURED
+    -- 3. ITEMS DE ÓRDENES MANUFACTURED (SIN PRECIOS)
     -- ============================================================
     EXECUTE format('
       CREATE TABLE IF NOT EXISTS %I.purchase_order_items_man (
@@ -848,8 +842,6 @@ BEGIN
         quantity                NUMERIC(12, 3) NOT NULL DEFAULT 0,
         required_quantity       NUMERIC(12, 3) NOT NULL DEFAULT 0,
         received_qty            NUMERIC(12, 3) DEFAULT 0,
-        unit_cost               NUMERIC(12, 2) DEFAULT 0,
-        line_total              NUMERIC(12, 2) DEFAULT 0,
         notes                   TEXT,
         created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -873,10 +865,7 @@ BEGIN
           REFERENCES %I.raw_materials(id) ON DELETE RESTRICT,
           
         CONSTRAINT purchase_order_items_man_quantity_check 
-          CHECK (quantity >= 0),
-          
-        CONSTRAINT purchase_order_items_man_unit_cost_check 
-          CHECK (unit_cost >= 0)
+          CHECK (quantity >= 0)
       )', 
       p_schema_name,  -- purchase_order_items_man
       p_schema_name,  -- purchase_orders (FK)
@@ -891,8 +880,7 @@ BEGIN
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_po_items_man_product_id_idx ON %I.purchase_order_items_man (product_id)', p_schema_name, p_schema_name);
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_po_items_man_recipe_id_idx ON %I.purchase_order_items_man (recipe_id)', p_schema_name, p_schema_name);
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_po_items_man_raw_material_id_idx ON %I.purchase_order_items_man (raw_material_id)', p_schema_name, p_schema_name);
-
-
+        
     -- ============================================================
     -- 4. ASIGNACIÓN DE PROVEEDORES POR ITEM (MODIFICADA)
     -- ============================================================
@@ -958,41 +946,7 @@ BEGIN
 
 
     -- ============================================================
-    -- 5. FUNCIÓN PARA GENERAR NÚMERO DE ORDEN
-    -- ============================================================
-    EXECUTE format('
-      CREATE OR REPLACE FUNCTION %I.generate_order_number()
-      RETURNS VARCHAR
-      LANGUAGE plpgsql
-      AS $func$
-      DECLARE
-          v_order_number VARCHAR;
-          v_year VARCHAR;
-          v_month VARCHAR;
-          v_day VARCHAR;
-          v_counter INTEGER;
-      BEGIN
-          v_year := TO_CHAR(CURRENT_DATE, ''YYYY'');
-          v_month := TO_CHAR(CURRENT_DATE, ''MM'');
-          v_day := TO_CHAR(CURRENT_DATE, ''DD'');
-          
-          SELECT COALESCE(
-              MAX(CAST(SUBSTRING(order_number FROM ''-([0-9]{4})$'') AS INTEGER)),
-              0
-          ) + 1
-          INTO v_counter
-          FROM %I.purchase_orders
-          WHERE order_number LIKE ''OC-'' || v_year || v_month || v_day || ''-%'';
-          
-          v_order_number := ''OC-'' || v_year || v_month || v_day || ''-'' || LPAD(v_counter::TEXT, 4, ''0'');
-          
-          RETURN v_order_number;
-      END;
-      $func$;
-    ', p_schema_name, p_schema_name);
-
-    -- ============================================================
-    -- 4. RECEPCIÓN DE MERCADERÍA
+    -- 5. RECEPCIÓN DE MERCADERÍA
     -- ============================================================
 
     EXECUTE format('
@@ -1020,7 +974,7 @@ BEGIN
 
 
     -- ============================================================
-    -- 5. ITEMS RECIBIDOS
+    -- 6. ITEMS RECIBIDOS
     -- ============================================================
 
     EXECUTE format('
@@ -1054,7 +1008,7 @@ BEGIN
 
 
     -- ============================================================
-    -- 6. HISTORIAL DE PROVEEDORES POR PRODUCTO
+    -- 7. HISTORIAL DE PROVEEDORES POR PRODUCTO
     -- (Para sugerir proveedores en futuras compras)
     -- ============================================================
 

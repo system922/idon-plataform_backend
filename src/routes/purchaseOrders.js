@@ -3,7 +3,7 @@ import express from 'express';
 import { query } from '../config/database.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 import { authMiddleware } from '../middleware/auth.js';
-import { generateOrderNumber } from '../utils/orderNumberGenerator.js'; // ← 🔥 IMPORTAR LA FUNCIÓN
+import { generateOrderNumber } from '../utils/orderNumberGenerator.js';
 
 const router = express.Router();
 
@@ -23,8 +23,6 @@ async function getOrderItems(schema, orderId, orderType) {
                 ci.product_id,
                 ci.quantity,
                 ci.received_qty,
-                ci.unit_cost,
-                ci.line_total,
                 ci.notes,
                 ci.created_at,
                 ci.updated_at,
@@ -68,8 +66,6 @@ async function getOrderItems(schema, orderId, orderType) {
                 mi.quantity,
                 mi.required_quantity,
                 mi.received_qty,
-                mi.unit_cost,
-                mi.line_total,
                 mi.notes,
                 mi.created_at,
                 mi.updated_at,
@@ -511,8 +507,7 @@ router.get('/products/with-recipe', authMiddleware, async (req, res) => {
 });
 
 // ============================================================
-// POST /api/purchase-orders
-// Crear una nueva orden de compra (COMMERCIAL o MANUFACTURED)
+// POST /api/purchase-orders (SOLO CREA ORDEN - SIN PRECIOS)
 // ============================================================
 router.post('/', authMiddleware, async (req, res) => {
     try {
@@ -521,13 +516,12 @@ router.post('/', authMiddleware, async (req, res) => {
             expected_at,
             notes, 
             items,
-            order_type  // 'COMMERCIAL' o 'MANUFACTURED'
+            order_type
         } = req.body;
         
         const schema = await getSchemaName(req);
         const userId = req.user.id;
         
-        // Validar order_type
         if (!order_type || !['COMMERCIAL', 'MANUFACTURED'].includes(order_type)) {
             return res.status(400).json({ 
                 error: 'order_type debe ser COMMERCIAL o MANUFACTURED' 
@@ -553,7 +547,6 @@ router.post('/', authMiddleware, async (req, res) => {
                 }
             }
         } else {
-            // MANUFACTURED
             for (const item of items) {
                 if (!item.raw_material_id) {
                     return res.status(400).json({ 
@@ -576,7 +569,6 @@ router.post('/', authMiddleware, async (req, res) => {
                     });
                 }
                 
-                // Verificar que la materia prima pertenece a la receta
                 const ingredientCheck = await query(`
                     SELECT id FROM "${schema}".recipe_ingredients 
                     WHERE recipe_id = $1 AND raw_material_id = $2
@@ -590,12 +582,10 @@ router.post('/', authMiddleware, async (req, res) => {
             }
         }
         
-        // 🔥 USAR LA FUNCIÓN DE NODE.JS
         const orderNumber = await generateOrderNumber(schema);
         
         await query('BEGIN');
         
-        // Crear la orden
         const orderResult = await query(`
             INSERT INTO "${schema}".purchase_orders (
                 order_number,
@@ -611,75 +601,43 @@ router.post('/', authMiddleware, async (req, res) => {
         
         const order = orderResult.rows[0];
         
-        // Insertar items según el tipo
+        // Insertar items según el tipo (SOLO producto/cantidad, SIN PRECIOS)
         if (order_type === 'COMMERCIAL') {
             for (const item of items) {
-                const productInfo = await query(`
-                    SELECT name, code, barcode, unit_cost 
-                    FROM "${schema}".products WHERE id = $1
-                `, [item.product_id]);
-                
-                const product = productInfo.rows[0];
-                const unitCost = item.unit_cost || product.unit_cost || 0;
-                const lineTotal = (item.quantity || 0) * unitCost;
-                
                 await query(`
                     INSERT INTO "${schema}".purchase_order_items_comm (
                         purchase_order_id,
                         product_id,
                         quantity,
-                        unit_cost,
-                        line_total,
                         notes
-                    ) VALUES ($1, $2, $3, $4, $5, $6)
+                    ) VALUES ($1, $2, $3, $4)
                 `, [
                     order.id,
                     item.product_id,
                     item.quantity,
-                    unitCost,
-                    lineTotal,
                     item.notes || null
                 ]);
             }
         } else {
-            // MANUFACTURED
+            // MANUFACTURED - SOLO materia prima y cantidad
             for (const item of items) {
-                const rmInfo = await query(`
-                    SELECT name, code, unit, unit_cost 
-                    FROM "${schema}".raw_materials WHERE id = $1
-                `, [item.raw_material_id]);
-                
-                const rm = rmInfo.rows[0];
-                const unitCost = item.unit_cost || rm.unit_cost || 0;
-                const lineTotal = (item.quantity || 0) * unitCost;
-                
                 await query(`
                     INSERT INTO "${schema}".purchase_order_items_man (
                         purchase_order_id,
                         product_id,
                         recipe_id,
                         raw_material_id,
-                        raw_material_name,
-                        raw_material_code,
                         quantity,
                         required_quantity,
-                        unit,
-                        unit_cost,
-                        line_total,
                         notes
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
                 `, [
                     order.id,
                     item.product_id,
                     item.recipe_id,
                     item.raw_material_id,
-                    rm.name,
-                    rm.code,
                     item.quantity,
                     item.required_quantity || item.quantity,
-                    rm.unit,
-                    unitCost,
-                    lineTotal,
                     item.notes || null
                 ]);
             }
@@ -687,7 +645,6 @@ router.post('/', authMiddleware, async (req, res) => {
         
         await query('COMMIT');
         
-        // Obtener la orden completa
         const result = await query(`
             SELECT 
                 po.*,
@@ -712,8 +669,7 @@ router.post('/', authMiddleware, async (req, res) => {
 });
 
 // ============================================================
-// PUT /api/purchase-orders/:id
-// Actualizar una orden de compra
+// PUT /api/purchase-orders/:id (SOLO ACTUALIZA - SIN PRECIOS)
 // ============================================================
 router.put('/:id', authMiddleware, async (req, res) => {
     try {
@@ -753,7 +709,6 @@ router.put('/:id', authMiddleware, async (req, res) => {
                 WHERE id = $2
             `, [notes || null, id]);
 
-            // Obtener items actuales según el tipo
             let currentItems;
             if (orderType === 'COMMERCIAL') {
                 currentItems = await query(`
@@ -775,14 +730,12 @@ router.put('/:id', authMiddleware, async (req, res) => {
             );
 
             if (itemsToDelete.length > 0) {
-                // Eliminar de purchase_order_item_suppliers
                 const tableName = orderType === 'COMMERCIAL' ? 'item_comm_id' : 'item_man_id';
                 await query(`
                     DELETE FROM "${schema}".purchase_order_item_suppliers
                     WHERE ${tableName} = ANY($1::uuid[])
                 `, [itemsToDelete]);
 
-                // Eliminar items
                 const itemsTable = orderType === 'COMMERCIAL' 
                     ? 'purchase_order_items_comm' 
                     : 'purchase_order_items_man';
@@ -796,26 +749,14 @@ router.put('/:id', authMiddleware, async (req, res) => {
 
             if (orderType === 'COMMERCIAL') {
                 for (const item of items) {
-                    const productInfo = await query(`
-                        SELECT name, code, barcode, unit_cost 
-                        FROM "${schema}".products WHERE id = $1
-                    `, [item.product_id]);
-                    
-                    const product = productInfo.rows[0];
-                    const unitCost = item.unit_cost || product.unit_cost || 0;
-                    const lineTotal = (item.quantity || 0) * unitCost;
-
                     if (item.id && currentItemIds.includes(item.id)) {
                         await query(`
                             UPDATE "${schema}".purchase_order_items_comm
-                            SET product_id = $1, quantity = $2, unit_cost = $3, 
-                                line_total = $4, notes = $5, updated_at = CURRENT_TIMESTAMP
-                            WHERE id = $6 AND purchase_order_id = $7
+                            SET product_id = $1, quantity = $2, notes = $3, updated_at = CURRENT_TIMESTAMP
+                            WHERE id = $4 AND purchase_order_id = $5
                         `, [
                             item.product_id,
                             item.quantity,
-                            unitCost,
-                            lineTotal,
                             item.notes || null,
                             item.id,
                             id
@@ -823,15 +764,12 @@ router.put('/:id', authMiddleware, async (req, res) => {
                     } else {
                         await query(`
                             INSERT INTO "${schema}".purchase_order_items_comm (
-                                purchase_order_id, product_id, quantity, 
-                                unit_cost, line_total, notes
-                            ) VALUES ($1, $2, $3, $4, $5, $6)
+                                purchase_order_id, product_id, quantity, notes
+                            ) VALUES ($1, $2, $3, $4)
                         `, [
                             id,
                             item.product_id,
                             item.quantity,
-                            unitCost,
-                            lineTotal,
                             item.notes || null
                         ]);
                     }
@@ -839,30 +777,18 @@ router.put('/:id', authMiddleware, async (req, res) => {
             } else {
                 // MANUFACTURED
                 for (const item of items) {
-                    const rmInfo = await query(`
-                        SELECT name, code, unit, unit_cost 
-                        FROM "${schema}".raw_materials WHERE id = $1
-                    `, [item.raw_material_id]);
-                    
-                    const rm = rmInfo.rows[0];
-                    const unitCost = item.unit_cost || rm.unit_cost || 0;
-                    const lineTotal = (item.quantity || 0) * unitCost;
-
                     if (item.id && currentItemIds.includes(item.id)) {
                         await query(`
                             UPDATE "${schema}".purchase_order_items_man
                             SET product_id = $1, recipe_id = $2, raw_material_id = $3,
-                                quantity = $4, required_quantity = $5, unit_cost = $6,
-                                line_total = $7, notes = $8, updated_at = CURRENT_TIMESTAMP
-                            WHERE id = $9 AND purchase_order_id = $10
+                                quantity = $4, required_quantity = $5, notes = $6, updated_at = CURRENT_TIMESTAMP
+                            WHERE id = $7 AND purchase_order_id = $8
                         `, [
                             item.product_id,
                             item.recipe_id,
                             item.raw_material_id,
                             item.quantity,
                             item.required_quantity || item.quantity,
-                            unitCost,
-                            lineTotal,
                             item.notes || null,
                             item.id,
                             id
@@ -871,21 +797,15 @@ router.put('/:id', authMiddleware, async (req, res) => {
                         await query(`
                             INSERT INTO "${schema}".purchase_order_items_man (
                                 purchase_order_id, product_id, recipe_id, raw_material_id,
-                                raw_material_name, raw_material_code, quantity, required_quantity,
-                                unit, unit_cost, line_total, notes
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                                quantity, required_quantity, notes
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
                         `, [
                             id,
                             item.product_id,
                             item.recipe_id,
                             item.raw_material_id,
-                            rm.name,
-                            rm.code,
                             item.quantity,
                             item.required_quantity || item.quantity,
-                            rm.unit,
-                            unitCost,
-                            lineTotal,
                             item.notes || null
                         ]);
                     }
@@ -1036,7 +956,6 @@ router.delete('/:orderId/items/:itemId', authMiddleware, async (req, res) => {
             return res.status(404).json({ error: 'Item no encontrado en esta orden' });
         }
 
-        // Eliminar de purchase_order_item_suppliers
         const supplierColumn = orderType === 'COMMERCIAL' ? 'item_comm_id' : 'item_man_id';
         await query(`
             DELETE FROM "${schema}".purchase_order_item_suppliers
@@ -1082,12 +1001,10 @@ router.delete('/:id', authMiddleware, async (req, res) => {
             ? 'purchase_order_items_comm' 
             : 'purchase_order_items_man';
         
-        // Eliminar items
         await query(`
             DELETE FROM "${schema}".${tableName} WHERE purchase_order_id = $1
         `, [id]);
         
-        // Eliminar orden
         await query(`
             DELETE FROM "${schema}".purchase_orders WHERE id = $1
         `, [id]);
