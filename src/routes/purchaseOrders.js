@@ -69,12 +69,15 @@ async function getOrderItems(schema, orderId, orderType) {
                 mi.notes,
                 mi.created_at,
                 mi.updated_at,
+                -- 🔥 Este es el nombre del producto manufacturado (origen)
                 p.name as product_name_manufactured,
                 p.code as product_code_manufactured,
-                r.description as recipe_description,
-                rm.name as raw_material_name,
-                rm.code as raw_material_code,
+                -- 🔥 Estos son los datos de la materia prima que se compra
+                rm.name as product_name,        -- ← 🔥 NOMBRE para el frontend
+                rm.code as product_code,        -- ← 🔥 CÓDIGO para el frontend
+                rm.barcode,
                 rm.unit as raw_material_unit,
+                r.description as recipe_description,
                 'MANUFACTURED' as source_type,
                 COALESCE(
                     json_agg(
@@ -97,7 +100,7 @@ async function getOrderItems(schema, orderId, orderType) {
             LEFT JOIN "${schema}".purchase_order_item_suppliers pois ON mi.id = pois.item_man_id
             LEFT JOIN "${schema}".suppliers s ON pois.supplier_id = s.id
             WHERE mi.purchase_order_id = $1
-            GROUP BY mi.id, p.name, p.code, r.description, rm.name, rm.code, rm.unit
+            GROUP BY mi.id, p.name, p.code, r.description, rm.name, rm.code, rm.unit, rm.barcode
             ORDER BY mi.created_at ASC
         `, [orderId]);
     }
