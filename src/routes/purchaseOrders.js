@@ -823,6 +823,261 @@ router.post('/', authMiddleware, async (req, res) => {
 });
 
 // ============================================================
+// PUT /api/purchase-orders/:id
+// Actualizar una orden de compra
+// ============================================================
+router.put('/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { notes, items } = req.body;
+
+    const schema = await getSchemaName(req);
+
+    // ------------------------------------------------------------
+    // Validaciones
+    // ------------------------------------------------------------
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({
+        error: 'Se requieren items para la orden'
+      });
+    }
+
+    // Validar items
+    for (const item of items) {
+      if (
+        !item.source_type ||
+        !['COMMERCIAL', 'MANUFACTURED'].includes(item.source_type)
+      ) {
+        return res.status(400).json({
+          error: 'Tipo de fuente inválido'
+        });
+      }
+
+      if (!item.quantity || Number(item.quantity) <= 0) {
+        return res.status(400).json({
+          error: 'La cantidad debe ser mayor a 0'
+        });
+      }
+
+      if (!item.product_name) {
+        return res.status(400).json({
+          error: 'El nombre del producto es obligatorio'
+        });
+      }
+    }
+
+    // ------------------------------------------------------------
+    // Verificar que la orden exista
+    // ------------------------------------------------------------
+    const orderResult = await query(`
+      SELECT *
+      FROM "${schema}".purchase_orders
+      WHERE id = $1
+    `, [id]);
+
+    if (orderResult.rows.length === 0) {
+      return res.status(404).json({
+        error: 'Orden no encontrada'
+      });
+    }
+
+    const order = orderResult.rows[0];
+
+    // ------------------------------------------------------------
+    // Solo permitir edición de borradores
+    // ------------------------------------------------------------
+    if (order.status !== 'draft') {
+      return res.status(400).json({
+        error: `No se puede editar una orden en estado "${order.status}"`
+      });
+    }
+
+    // ------------------------------------------------------------
+    // Iniciar transacción
+    // ------------------------------------------------------------
+    await query('BEGIN');
+
+    try {
+
+      // ----------------------------------------------------------
+      // 1. Actualizar información de la orden
+      // ----------------------------------------------------------
+      await query(`
+        UPDATE "${schema}".purchase_orders
+        SET
+          notes = $1,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = $2
+      `, [
+        notes || null,
+        id
+      ]);
+
+      // ----------------------------------------------------------
+      // 2. Obtener items actuales
+      // ----------------------------------------------------------
+      const currentItemsResult = await query(`
+        SELECT id
+        FROM "${schema}".purchase_order_items
+        WHERE purchase_order_id = $1
+      `, [id]);
+
+      const currentItemIds = currentItemsResult.rows.map(
+        row => row.id
+      );
+
+      // IDs que vienen desde el frontend
+      const incomingItemIds = items
+        .filter(item => item.id)
+        .map(item => item.id);
+
+      // ----------------------------------------------------------
+      // 3. Eliminar items que ya no existen en la edición
+      // ----------------------------------------------------------
+      const itemsToDelete = currentItemIds.filter(
+        currentId => !incomingItemIds.includes(currentId)
+      );
+
+      if (itemsToDelete.length > 0) {
+        await query(`
+          DELETE FROM "${schema}".purchase_order_items
+          WHERE id = ANY($1::uuid[])
+          AND purchase_order_id = $2
+        `, [
+          itemsToDelete,
+          id
+        ]);
+      }
+
+      // ----------------------------------------------------------
+      // 4. Actualizar / insertar items
+      // ----------------------------------------------------------
+      for (const item of items) {
+
+        // ----------------------------------------
+        // Item existente
+        // ----------------------------------------
+        if (item.id && currentItemIds.includes(item.id)) {
+
+          await query(`
+            UPDATE "${schema}".purchase_order_items
+            SET
+              source_type = $1,
+              product_id = $2,
+              recipe_id = $3,
+              product_name = $4,
+              product_code = $5,
+              barcode = $6,
+              quantity = $7,
+              notes = $8,
+              updated_at = CURRENT_TIMESTAMP
+            WHERE id = $9
+            AND purchase_order_id = $10
+          `, [
+            item.source_type,
+            item.product_id || null,
+            item.recipe_id || null,
+            item.product_name,
+            item.product_code || null,
+            item.barcode || null,
+            item.quantity,
+            item.notes || null,
+            item.id,
+            id
+          ]);
+
+        } else {
+
+          // ----------------------------------------
+          // Item nuevo
+          // ----------------------------------------
+          await query(`
+            INSERT INTO "${schema}".purchase_order_items (
+              purchase_order_id,
+              source_type,
+              product_id,
+              recipe_id,
+              product_name,
+              product_code,
+              barcode,
+              quantity,
+              notes
+            )
+            VALUES (
+              $1,
+              $2,
+              $3,
+              $4,
+              $5,
+              $6,
+              $7,
+              $8,
+              $9
+            )
+          `, [
+            id,
+            item.source_type,
+            item.product_id || null,
+            item.recipe_id || null,
+            item.product_name,
+            item.product_code || null,
+            item.barcode || null,
+            item.quantity,
+            item.notes || null
+          ]);
+        }
+      }
+
+      // ----------------------------------------------------------
+      // 5. Commit
+      // ----------------------------------------------------------
+      await query('COMMIT');
+
+    } catch (transactionError) {
+
+      await query('ROLLBACK');
+
+      throw transactionError;
+    }
+
+    // ------------------------------------------------------------
+    // 6. Devolver orden actualizada
+    // ------------------------------------------------------------
+    const result = await query(`
+      SELECT
+        po.*,
+        COUNT(DISTINCT poi.id) AS item_count,
+        COUNT(DISTINCT pois.supplier_id) AS supplier_count,
+        COALESCE(SUM(pois.line_total), 0) AS total
+      FROM "${schema}".purchase_orders po
+      LEFT JOIN "${schema}".purchase_order_items poi
+        ON po.id = poi.purchase_order_id
+      LEFT JOIN "${schema}".purchase_order_item_suppliers pois
+        ON poi.id = pois.purchase_order_item_id
+      WHERE po.id = $1
+      GROUP BY po.id
+    `, [id]);
+
+    res.json(result.rows[0]);
+
+  } catch (err) {
+
+    console.error(
+      'Error en PUT /purchase-orders/:id:',
+      err
+    );
+
+    try {
+      await query('ROLLBACK');
+    } catch (_) {}
+
+    res.status(500).json({
+      error: err.message
+    });
+  }
+});
+
+// ============================================================
 // PUT /api/purchase-orders/:id/status
 // Cambiar estado de una orden
 // ============================================================
