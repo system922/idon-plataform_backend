@@ -221,12 +221,18 @@ router.post('/', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Se requieren items para la orden' });
     }
     
-    // Generar número de orden
+    // Generar número de orden - CORREGIDO
     const numberResult = await query(`
-      SELECT 'OC-' || TO_CHAR(NOW(), 'YYYYMMDD') || '-' || 
-      LPAD(COALESCE(MAX(CAST(SUBSTRING(order_number FROM '-(\\d+)$') AS INTEGER)), 0) + 1, 4, '0') as order_number
-      FROM "${schema}".purchase_orders
-      WHERE order_number LIKE 'OC-' || TO_CHAR(NOW(), 'YYYYMMDD') || '%'
+      SELECT 
+        'OC-' || TO_CHAR(NOW(), 'YYYYMMDD') || '-' || 
+        LPAD(COALESCE(
+          (SELECT MAX(CAST(SUBSTRING(order_number FROM '-(\\d+)$') AS INTEGER)) 
+           FROM "${schema}".purchase_orders 
+           WHERE order_number LIKE 'OC-' || TO_CHAR(NOW(), 'YYYYMMDD') || '-%'), 
+          0)::text, 
+        4, 
+        '0'
+        ) as order_number
     `);
     
     const orderNumber = numberResult.rows[0].order_number;
@@ -342,6 +348,7 @@ router.delete('/:id', authMiddleware, async (req, res) => {
     const { id } = req.params;
     const schema = await getSchemaName(req);
     
+    // Verificar que la orden esté en draft
     const checkResult = await query(`
       SELECT status FROM "${schema}".purchase_orders WHERE id = $1
     `, [id]);
