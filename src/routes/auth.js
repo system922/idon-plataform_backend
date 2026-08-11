@@ -1,3 +1,4 @@
+// ========== backend/routes/auth.routes.js ==========
 import express from 'express';
 import * as authService from '../services/authService.js';
 import bcrypt from 'bcrypt';
@@ -144,6 +145,8 @@ router.post('/login', async (req, res, next) => {
       return res.status(400).json(errorResponse('Email and password are required', 400));
     }
 
+    logger.info(`[LOGIN] Recibida petición para: ${email}`);
+
     const result = await authService.login(email, password);
     
     // Guardar refresh token en cookie HttpOnly
@@ -156,16 +159,29 @@ router.post('/login', async (req, res, next) => {
       });
     }
 
-    // Enviar SOLO token y user (NO refreshToken)
-    res.json(successResponse({
+    // ✅ Log de la respuesta para depuración
+    logger.info(`[LOGIN] Login exitoso para: ${email}`);
+    logger.info(`[LOGIN] requiresBusinessSelection: ${result.requiresBusinessSelection}`);
+    logger.info(`[LOGIN] Negocios: ${result.businesses?.length || 0}`);
+    
+    // ✅ Estructura correcta de respuesta
+    // Los datos van dentro de 'data' según successResponse
+    const responseData = {
       token: result.token,
       user: result.user,
       businesses: result.businesses || [],
       requiresBusinessSelection: result.requiresBusinessSelection || false,
-      hasSuspendedBusinesses: result.hasSuspendedBusinesses || false
-    }, 'Login successful'));
+      hasSuspendedBusinesses: result.hasSuspendedBusinesses || false,
+      warnings: result.warnings || null,
+      type: result.type || null
+    };
+
+    // ✅ Usar successResponse que ya estructura { success: true, data: ... }
+    res.json(successResponse(responseData, 'Login successful'));
 
   } catch (error) {
+    logger.error(`[LOGIN] Error para ${email}:`, error.message);
+    
     if (error.message === 'Invalid credentials' || error.message === 'User is inactive') {
       return res.status(401).json(errorResponse(error.message, 401));
     }
@@ -217,6 +233,8 @@ router.post('/select-business', async (req, res, next) => {
     const { businessId } = req.body;
     if (!businessId) return res.status(400).json(errorResponse('businessId is required', 400));
 
+    logger.info(`[SELECT-BUSINESS] Usuario ${decoded.userId} seleccionando negocio ${businessId}`);
+
     const result = await authService.selectBusiness(decoded.userId, businessId);
     
     // Guardar refresh token en cookie HttpOnly
@@ -229,13 +247,17 @@ router.post('/select-business', async (req, res, next) => {
       });
     }
 
-    // Enviar SOLO token y user (NO refreshToken)
-    res.json(successResponse({
+    // ✅ Estructura correcta de respuesta
+    const responseData = {
       token: result.token,
       user: result.user
-    }, 'Business selected'));
+    };
+
+    res.json(successResponse(responseData, 'Business selected'));
 
   } catch (error) {
+    logger.error(`[SELECT-BUSINESS] Error:`, error.message);
+    
     if (error.message.includes('not found') || error.message.includes('denied')) {
       return res.status(403).json(errorResponse(error.message, 403));
     }
@@ -246,7 +268,6 @@ router.post('/select-business', async (req, res, next) => {
   }
 });
 
-
 // ── GET /api/auth/me ──────────────────────────────────────────
 router.get('/me', async (req, res, next) => {
   const authHeader = req.headers.authorization || '';
@@ -256,7 +277,9 @@ router.get('/me', async (req, res, next) => {
   let decoded;
   try {
     decoded = authService.verifyToken(token);
-  } catch { return res.status(401).json({ ok: false, message: 'Token inválido' }); }
+  } catch { 
+    return res.status(401).json({ ok: false, message: 'Token inválido' }); 
+  }
 
   const userId    = decoded.userId || decoded.id;
   const userType  = decoded.userType;
@@ -286,7 +309,9 @@ router.get('/me', async (req, res, next) => {
     }
     if (!profile) return res.status(404).json({ ok: false, message: 'Usuario no encontrado' });
     res.json({ ok: true, data: profile });
-  } catch (e) { next(e); }
+  } catch (e) { 
+    next(e); 
+  }
 });
 
 // ── PUT /api/auth/me ──────────────────────────────────────────
@@ -298,7 +323,9 @@ router.put('/me', async (req, res, next) => {
   let decoded;
   try {
     decoded = authService.verifyToken(token);
-  } catch { return res.status(401).json({ ok: false, message: 'Token inválido' }); }
+  } catch { 
+    return res.status(401).json({ ok: false, message: 'Token inválido' }); 
+  }
 
   const userId   = decoded.userId || decoded.id;
   const userType = decoded.userType;
@@ -332,7 +359,9 @@ router.put('/me', async (req, res, next) => {
     }
     if (!updated) return res.status(404).json({ ok: false, message: 'Usuario no encontrado' });
     res.json({ ok: true, data: updated });
-  } catch (e) { next(e); }
+  } catch (e) { 
+    next(e); 
+  }
 });
 
 // ── PUT /api/auth/change-password ─────────────────────────────
@@ -344,7 +373,9 @@ router.put('/change-password', async (req, res, next) => {
   let decoded;
   try {
     decoded = authService.verifyToken(token);
-  } catch { return res.status(401).json({ ok: false, message: 'Token inválido' }); }
+  } catch { 
+    return res.status(401).json({ ok: false, message: 'Token inválido' }); 
+  }
 
   const userId   = decoded.userId || decoded.id;
   const userType = decoded.userType;
@@ -381,7 +412,9 @@ router.put('/change-password', async (req, res, next) => {
       await query(`UPDATE public.users SET password_hash=$1 WHERE id=$2`, [newHash, userId]);
     }
     res.json({ ok: true, message: 'Contraseña actualizada correctamente' });
-  } catch (e) { next(e); }
+  } catch (e) { 
+    next(e); 
+  }
 });
 
 // ── POST /api/auth/validate-jefe-caja ────────────────────────

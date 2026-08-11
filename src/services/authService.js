@@ -1,3 +1,4 @@
+// ========== backend/services/authService.js ==========
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import { v4 as uuidv4 } from 'uuid';
@@ -272,8 +273,10 @@ export const login = async (email, password) => {
         lastName: admin.last_name,
         userType: 'admin_idon',
         role: admin.role,
-        requiresBusinessSelection: false, // ✅ AGREGADO
+        requiresBusinessSelection: false,
       },
+      businesses: [], // ✅ Admin no tiene negocios
+      requiresBusinessSelection: false,
     };
   }
 
@@ -360,7 +363,7 @@ export const login = async (email, password) => {
     if (activeBusinesses.length > 0) {
       logger.info(`[LOGIN] Usuario tiene ${activeBusinesses.length} negocios activos, ${suspendedBusinesses.length} suspendidos`);
 
-      // Si tiene exactamente 1 negocio activo
+      // ✅ Si tiene exactamente 1 negocio activo
       if (activeBusinesses.length === 1) {
         const biz = activeBusinesses[0];
         const token = jwt.sign(
@@ -383,6 +386,20 @@ export const login = async (email, password) => {
 
         const refreshToken = await generateRefreshToken(user.id, 'public');
 
+        // ✅ Mapear negocios para la respuesta
+        const mappedBusinesses = activeBusinesses.map(b => ({
+          id: b.id,
+          name: b.name,
+          slug: b.slug,
+          schema_name: b.schema_name,
+          business_type: b.business_type || 'Negocio',
+          business_type_code: b.business_type_code,
+          is_owner: b.is_owner,
+          role_code: b.role_code || (isBusinessOwner ? 'owner' : 'employee'),
+          subscription_status: b.subscription_status || 'active',
+          businessStatus: b.businessStatus || 'active'
+        }));
+
         return {
           token,
           refreshToken,
@@ -399,9 +416,9 @@ export const login = async (email, password) => {
             roleCode: biz.role_code || (isBusinessOwner ? 'owner' : 'employee'),
             businessStatus: biz.businessStatus || 'active',
             subscriptionStatus: biz.subscriptionStatus || 'active',
-            requiresBusinessSelection: false, // ✅ AGREGADO
+            requiresBusinessSelection: false,
           },
-          businesses: activeBusinesses,
+          businesses: mappedBusinesses,
           allBusinesses: allBusinesses,
           suspendedBusinesses: suspendedBusinesses,
           requiresBusinessSelection: false,
@@ -409,7 +426,7 @@ export const login = async (email, password) => {
         };
       }
 
-      // Tiene múltiples negocios activos - REQUIERE SELECCIÓN
+      // ✅ Tiene múltiples negocios activos - REQUIERE SELECCIÓN
       const token = jwt.sign(
         {
           userId: user.id,
@@ -424,6 +441,23 @@ export const login = async (email, password) => {
 
       const refreshToken = await generateRefreshToken(user.id, 'public');
 
+      // ✅ Mapear negocios para la respuesta
+      const mappedBusinesses = activeBusinesses.map(b => ({
+        id: b.id,
+        name: b.name,
+        slug: b.slug,
+        schema_name: b.schema_name,
+        business_type: b.business_type || 'Negocio',
+        business_type_code: b.business_type_code,
+        is_owner: b.is_owner,
+        role_code: b.role_code || (isBusinessOwner ? 'owner' : 'employee'),
+        subscription_status: b.subscription_status || 'active',
+        businessStatus: b.businessStatus || 'active'
+      }));
+
+      logger.info(`[LOGIN] Múltiples negocios activos: ${mappedBusinesses.length}`);
+      logger.info(`[LOGIN] mappedBusinesses: ${JSON.stringify(mappedBusinesses.map(b => ({ id: b.id, name: b.name })))}`);
+
       return {
         token,
         refreshToken, 
@@ -434,9 +468,9 @@ export const login = async (email, password) => {
           firstName: user.first_name,
           lastName: user.last_name,
           userType,
-          requiresBusinessSelection: true, // ✅ AGREGADO
+          requiresBusinessSelection: true, // ✅ IMPORTANTE
         },
-        businesses: activeBusinesses,
+        businesses: mappedBusinesses, // ✅ LISTA COMPLETA DE NEGOCIOS
         allBusinesses: allBusinesses,
         suspendedBusinesses: suspendedBusinesses,
         requiresBusinessSelection: true,
@@ -500,7 +534,7 @@ export const login = async (email, password) => {
             roleCode: biz.role_code || 'owner',
             businessStatus: 'suspended',
             subscriptionStatus: biz.subscriptionStatus || 'suspended',
-            requiresBusinessSelection: false, // ✅ AGREGADO
+            requiresBusinessSelection: false,
           },
           businesses: [],
           allBusinesses: allBusinesses,
@@ -546,8 +580,8 @@ export const login = async (email, password) => {
             schemaName: biz.schema_name,
             roleCode: biz.role_code || 'owner',
             businessStatus: 'payment_pending',
-            subscriptionStatus: biz.subscriptionStatus || 'payment_pending',
-            requiresBusinessSelection: false, // ✅ AGREGADO
+            subscriptionStatus: biz.subscription_status || 'payment_pending',
+            requiresBusinessSelection: false,
           },
           businesses: [],
           allBusinesses: allBusinesses,
@@ -570,7 +604,7 @@ export const login = async (email, password) => {
             schemaName: biz.schema_name,
             roleCode: biz.role_code || 'owner',
             businessStatus: 'suspended',
-            subscriptionStatus: biz.subscriptionStatus || 'suspended'
+            subscriptionStatus: biz.subscription_status || 'suspended'
           },
           env.jwt.secret,
           { expiresIn: env.jwt.expiresIn }
@@ -593,8 +627,8 @@ export const login = async (email, password) => {
             schemaName: biz.schema_name,
             roleCode: biz.role_code || 'owner',
             businessStatus: 'suspended',
-            subscriptionStatus: biz.subscriptionStatus || 'suspended',
-            requiresBusinessSelection: false, // ✅ AGREGADO
+            subscriptionStatus: biz.subscription_status || 'suspended',
+            requiresBusinessSelection: false,
           },
           businesses: [],
           allBusinesses: allBusinesses,
@@ -632,7 +666,7 @@ export const login = async (email, password) => {
         firstName: user.first_name,
         lastName: user.last_name,
         userType: 'business_user',
-        requiresBusinessSelection: false, // ✅ AGREGADO
+        requiresBusinessSelection: false,
       },
       businesses: [],
       requiresBusinessSelection: false,
@@ -749,6 +783,20 @@ export const login = async (email, password) => {
         biz.schema_name
       );
 
+      // ✅ Mapear negocios para la respuesta
+      const mappedBusinesses = [{
+        id: biz.id,
+        name: biz.name,
+        slug: biz.slug,
+        schema_name: biz.schema_name,
+        business_type: biz.business_type || 'Negocio',
+        business_type_code: biz.business_type_code,
+        is_owner: false,
+        role_code: roleCode,
+        subscription_status: biz.subscription_status || 'active',
+        businessStatus: 'active'
+      }];
+
       return {
         token,
         refreshToken, 
@@ -767,9 +815,9 @@ export const login = async (email, password) => {
           permissions,
           businessStatus: 'active',
           subscriptionStatus: biz.subscription_status || 'active',
-          requiresBusinessSelection: false, // ✅ AGREGADO
+          requiresBusinessSelection: false,
         },
-        businesses: [biz],
+        businesses: mappedBusinesses,
         requiresBusinessSelection: false,
       };
     } catch (err) {
@@ -866,7 +914,7 @@ export const selectBusiness = async (userId, businessId) => {
       schemaName:   row.schema_name,
       roleCode:     row.role_code || 'owner',
       businessStatus: 'active',
-      requiresBusinessSelection: false, // ✅ AGREGADO
+      requiresBusinessSelection: false,
     },
   };
 };
