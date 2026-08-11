@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import env from './config/env.js';
 import logger from './utils/logger.js';
+import cookieParser from 'cookie-parser';
 
 
 // Ruta para obtener negocio por número de WhatsApp
@@ -110,6 +111,7 @@ const app = express();
 // ─── Core middleware ──────────────────────────────────────────────────────────
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
 app.use(cors({
   origin: (origin, cb) => {
     // allow requests with no origin (mobile apps, curl, Render health checks)

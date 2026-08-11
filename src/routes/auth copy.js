@@ -7,65 +7,6 @@ import logger from '../utils/logger.js';
 
 const router = express.Router();
 
-// ── POST /api/auth/refresh ────────────────────────────────────
-router.post('/refresh', async (req, res, next) => {
-  try {
-    // Obtener refresh token de la cookie HttpOnly
-    const refreshToken = req.cookies?.refreshToken;
-    
-    if (!refreshToken) {
-      return res.status(401).json(errorResponse('Refresh token no encontrado', 401));
-    }
-
-    const result = await authService.refreshAccessToken(refreshToken, req);
-    
-    // Nuevo refresh token en cookie HttpOnly
-    res.cookie('refreshToken', result.refreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 días
-    });
-
-    res.json(successResponse({
-      token: result.token
-    }, 'Token renovado'));
-
-  } catch (error) {
-    if (error.message === 'Invalid refresh token' || 
-        error.message === 'Refresh token no encontrado' ||
-        error.message === 'Refresh token revocado' ||
-        error.message === 'Refresh token expirado') {
-      res.clearCookie('refreshToken');
-      return res.status(401).json(errorResponse('Refresh token inválido', 401));
-    }
-    next(error);
-  }
-});
-
-// ── POST /api/auth/logout ────────────────────────────────────
-router.post('/logout', async (req, res, next) => {
-  try {
-    const refreshToken = req.cookies?.refreshToken;
-    
-    if (refreshToken) {
-      await authService.invalidateRefreshToken(refreshToken);
-    }
-
-    // Limpiar cookie
-    res.clearCookie('refreshToken', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict'
-    });
-
-    res.json(successResponse(null, 'Logout exitoso'));
-
-  } catch (error) {
-    next(error);
-  }
-});
-
 // ── POST /api/auth/register ─────────────────────────────────────
 router.post('/register', async (req, res, next) => {
   try {
@@ -145,26 +86,7 @@ router.post('/login', async (req, res, next) => {
     }
 
     const result = await authService.login(email, password);
-    
-    // Guardar refresh token en cookie HttpOnly
-    if (result.refreshToken) {
-      res.cookie('refreshToken', result.refreshToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
-        maxAge: 7 * 24 * 60 * 60 * 1000 // 7 días
-      });
-    }
-
-    // Enviar SOLO token y user (NO refreshToken)
-    res.json(successResponse({
-      token: result.token,
-      user: result.user,
-      businesses: result.businesses || [],
-      requiresBusinessSelection: result.requiresBusinessSelection || false,
-      hasSuspendedBusinesses: result.hasSuspendedBusinesses || false
-    }, 'Login successful'));
-
+    res.json(successResponse(result, 'Login successful'));
   } catch (error) {
     if (error.message === 'Invalid credentials' || error.message === 'User is inactive') {
       return res.status(401).json(errorResponse(error.message, 401));
@@ -218,23 +140,7 @@ router.post('/select-business', async (req, res, next) => {
     if (!businessId) return res.status(400).json(errorResponse('businessId is required', 400));
 
     const result = await authService.selectBusiness(decoded.userId, businessId);
-    
-    // Guardar refresh token en cookie HttpOnly
-    if (result.refreshToken) {
-      res.cookie('refreshToken', result.refreshToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
-        maxAge: 7 * 24 * 60 * 60 * 1000 // 7 días
-      });
-    }
-
-    // Enviar SOLO token y user (NO refreshToken)
-    res.json(successResponse({
-      token: result.token,
-      user: result.user
-    }, 'Business selected'));
-
+    res.json(successResponse(result, 'Business selected'));
   } catch (error) {
     if (error.message.includes('not found') || error.message.includes('denied')) {
       return res.status(403).json(errorResponse(error.message, 403));
@@ -246,6 +152,24 @@ router.post('/select-business', async (req, res, next) => {
   }
 });
 
+// ── POST /api/auth/refresh ────────────────────────────────────
+router.post('/refresh', async (req, res, next) => {
+  try {
+    const { token } = req.body;
+
+    if (!token) {
+      return res.status(400).json(errorResponse('Token is required', 400));
+    }
+
+    const result = authService.refreshToken(token);
+    res.json(successResponse(result, 'Token refreshed'));
+  } catch (error) {
+    if (error.message === 'Invalid token') {
+      return res.status(401).json(errorResponse(error.message, 401));
+    }
+    next(error);
+  }
+});
 
 // ── GET /api/auth/me ──────────────────────────────────────────
 router.get('/me', async (req, res, next) => {

@@ -262,13 +262,8 @@ export const login = async (email, password) => {
     );
 
     logger.info('[LOGIN] Login exitoso como admin.');
-
-    // GENERAR REFRESH TOKEN PARA ADMIN
-    const refreshToken = await generateRefreshToken(admin.id, 'public');
-
     return {
       token,
-      refreshToken, 
       user: {
         id: admin.id,
         email: admin.email,
@@ -389,12 +384,8 @@ export const login = async (email, password) => {
           { expiresIn: env.jwt.expiresIn }
         );
 
-        // GENERAR REFRESH TOKEN
-        const refreshToken = await generateRefreshToken(user.id, 'public');
-
         return {
           token,
-          refreshToken,
           type: userType,
           user: {
             id: user.id,
@@ -430,12 +421,8 @@ export const login = async (email, password) => {
         { expiresIn: env.jwt.expiresIn }
       );
 
-      // GENERAR REFRESH TOKEN
-      const refreshToken = await generateRefreshToken(user.id, 'public');
-
       return {
         token,
-        refreshToken, 
         type: userType,
         user: {
           id: user.id,
@@ -444,8 +431,8 @@ export const login = async (email, password) => {
           lastName: user.last_name,
           userType,
         },
-        businesses: activeBusinesses,
-        allBusinesses: allBusinesses,
+        businesses: activeBusinesses,  // Solo negocios activos
+        allBusinesses: allBusinesses,  // Todos los negocios
         suspendedBusinesses: suspendedBusinesses,
         requiresBusinessSelection: true,
         hasSuspendedBusinesses: suspendedBusinesses.length > 0,
@@ -454,7 +441,6 @@ export const login = async (email, password) => {
           suspendedCount: suspendedBusinesses.length
         }
       };
-      
     }
 
     // Caso 2: No tiene negocios activos (todos suspendidos o con pagos pendientes)
@@ -494,12 +480,8 @@ export const login = async (email, password) => {
 
         logger.info(`[LOGIN] Login exitoso pero negocio suspendido: ${biz.name}`);
 
-        // GENERAR REFRESH TOKEN
-        const refreshToken = await generateRefreshToken(user.id, 'public');
-
         return {
           token,
-          refreshToken, 
           type: 'owner',
           user: {
             id: user.id,
@@ -586,12 +568,8 @@ export const login = async (email, password) => {
           { expiresIn: env.jwt.expiresIn }
         );
 
-        // GENERAR REFRESH TOKEN
-        const refreshToken = await generateRefreshToken(user.id, 'public');
-
         return {
           token,
-          refreshToken, 
           type: 'owner',
           user: {
             id: user.id,
@@ -629,13 +607,8 @@ export const login = async (email, password) => {
       { expiresIn: env.jwt.expiresIn }
     );
     logger.info('[LOGIN] Login exitoso como usuario sin negocio activo.');
-
-    // GENERAR REFRESH TOKEN
-    const refreshToken = await generateRefreshToken(user.id, 'public');
-
     return {
       token,
-      refreshToken, 
       type: 'business_user',
       user: {
         id: user.id,
@@ -756,16 +729,8 @@ export const login = async (email, password) => {
 
       logger.info(`[LOGIN] Login exitoso como empleado del schema ${biz.schema_name}`);
 
-      // GENERAR REFRESH TOKEN PARA SCHEMA USER
-      const refreshToken = await generateRefreshToken(
-        schemaUser.id, 
-        'schema', 
-        biz.schema_name
-      );
-
       return {
         token,
-        refreshToken, 
         type: 'schema_employee',
         user: {
           id: schemaUser.id,
@@ -864,12 +829,8 @@ export const selectBusiness = async (userId, businessId) => {
     { expiresIn: env.jwt.expiresIn }
   );
 
-  // GENERAR REFRESH TOKEN
-  const refreshToken = await generateRefreshToken(userId, 'public');
-
   return {
     token,
-    refreshToken, 
     type: 'owner',
     user: {
       id:           userId,
@@ -1015,216 +976,3 @@ export const registerBusiness = async (data) => {
   };
 };
 
-// ================================================================
-// ========== FUNCIONES DE REFRESH TOKEN ==========================
-// ================================================================
-
-// ── GENERAR REFRESH TOKEN ─────────────────────────────────────
-export const generateRefreshToken = async (userId, userSource, schemaName = null) => {
-  try {
-    const refreshToken = jwt.sign(
-      { 
-        userId, 
-        userSource,
-        schemaName,
-        type: 'refresh' 
-      },
-      env.jwt.secret,
-      { expiresIn: '7d' }
-    );
-
-    // Guardar en DB
-    await query(
-      `INSERT INTO public.refresh_tokens 
-       (user_id, user_source, schema_name, token, expires_at)
-       VALUES ($1, $2, $3, $4, NOW() + INTERVAL '7 days')
-       ON CONFLICT (user_id, user_source) 
-       DO UPDATE SET 
-         token = $4, 
-         expires_at = NOW() + INTERVAL '7 days', 
-         revoked = FALSE, 
-         revoked_at = NULL`,
-      [userId, userSource, schemaName, refreshToken]
-    );
-
-    return refreshToken;
-  } catch (error) {
-    logger.error('Error generating refresh token:', error);
-    throw new Error('Error generating refresh token');
-  }
-};
-
-// ── VERIFICAR REFRESH TOKEN ───────────────────────────────────
-export const verifyRefreshToken = async (refreshToken) => {
-  try {
-    const result = await query(
-      `SELECT user_id, user_source, schema_name, expires_at, revoked
-       FROM public.refresh_tokens 
-       WHERE token = $1`,
-      [refreshToken]
-    );
-
-    if (result.rows.length === 0) {
-      throw new Error('Refresh token no encontrado');
-    }
-
-    const tokenData = result.rows[0];
-
-    if (tokenData.revoked) {
-      throw new Error('Refresh token revocado');
-    }
-
-    if (new Date(tokenData.expires_at) < new Date()) {
-      throw new Error('Refresh token expirado');
-    }
-
-    return tokenData;
-  } catch (error) {
-    logger.error('Error verifying refresh token:', error);
-    throw new Error('Refresh token inválido');
-  }
-};
-
-// ── INVALIDAR REFRESH TOKEN ───────────────────────────────────
-export const invalidateRefreshToken = async (refreshToken) => {
-  try {
-    await query(
-      `UPDATE public.refresh_tokens 
-       SET revoked = TRUE, revoked_at = NOW()
-       WHERE token = $1`,
-      [refreshToken]
-    );
-  } catch (error) {
-    logger.error('Error invalidating refresh token:', error);
-  }
-};
-
-// ── INVALIDAR TODOS LOS REFRESH TOKENS DE UN USUARIO ─────────
-export const invalidateAllUserRefreshTokens = async (userId, userSource) => {
-  try {
-    await query(
-      `UPDATE public.refresh_tokens 
-       SET revoked = TRUE, revoked_at = NOW()
-       WHERE user_id = $1 AND user_source = $2 AND revoked = FALSE`,
-      [userId, userSource]
-    );
-  } catch (error) {
-    logger.error('Error invalidating user refresh tokens:', error);
-  }
-};
-
-// ── REFRESH ACCESS TOKEN ──────────────────────────────────────
-export const refreshAccessToken = async (refreshToken, req) => {
-  try {
-    // 1. Verificar refresh token
-    const tokenData = await verifyRefreshToken(refreshToken);
-
-    // 2. Buscar usuario según source
-    let user = null;
-    let newToken = null;
-
-    if (tokenData.user_source === 'public') {
-      // Buscar en public.users
-      const result = await query(
-        `SELECT u.id, u.email, u.first_name, u.last_name, u.user_type, u.role, u.business_id,
-                b.name as business_name, b.slug as business_slug, b.schema_name
-         FROM public.users u
-         LEFT JOIN public.businesses b ON u.business_id = b.id
-         WHERE u.id = $1 AND u.is_active = true`,
-        [tokenData.user_id]
-      );
-      
-      if (result.rows.length === 0) {
-        throw new Error('Usuario no encontrado o inactivo');
-      }
-      
-      user = result.rows[0];
-      
-      // Generar nuevo token de acceso
-      newToken = jwt.sign(
-        {
-          userId: user.id,
-          email: user.email,
-          firstName: user.first_name,
-          lastName: user.last_name,
-          userType: user.user_type || 'schema_owner',
-          role: user.role,
-          businessId: user.business_id,
-          businessSlug: user.business_slug,
-          schemaName: user.schema_name,
-          userSource: 'public'
-        },
-        env.jwt.secret,
-        { expiresIn: '8h' }
-      );
-
-    } else if (tokenData.user_source === 'schema') {
-      // Buscar en schema del negocio
-      if (!tokenData.schema_name) {
-        throw new Error('Schema name requerido para usuario de schema');
-      }
-
-      const result = await query(
-        `SELECT id, email, first_name, last_name, is_active
-         FROM "${tokenData.schema_name}".users
-         WHERE id = $1 AND is_active = true`,
-        [tokenData.user_id]
-      );
-      
-      if (result.rows.length === 0) {
-        throw new Error('Usuario de schema no encontrado o inactivo');
-      }
-      
-      user = result.rows[0];
-
-      // Obtener información del negocio
-      const businessResult = await query(
-        `SELECT b.id, b.slug, b.name, b.schema_name
-         FROM public.businesses b
-         WHERE b.schema_name = $1 AND b.is_active = true`,
-        [tokenData.schema_name]
-      );
-
-      const business = businessResult.rows[0] || null;
-
-      // Generar nuevo token de acceso
-      newToken = jwt.sign(
-        {
-          userId: user.id,
-          email: user.email,
-          firstName: user.first_name,
-          lastName: user.last_name,
-          userType: 'schema_employee',
-          businessId: business?.id,
-          businessSlug: business?.slug,
-          schemaName: tokenData.schema_name,
-          userSource: 'schema'
-        },
-        env.jwt.secret,
-        { expiresIn: '8h' }
-      );
-
-    } else {
-      throw new Error('Fuente de usuario no soportada');
-    }
-
-    // 3. Generar NUEVO refresh token (rotación)
-    const newRefreshToken = await generateRefreshToken(
-      tokenData.user_id,
-      tokenData.user_source,
-      tokenData.schema_name
-    );
-
-    // 4. Invalidar el refresh token anterior
-    await invalidateRefreshToken(refreshToken);
-
-    return {
-      token: newToken,
-      refreshToken: newRefreshToken
-    };
-
-  } catch (error) {
-    logger.error('Refresh access token error:', error);
-    throw new Error('Invalid refresh token');
-  }
-};

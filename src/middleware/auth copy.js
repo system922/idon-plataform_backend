@@ -2,11 +2,6 @@ import { verifyToken } from '../services/authService.js';
 import { errorResponse } from '../utils/response.js';
 
 export const authMiddleware = (req, res, next) => {
-  // ✅ Excluir rutas de autenticación que NO necesitan token
-  if (req.path === '/refresh' || req.path === '/login' || req.path === '/register') {
-    return next();
-  }
-
   try {
     const authHeader = req.headers.authorization;
 
