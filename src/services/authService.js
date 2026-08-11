@@ -443,8 +443,9 @@ export const login = async (email, password) => {
           firstName: user.first_name,
           lastName: user.last_name,
           userType,
+          requiresBusinessSelection: true,
         },
-        businesses: activeBusinesses,
+        businesses: activeBusinesses,  // Lista de negocios
         allBusinesses: allBusinesses,
         suspendedBusinesses: suspendedBusinesses,
         requiresBusinessSelection: true,
