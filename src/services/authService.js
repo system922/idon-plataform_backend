@@ -13,13 +13,11 @@ const SALT_ROUNDS = 10;
 export const register = async (data) => {
   const { email, firstName, lastName, password, documentNumber } = data;
 
-  // Check if user exists
   const existing = await query('SELECT id FROM public.users WHERE email = $1', [email]);
   if (existing.rows.length > 0) {
     throw new Error('User already exists');
   }
 
-  // Check if document exists
   if (documentNumber) {
     const docExists = await query('SELECT id FROM public.users WHERE document_number = $1', [documentNumber]);
     if (docExists.rows.length > 0) {
@@ -41,7 +39,7 @@ export const register = async (data) => {
 };
 
 // ═══════════════════════════════════════════════════════════
-// Verificar estado de MÚLTIPLES negocios (basado en subscriptions)
+// Verificar estado de MÚLTIPLES negocios
 // ═══════════════════════════════════════════════════════════
 export const checkMultipleBusinessStatus = async (businessIds) => {
   if (!businessIds || businessIds.length === 0) {
@@ -72,7 +70,6 @@ export const checkMultipleBusinessStatus = async (businessIds) => {
     );
 
     if (result.rows.length === 0) {
-      // Si no tienen suscripción, retornar como activos (no bloquear)
       return businessIds.map(id => ({
         id: id,
         status: 'active',
@@ -120,7 +117,7 @@ export const checkMultipleBusinessStatus = async (businessIds) => {
 };
 
 // ═══════════════════════════════════════════════════════════
-// Verificar estado de UN negocio (basado en subscriptions)
+// Verificar estado de UN negocio
 // ═══════════════════════════════════════════════════════════
 export const checkBusinessStatus = async (businessId) => {
   try {
@@ -215,7 +212,7 @@ export const checkBusinessStatus = async (businessId) => {
 };
 
 // ----------------------
-// Login - COMPLETO CON VERIFICACIÓN DE MÚLTIPLES NEGOCIOS (USANDO SUBSCRIPTIONS)
+// Login - COMPLETO CON VERIFICACIÓN DE MÚLTIPLES NEGOCIOS
 // ----------------------
 export const login = async (email, password) => {
   logger.info(`[LOGIN] Intentando login para: ${email}`);
@@ -263,7 +260,6 @@ export const login = async (email, password) => {
 
     logger.info('[LOGIN] Login exitoso como admin.');
 
-    // GENERAR REFRESH TOKEN PARA ADMIN
     const refreshToken = await generateRefreshToken(admin.id, 'public');
 
     return {
@@ -276,6 +272,7 @@ export const login = async (email, password) => {
         lastName: admin.last_name,
         userType: 'admin_idon',
         role: admin.role,
+        requiresBusinessSelection: false, // ✅ AGREGADO
       },
     };
   }
@@ -301,14 +298,12 @@ export const login = async (email, password) => {
     }
     await query('UPDATE public.users SET last_login_at = NOW() WHERE id = $1', [user.id]);
 
-    // Verificar si es business_owner
     const ownerCheck = await query(
       `SELECT id FROM public.business_owners WHERE user_id = $1 LIMIT 1`,
       [user.id]
     );
     const isBusinessOwner = ownerCheck.rows.length > 0;
 
-    // Obtener TODOS los negocios del usuario CON SU SUSCRIPCIÓN
     const bizResult = await query(
       `SELECT DISTINCT ON (b.id)
               b.id, b.slug, b.name, b.schema_name, b.is_active, b.is_verified,
@@ -331,18 +326,15 @@ export const login = async (email, password) => {
     const userType = isBusinessOwner ? 'owner' : (allBusinesses.length > 0 ? 'employee' : 'business_user');
     logger.info(`[LOGIN] Usuario encontrado en public.users — userType: ${userType}, negocios: ${allBusinesses.length}`);
 
-    // Verificar estado de TODOS los negocios
     const businessIds = allBusinesses.map(b => b.id);
     const businessStatuses = await checkMultipleBusinessStatus(businessIds);
 
-    // Filtrar negocios activos (los que sí pueden acceder)
     const activeBusinesses = [];
     const suspendedBusinesses = [];
 
     for (const biz of allBusinesses) {
       const status = businessStatuses.find(s => s.id === biz.id);
       
-      // Si el negocio está activo y no suspendido, permitir acceso
       if (status && (status.status === 'active' || status.status === 'pending')) {
         activeBusinesses.push({
           ...biz,
@@ -364,11 +356,11 @@ export const login = async (email, password) => {
 
     logger.info(`[LOGIN] Negocios activos: ${activeBusinesses.length}, suspendidos: ${suspendedBusinesses.length}`);
 
-    // Caso 1: Tiene negocios activos (puede loguearse)
+    // Caso 1: Tiene negocios activos
     if (activeBusinesses.length > 0) {
       logger.info(`[LOGIN] Usuario tiene ${activeBusinesses.length} negocios activos, ${suspendedBusinesses.length} suspendidos`);
 
-      // Si tiene exactamente 1 negocio activo, auto-seleccionarlo
+      // Si tiene exactamente 1 negocio activo
       if (activeBusinesses.length === 1) {
         const biz = activeBusinesses[0];
         const token = jwt.sign(
@@ -389,7 +381,6 @@ export const login = async (email, password) => {
           { expiresIn: env.jwt.expiresIn }
         );
 
-        // GENERAR REFRESH TOKEN
         const refreshToken = await generateRefreshToken(user.id, 'public');
 
         return {
@@ -407,7 +398,8 @@ export const login = async (email, password) => {
             schemaName: biz.schema_name,
             roleCode: biz.role_code || (isBusinessOwner ? 'owner' : 'employee'),
             businessStatus: biz.businessStatus || 'active',
-            subscriptionStatus: biz.subscriptionStatus || 'active'
+            subscriptionStatus: biz.subscriptionStatus || 'active',
+            requiresBusinessSelection: false, // ✅ AGREGADO
           },
           businesses: activeBusinesses,
           allBusinesses: allBusinesses,
@@ -417,7 +409,7 @@ export const login = async (email, password) => {
         };
       }
 
-      // Tiene múltiples negocios activos - requiere selección
+      // Tiene múltiples negocios activos - REQUIERE SELECCIÓN
       const token = jwt.sign(
         {
           userId: user.id,
@@ -430,7 +422,6 @@ export const login = async (email, password) => {
         { expiresIn: env.jwt.expiresIn }
       );
 
-      // GENERAR REFRESH TOKEN
       const refreshToken = await generateRefreshToken(user.id, 'public');
 
       return {
@@ -443,9 +434,9 @@ export const login = async (email, password) => {
           firstName: user.first_name,
           lastName: user.last_name,
           userType,
-          requiresBusinessSelection: true,
+          requiresBusinessSelection: true, // ✅ AGREGADO
         },
-        businesses: activeBusinesses,  // Lista de negocios
+        businesses: activeBusinesses,
         allBusinesses: allBusinesses,
         suspendedBusinesses: suspendedBusinesses,
         requiresBusinessSelection: true,
@@ -455,16 +446,13 @@ export const login = async (email, password) => {
           suspendedCount: suspendedBusinesses.length
         }
       };
-      
     }
 
-    // Caso 2: No tiene negocios activos (todos suspendidos o con pagos pendientes)
+    // Caso 2: No tiene negocios activos (todos suspendidos)
     if (suspendedBusinesses.length > 0) {
-      // Verificar si son por suspensión o por pagos pendientes
       const allSuspended = suspendedBusinesses.every(b => b.businessStatus === 'suspended');
       const allPaymentPending = suspendedBusinesses.every(b => b.businessStatus === 'payment_pending');
       
-      // Log para depuración
       logger.info(`[LOGIN] suspendedBusinesses details: ${JSON.stringify(suspendedBusinesses.map(b => ({ 
         id: b.id, 
         name: b.name, 
@@ -473,8 +461,7 @@ export const login = async (email, password) => {
       })))}`);
       
       if (allSuspended) {
-        // ✅ EN LUGAR DE LANZAR ERROR, DEVOLVER TOKEN CON ESTADO SUSPENDIDO
-        const biz = suspendedBusinesses[0]; // Tomar el primer negocio suspendido
+        const biz = suspendedBusinesses[0];
         const token = jwt.sign(
           {
             userId: user.id,
@@ -495,7 +482,6 @@ export const login = async (email, password) => {
 
         logger.info(`[LOGIN] Login exitoso pero negocio suspendido: ${biz.name}`);
 
-        // GENERAR REFRESH TOKEN
         const refreshToken = await generateRefreshToken(user.id, 'public');
 
         return {
@@ -513,7 +499,8 @@ export const login = async (email, password) => {
             schemaName: biz.schema_name,
             roleCode: biz.role_code || 'owner',
             businessStatus: 'suspended',
-            subscriptionStatus: biz.subscriptionStatus || 'suspended'
+            subscriptionStatus: biz.subscriptionStatus || 'suspended',
+            requiresBusinessSelection: false, // ✅ AGREGADO
           },
           businesses: [],
           allBusinesses: allBusinesses,
@@ -523,7 +510,6 @@ export const login = async (email, password) => {
           businessStatus: 'suspended'
         };
       } else if (allPaymentPending) {
-        // Similar para payment_pending
         const biz = suspendedBusinesses[0];
         const token = jwt.sign(
           {
@@ -543,8 +529,11 @@ export const login = async (email, password) => {
           { expiresIn: env.jwt.expiresIn }
         );
 
+        const refreshToken = await generateRefreshToken(user.id, 'public');
+
         return {
           token,
+          refreshToken,
           type: 'owner',
           user: {
             id: user.id,
@@ -557,7 +546,8 @@ export const login = async (email, password) => {
             schemaName: biz.schema_name,
             roleCode: biz.role_code || 'owner',
             businessStatus: 'payment_pending',
-            subscriptionStatus: biz.subscriptionStatus || 'payment_pending'
+            subscriptionStatus: biz.subscriptionStatus || 'payment_pending',
+            requiresBusinessSelection: false, // ✅ AGREGADO
           },
           businesses: [],
           allBusinesses: allBusinesses,
@@ -567,7 +557,6 @@ export const login = async (email, password) => {
           businessStatus: 'payment_pending'
         };
       } else {
-        // Mezcla de estados
         const biz = suspendedBusinesses[0];
         const token = jwt.sign(
           {
@@ -587,7 +576,6 @@ export const login = async (email, password) => {
           { expiresIn: env.jwt.expiresIn }
         );
 
-        // GENERAR REFRESH TOKEN
         const refreshToken = await generateRefreshToken(user.id, 'public');
 
         return {
@@ -605,7 +593,8 @@ export const login = async (email, password) => {
             schemaName: biz.schema_name,
             roleCode: biz.role_code || 'owner',
             businessStatus: 'suspended',
-            subscriptionStatus: biz.subscriptionStatus || 'suspended'
+            subscriptionStatus: biz.subscriptionStatus || 'suspended',
+            requiresBusinessSelection: false, // ✅ AGREGADO
           },
           businesses: [],
           allBusinesses: allBusinesses,
@@ -631,7 +620,6 @@ export const login = async (email, password) => {
     );
     logger.info('[LOGIN] Login exitoso como usuario sin negocio activo.');
 
-    // GENERAR REFRESH TOKEN
     const refreshToken = await generateRefreshToken(user.id, 'public');
 
     return {
@@ -644,6 +632,7 @@ export const login = async (email, password) => {
         firstName: user.first_name,
         lastName: user.last_name,
         userType: 'business_user',
+        requiresBusinessSelection: false, // ✅ AGREGADO
       },
       businesses: [],
       requiresBusinessSelection: false,
@@ -664,7 +653,6 @@ export const login = async (email, password) => {
 
   for (const biz of activeBusinessesQuery.rows) {
     try {
-      // Verificar si el negocio está suspendido por subscription
       if (biz.subscription_status === 'suspended' || 
           biz.subscription_status === 'inactive') {
         logger.warn(`[LOGIN] Business ${biz.name} is ${biz.subscription_status}, skipping`);
@@ -691,7 +679,6 @@ export const login = async (email, password) => {
         throw new Error('Invalid credentials');
       }
 
-      // Obtener subscription_id para verificar pagos pendientes
       const subIdResult = await query(
         `SELECT id FROM public.subscriptions WHERE business_id = $1 ORDER BY created_at DESC LIMIT 1`,
         [biz.id]
@@ -716,7 +703,6 @@ export const login = async (email, password) => {
         throw error;
       }
 
-      // Leer rol y permisos
       let roleCode = 'employee';
       let roleName = '';
       let permissions = [];
@@ -757,7 +743,6 @@ export const login = async (email, password) => {
 
       logger.info(`[LOGIN] Login exitoso como empleado del schema ${biz.schema_name}`);
 
-      // GENERAR REFRESH TOKEN PARA SCHEMA USER
       const refreshToken = await generateRefreshToken(
         schemaUser.id, 
         'schema', 
@@ -781,7 +766,8 @@ export const login = async (email, password) => {
           roleName,
           permissions,
           businessStatus: 'active',
-          subscriptionStatus: biz.subscription_status || 'active'
+          subscriptionStatus: biz.subscription_status || 'active',
+          requiresBusinessSelection: false, // ✅ AGREGADO
         },
         businesses: [biz],
         requiresBusinessSelection: false,
@@ -801,7 +787,6 @@ export const login = async (email, password) => {
 // Seleccionar business tras login
 // ----------------------
 export const selectBusiness = async (userId, businessId) => {
-  // Verificar estado del negocio antes de seleccionar
   const statusCheck = await checkBusinessStatus(businessId);
   if (statusCheck.status === 'suspended') {
     const error = new Error('Este negocio está suspendido. Contacta a soporte.');
@@ -839,7 +824,6 @@ export const selectBusiness = async (userId, businessId) => {
 
   const row = result.rows[0];
 
-  // Doble verificación de estado
   if (row.subscription_status === 'suspended' || 
     row.subscription_status === 'inactive') {
     const error = new Error('Este negocio está suspendido.');
@@ -865,7 +849,6 @@ export const selectBusiness = async (userId, businessId) => {
     { expiresIn: env.jwt.expiresIn }
   );
 
-  // GENERAR REFRESH TOKEN
   const refreshToken = await generateRefreshToken(userId, 'public');
 
   return {
@@ -882,7 +865,8 @@ export const selectBusiness = async (userId, businessId) => {
       businessSlug: row.slug,
       schemaName:   row.schema_name,
       roleCode:     row.role_code || 'owner',
-      businessStatus: 'active'
+      businessStatus: 'active',
+      requiresBusinessSelection: false, // ✅ AGREGADO
     },
   };
 };
@@ -936,19 +920,16 @@ export const registerBusiness = async (data) => {
     password,
   } = data;
 
-  // Validate email
   const existingEmail = await query('SELECT id FROM public.users WHERE email = $1', [ownerEmail]);
   if (existingEmail.rows.length > 0) {
     throw new Error('Email already registered');
   }
 
-  // Validate slug doesn't exist
   const existingSlug = await query('SELECT id FROM public.business_registration_requests WHERE slug = $1', [businessSlug]);
   if (existingSlug.rows.length > 0) {
     throw new Error('Business slug already registered');
   }
 
-  // Validate document
   const existingDoc = await query(
     'SELECT id FROM public.business_registration_requests WHERE owner_document_number = $1',
     [ownerDocumentNumber]
@@ -957,14 +938,12 @@ export const registerBusiness = async (data) => {
     throw new Error('Document already registered');
   }
 
-  // Get business type ID
   const typeResult = await query('SELECT id FROM public.business_types WHERE code = $1', [businessType]);
   if (typeResult.rows.length === 0) {
     throw new Error('Invalid business type');
   }
   const businessTypeId = typeResult.rows[0].id;
 
-  // Create user
   const userId = uuidv4();
   const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
 
@@ -974,7 +953,6 @@ export const registerBusiness = async (data) => {
     [userId, ownerEmail, ownerFirstName, ownerLastName, ownerPhone, ownerDocumentNumber, passwordHash, true]
   );
 
-  // Create registration request
   const requestResult = await query(
     `INSERT INTO public.business_registration_requests 
      (slug, business_name, business_type_id, owner_first_name, owner_last_name, owner_email, owner_phone, owner_document_number, status)
@@ -985,7 +963,6 @@ export const registerBusiness = async (data) => {
 
   const request = requestResult.rows[0];
 
-  // Generate token for the newly created user
   const token = jwt.sign(
     {
       userId: userId,
@@ -1020,7 +997,6 @@ export const registerBusiness = async (data) => {
 // ========== FUNCIONES DE REFRESH TOKEN ==========================
 // ================================================================
 
-// ── GENERAR REFRESH TOKEN ─────────────────────────────────────
 export const generateRefreshToken = async (userId, userSource, schemaName = null) => {
   try {
     const refreshToken = jwt.sign(
@@ -1034,7 +1010,6 @@ export const generateRefreshToken = async (userId, userSource, schemaName = null
       { expiresIn: '7d' }
     );
 
-    // Guardar en DB
     await query(
       `INSERT INTO public.refresh_tokens 
        (user_id, user_source, schema_name, token, expires_at)
@@ -1055,7 +1030,6 @@ export const generateRefreshToken = async (userId, userSource, schemaName = null
   }
 };
 
-// ── VERIFICAR REFRESH TOKEN ───────────────────────────────────
 export const verifyRefreshToken = async (refreshToken) => {
   try {
     const result = await query(
@@ -1086,7 +1060,6 @@ export const verifyRefreshToken = async (refreshToken) => {
   }
 };
 
-// ── INVALIDAR REFRESH TOKEN ───────────────────────────────────
 export const invalidateRefreshToken = async (refreshToken) => {
   try {
     await query(
@@ -1100,7 +1073,6 @@ export const invalidateRefreshToken = async (refreshToken) => {
   }
 };
 
-// ── INVALIDAR TODOS LOS REFRESH TOKENS DE UN USUARIO ─────────
 export const invalidateAllUserRefreshTokens = async (userId, userSource) => {
   try {
     await query(
@@ -1114,18 +1086,14 @@ export const invalidateAllUserRefreshTokens = async (userId, userSource) => {
   }
 };
 
-// ── REFRESH ACCESS TOKEN ──────────────────────────────────────
 export const refreshAccessToken = async (refreshToken, req) => {
   try {
-    // 1. Verificar refresh token
     const tokenData = await verifyRefreshToken(refreshToken);
 
-    // 2. Buscar usuario según source
     let user = null;
     let newToken = null;
 
     if (tokenData.user_source === 'public') {
-      // Buscar en public.users
       const result = await query(
         `SELECT u.id, u.email, u.first_name, u.last_name, u.user_type, u.role, u.business_id,
                 b.name as business_name, b.slug as business_slug, b.schema_name
@@ -1141,7 +1109,6 @@ export const refreshAccessToken = async (refreshToken, req) => {
       
       user = result.rows[0];
       
-      // Generar nuevo token de acceso
       newToken = jwt.sign(
         {
           userId: user.id,
@@ -1160,7 +1127,6 @@ export const refreshAccessToken = async (refreshToken, req) => {
       );
 
     } else if (tokenData.user_source === 'schema') {
-      // Buscar en schema del negocio
       if (!tokenData.schema_name) {
         throw new Error('Schema name requerido para usuario de schema');
       }
@@ -1178,7 +1144,6 @@ export const refreshAccessToken = async (refreshToken, req) => {
       
       user = result.rows[0];
 
-      // Obtener información del negocio
       const businessResult = await query(
         `SELECT b.id, b.slug, b.name, b.schema_name
          FROM public.businesses b
@@ -1188,7 +1153,6 @@ export const refreshAccessToken = async (refreshToken, req) => {
 
       const business = businessResult.rows[0] || null;
 
-      // Generar nuevo token de acceso
       newToken = jwt.sign(
         {
           userId: user.id,
@@ -1209,14 +1173,12 @@ export const refreshAccessToken = async (refreshToken, req) => {
       throw new Error('Fuente de usuario no soportada');
     }
 
-    // 3. Generar NUEVO refresh token (rotación)
     const newRefreshToken = await generateRefreshToken(
       tokenData.user_id,
       tokenData.user_source,
       tokenData.schema_name
     );
 
-    // 4. Invalidar el refresh token anterior
     await invalidateRefreshToken(refreshToken);
 
     return {
