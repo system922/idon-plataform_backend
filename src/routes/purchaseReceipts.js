@@ -119,13 +119,14 @@ router.get('/pending', authMiddleware, async (req, res) => {
         po.id,
         po.order_number,
         po.created_at,
+        po.order_type,
         COUNT(DISTINCT poi.id) as total_items,
         SUM(CASE WHEN poi.received_qty < poi.quantity THEN 1 ELSE 0 END) as pending_items
       FROM "${schema}".purchase_orders po
       JOIN "${schema}".purchase_order_items_comm poi ON po.id = poi.purchase_order_id
       WHERE po.status = 'approved'
         AND poi.quantity > poi.received_qty
-      GROUP BY po.id
+      GROUP BY po.id, po.order_type
       HAVING SUM(CASE WHEN poi.received_qty < poi.quantity THEN 1 ELSE 0 END) > 0
       
       UNION ALL
@@ -134,13 +135,14 @@ router.get('/pending', authMiddleware, async (req, res) => {
         po.id,
         po.order_number,
         po.created_at,
+        po.order_type,
         COUNT(DISTINCT poi.id) as total_items,
         SUM(CASE WHEN poi.received_qty < poi.quantity THEN 1 ELSE 0 END) as pending_items
       FROM "${schema}".purchase_orders po
       JOIN "${schema}".purchase_order_items_man poi ON po.id = poi.purchase_order_id
       WHERE po.status = 'approved'
         AND poi.quantity > poi.received_qty
-      GROUP BY po.id
+      GROUP BY po.id, po.order_type
       HAVING SUM(CASE WHEN poi.received_qty < poi.quantity THEN 1 ELSE 0 END) > 0
       
       ORDER BY created_at ASC
@@ -324,7 +326,7 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
 });
 
 // ============================================================
-// POST /api/purchase-receipts - CON MÚLTIPLES PROVEEDORES
+// POST /api/purchase-receipts - CON MÚLTIPLES PROVEEDORES (DEFINITIVO)
 // ============================================================
 router.post('/', authMiddleware, async (req, res) => {
   try {
@@ -521,66 +523,128 @@ router.post('/', authMiddleware, async (req, res) => {
         
         const receiptItemId = receiptItemResult.rows[0].id;
         
-        // 2. Guardar/actualizar en purchase_order_item_suppliers (CORREGIDO)
+        // 2. Guardar/actualizar en purchase_order_item_suppliers (DEFINITIVO)
         let supplierItemId = null;
         
-        // Determinar qué ID usar (item_comm_id o item_man_id)
-        const idToUse = orderType === 'COMMERCIAL' ? itemCommId : itemManId;
-        const idColumn = orderType === 'COMMERCIAL' ? 'item_comm_id' : 'item_man_id';
-        
-        if (!idToUse) {
-          console.warn(`⚠️ No se pudo determinar el ID para ${idColumn}`);
-          continue;
-        }
-        
-        // Verificar si ya existe un registro para este item_id y supplier_id
-        const checkSupplierResult = await query(`
-          SELECT id FROM "${schema}".purchase_order_item_suppliers
-          WHERE ${idColumn} = $1 AND supplier_id = $2
-        `, [idToUse, supplier_id]);
-        
-        if (checkSupplierResult.rows.length > 0) {
-          // Actualizar existente (sumar cantidades)
-          const updateSupplierResult = await query(`
-            UPDATE "${schema}".purchase_order_item_suppliers
-            SET 
-              quantity = quantity + $1,
-              received_qty = received_qty + $2,
-              line_total = line_total + $3,
-              updated_at = CURRENT_TIMESTAMP
-            WHERE ${idColumn} = $4 AND supplier_id = $5
-            RETURNING id
-          `, [
-            quantity,
-            quantity,
-            lineTotal,
-            idToUse,
-            supplier_id
-          ]);
-          supplierItemId = updateSupplierResult.rows[0]?.id;
-        } else {
-          // Insertar nuevo registro
-          const insertSupplierResult = await query(`
-            INSERT INTO "${schema}".purchase_order_item_suppliers (
-              ${idColumn},
+        if (orderType === 'COMMERCIAL') {
+          // Para COMMERCIAL: usar purchase_order_item_id + item_comm_id
+          const idToUse = itemCommId;
+          
+          if (!idToUse) {
+            console.warn(`⚠️ No se pudo determinar el ID para COMMERCIAL`);
+            continue;
+          }
+          
+          // Verificar si ya existe un registro para este item y supplier
+          const checkSupplierResult = await query(`
+            SELECT id FROM "${schema}".purchase_order_item_suppliers
+            WHERE purchase_order_item_id = $1 AND supplier_id = $2
+          `, [idToUse, supplier_id]);
+          
+          if (checkSupplierResult.rows.length > 0) {
+            // Actualizar existente (sumar cantidades)
+            const updateSupplierResult = await query(`
+              UPDATE "${schema}".purchase_order_item_suppliers
+              SET 
+                quantity = quantity + $1,
+                received_qty = received_qty + $2,
+                line_total = line_total + $3,
+                updated_at = CURRENT_TIMESTAMP
+              WHERE purchase_order_item_id = $4 AND supplier_id = $5
+              RETURNING id
+            `, [
+              quantity,
+              quantity,
+              lineTotal,
+              idToUse,
+              supplier_id
+            ]);
+            supplierItemId = updateSupplierResult.rows[0]?.id;
+          } else {
+            // Insertar nuevo registro
+            const insertSupplierResult = await query(`
+              INSERT INTO "${schema}".purchase_order_item_suppliers (
+                purchase_order_item_id,
+                item_comm_id,
+                supplier_id,
+                quantity,
+                unit_cost,
+                line_total,
+                received_qty,
+                notes
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+              RETURNING id
+            `, [
+              idToUse,      // purchase_order_item_id (FK a purchase_order_items_comm)
+              idToUse,      // item_comm_id (mismo valor)
               supplier_id,
               quantity,
-              unit_cost,
-              line_total,
-              received_qty,
-              notes
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-            RETURNING id
-          `, [
-            idToUse,
-            supplier_id,
-            quantity,
-            unitCost,
-            lineTotal,
-            quantity,
-            `Recepción #${receiptNumber} - ${item.notes || ''}`
-          ]);
-          supplierItemId = insertSupplierResult.rows[0]?.id;
+              unitCost,
+              lineTotal,
+              quantity,
+              `Recepción #${receiptNumber} - ${item.notes || ''}`
+            ]);
+            supplierItemId = insertSupplierResult.rows[0]?.id;
+          }
+          
+        } else {
+          // Para MANUFACTURED: solo usar item_man_id (purchase_order_item_id queda NULL)
+          const idToUse = itemManId;
+          
+          if (!idToUse) {
+            console.warn(`⚠️ No se pudo determinar el ID para MANUFACTURED`);
+            continue;
+          }
+          
+          // Verificar si ya existe un registro para este item y supplier
+          const checkSupplierResult = await query(`
+            SELECT id FROM "${schema}".purchase_order_item_suppliers
+            WHERE item_man_id = $1 AND supplier_id = $2
+          `, [idToUse, supplier_id]);
+          
+          if (checkSupplierResult.rows.length > 0) {
+            // Actualizar existente (sumar cantidades)
+            const updateSupplierResult = await query(`
+              UPDATE "${schema}".purchase_order_item_suppliers
+              SET 
+                quantity = quantity + $1,
+                received_qty = received_qty + $2,
+                line_total = line_total + $3,
+                updated_at = CURRENT_TIMESTAMP
+              WHERE item_man_id = $4 AND supplier_id = $5
+              RETURNING id
+            `, [
+              quantity,
+              quantity,
+              lineTotal,
+              idToUse,
+              supplier_id
+            ]);
+            supplierItemId = updateSupplierResult.rows[0]?.id;
+          } else {
+            // Insertar nuevo registro (sin purchase_order_item_id)
+            const insertSupplierResult = await query(`
+              INSERT INTO "${schema}".purchase_order_item_suppliers (
+                item_man_id,
+                supplier_id,
+                quantity,
+                unit_cost,
+                line_total,
+                received_qty,
+                notes
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+              RETURNING id
+            `, [
+              idToUse,
+              supplier_id,
+              quantity,
+              unitCost,
+              lineTotal,
+              quantity,
+              `Recepción #${receiptNumber} - ${item.notes || ''}`
+            ]);
+            supplierItemId = insertSupplierResult.rows[0]?.id;
+          }
         }
         
         if (!supplierItemId) {
