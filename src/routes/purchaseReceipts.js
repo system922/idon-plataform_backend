@@ -15,35 +15,35 @@ const router = express.Router();
  * Actualiza o crea el historial de producto-proveedor
  * ⚠️ COMENTADO PARA PRUEBA - Descomentar después
  */
-// async function updateProductSupplierHistory(schema, productId, supplierId, unitCost) {
-//   const existing = await query(`
-//     SELECT id, total_orders, last_unit_cost, last_order_date
-//     FROM "${schema}".product_supplier_history
-//     WHERE product_id = $1 AND supplier_id = $2
-//   `, [productId, supplierId]);
-//
-//   if (existing.rows.length > 0) {
-//     await query(`
-//       UPDATE "${schema}".product_supplier_history
-//       SET 
-//         last_unit_cost = $3,
-//         last_order_date = CURRENT_TIMESTAMP,
-//         total_orders = total_orders + 1,
-//         updated_at = CURRENT_TIMESTAMP
-//       WHERE product_id = $1 AND supplier_id = $2
-//     `, [productId, supplierId, unitCost]);
-//   } else {
-//     await query(`
-//       INSERT INTO "${schema}".product_supplier_history (
-//         product_id,
-//         supplier_id,
-//         last_unit_cost,
-//         last_order_date,
-//         total_orders
-//       ) VALUES ($1, $2, $3, CURRENT_TIMESTAMP, 1)
-//     `, [productId, supplierId, unitCost]);
-//   }
-// }
+ async function updateProductSupplierHistory(schema, productId, supplierId, unitCost) {
+   const existing = await query(`
+     SELECT id, total_orders, last_unit_cost, last_order_date
+     FROM "${schema}".product_supplier_history
+     WHERE product_id = $1 AND supplier_id = $2
+   `, [productId, supplierId]);
+
+   if (existing.rows.length > 0) {
+     await query(`
+       UPDATE "${schema}".product_supplier_history
+       SET 
+         last_unit_cost = $3,
+         last_order_date = CURRENT_TIMESTAMP,
+         total_orders = total_orders + 1,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE product_id = $1 AND supplier_id = $2
+     `, [productId, supplierId, unitCost]);
+   } else {
+     await query(`
+       INSERT INTO "${schema}".product_supplier_history (
+         product_id,
+         supplier_id,
+         last_unit_cost,
+         last_order_date,
+         total_orders
+       ) VALUES ($1, $2, $3, CURRENT_TIMESTAMP, 1)
+     `, [productId, supplierId, unitCost]);
+   }
+ }
 
 /**
  * Crea un movimiento de inventario (entrada por compra)
@@ -695,8 +695,8 @@ router.post('/', authMiddleware, async (req, res) => {
           `, [quantity, itemManId]);
         }
         
-        // ⚠️ 5. COMENTADO: updateProductSupplierHistory
-        // await updateProductSupplierHistory(schema, productId, supplier_id, unitCost);
+        // updateProductSupplierHistory
+        await updateProductSupplierHistory(schema, productId, supplier_id, unitCost);
         
         // ⚠️ 6. COMENTADO: createInventoryMovement
         // await createInventoryMovement(
