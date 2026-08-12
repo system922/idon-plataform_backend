@@ -1,860 +1,1105 @@
+// routes/purchaseReceipts.js
 import express from 'express';
 import { query } from '../config/database.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 import { authMiddleware } from '../middleware/auth.js';
-import { emitToBusiness } from '../socket.js';
+import { generateReceiptNumber } from '../utils/orderNumberGenerator.js';
 
 const router = express.Router();
 
-// ── Helper para obtener el usuario (global o tenant) ──────────────
-const getUserInfo = async (schema, userId) => {
-  if (!userId) return null;
+// ============================================================
+// HELPERS - HISTORIAL SEPARADO
+// ============================================================
 
-  // 1. Buscar en public.users (usuarios globales - dueños de negocio)
-  const globalUser = await query(`
-    SELECT id, email, first_name, last_name, 'global' as source
-    FROM public.users 
-    WHERE id = $1
-  `, [userId]);
+/**
+ * Actualiza o crea el historial de producto-proveedor (para productos COMMERCIAL)
+ */
+async function updateProductSupplierHistory(schema, productId, supplierId, unitCost) {
+  const existing = await query(`
+    SELECT id, total_orders, last_unit_cost, last_order_date
+    FROM "${schema}".product_supplier_history
+    WHERE product_id = $1 AND supplier_id = $2
+  `, [productId, supplierId]);
 
-  if (globalUser.rows.length) {
-    return {
-      ...globalUser.rows[0],
-      is_global: true,
-      is_tenant: false
-    };
+  if (existing.rows.length > 0) {
+    await query(`
+      UPDATE "${schema}".product_supplier_history
+      SET 
+        last_unit_cost = $3,
+        last_order_date = CURRENT_TIMESTAMP,
+        total_orders = total_orders + 1,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE product_id = $1 AND supplier_id = $2
+    `, [productId, supplierId, unitCost]);
+  } else {
+    await query(`
+      INSERT INTO "${schema}".product_supplier_history (
+        product_id,
+        supplier_id,
+        last_unit_cost,
+        last_order_date,
+        total_orders
+      ) VALUES ($1, $2, $3, CURRENT_TIMESTAMP, 1)
+    `, [productId, supplierId, unitCost]);
   }
+}
 
-  // 2. Buscar en tenant.users (usuarios del esquema)
-  const tenantUser = await query(`
-    SELECT id, email, first_name, last_name, 'tenant' as source
-    FROM "${schema}".users 
-    WHERE id = $1
-  `, [userId]);
+/**
+ * Actualiza o crea el historial de materia prima-proveedor (para productos MANUFACTURED)
+ */
+async function updateRawMaterialSupplierHistory(schema, rawMaterialId, supplierId, unitCost) {
+  const existing = await query(`
+    SELECT id, total_orders, last_unit_cost, last_order_date
+    FROM "${schema}".raw_material_supplier_history
+    WHERE raw_material_id = $1 AND supplier_id = $2
+  `, [rawMaterialId, supplierId]);
 
-  if (tenantUser.rows.length) {
-    return {
-      ...tenantUser.rows[0],
-      is_global: false,
-      is_tenant: true
-    };
+  if (existing.rows.length > 0) {
+    await query(`
+      UPDATE "${schema}".raw_material_supplier_history
+      SET 
+        last_unit_cost = $3,
+        last_order_date = CURRENT_TIMESTAMP,
+        total_orders = total_orders + 1,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE raw_material_id = $1 AND supplier_id = $2
+    `, [rawMaterialId, supplierId, unitCost]);
+  } else {
+    await query(`
+      INSERT INTO "${schema}".raw_material_supplier_history (
+        raw_material_id,
+        supplier_id,
+        last_unit_cost,
+        last_order_date,
+        total_orders
+      ) VALUES ($1, $2, $3, CURRENT_TIMESTAMP, 1)
+    `, [rawMaterialId, supplierId, unitCost]);
   }
+}
 
-  return null;
-};
+// ============================================================
+// HELPERS - INVENTARIO (CONSISTENTE CON inventory.js)
+// ============================================================
 
-/* ─────────────────────────────────────────────
-   GET /api/inventory/physical
-   Listar todos los inventarios físicos (VERSIÓN SIMPLIFICADA)
-───────────────────────────────────────────── */
-router.get('/physical', authMiddleware, async (req, res) => {
+/**
+ * Crea movimiento de inventario para productos (COMMERCIAL)
+ * ✅ SUMA al stock existente: stock = stock + quantity
+ * ✅ Consistente con POST /api/inventory/movements
+ */
+async function createProductInventoryMovement(schema, productId, quantity, unitCost, receiptId, receiptNumber, productName) {
+  // 1. Obtener stock actual
+  const productResult = await query(`
+    SELECT COALESCE(stock, 0) as current_stock
+    FROM "${schema}".products
+    WHERE id = $1
+  `, [productId]);
+  
+  const currentStock = Number(productResult.rows[0]?.current_stock || 0);
+  const newStock = currentStock + quantity; // ✅ SUMA: 3 + 4 = 7
+
+  // 2. Insertar movimiento (mismo formato que POST /api/inventory/movements)
+  await query(`
+    INSERT INTO "${schema}".inventory_movements (
+      product_id,
+      type,
+      quantity,
+      unit_cost,
+      reference_id,
+      notes,
+      applied
+    ) VALUES ($1, 'entrada', $2, $3, $4, $5, true)
+  `, [
+    productId,
+    quantity,
+    unitCost,
+    receiptId,  // reference_id (UUID)
+    `Recepción #${receiptNumber} - ${productName} (${quantity} unidades) - Stock: ${currentStock} → ${newStock}`
+  ]);
+
+  // 3. Actualizar stock del producto (NUEVO stock = stock + cantidad)
+  await query(`
+    UPDATE "${schema}".products
+    SET 
+      stock = $1,
+      unit_cost = $2,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = $3
+  `, [newStock, unitCost, productId]);
+  
+  console.log(`  📦 Producto: ${productName} → Stock: ${currentStock} → ${newStock} (+${quantity})`);
+}
+
+/**
+ * Crea movimiento de inventario para materias primas (MANUFACTURED)
+ * ✅ SUMA al stock existente: stock = stock + quantity
+ */
+async function createRawMaterialInventoryMovement(schema, rawMaterialId, quantity, unitCost, receiptId, receiptNumber, rawMaterialName) {
+  // 1. Obtener stock actual
+  const materialResult = await query(`
+    SELECT COALESCE(stock, 0) as current_stock
+    FROM "${schema}".raw_materials
+    WHERE id = $1
+  `, [rawMaterialId]);
+  
+  const currentStock = Number(materialResult.rows[0]?.current_stock || 0);
+  const newStock = currentStock + quantity; // ✅ SUMA: 3 + 4 = 7
+
+  // 2. Insertar movimiento en raw_material_movements
+  await query(`
+    INSERT INTO "${schema}".raw_material_movements (
+      raw_material_id,
+      movement_type,
+      quantity,
+      previous_stock,
+      current_stock,
+      reference_id,
+      reference_type,
+      notes
+    ) VALUES ($1, 'entrada', $2, $3, $4, $5, 'purchase_receipt', $6)
+  `, [
+    rawMaterialId,
+    quantity,
+    currentStock,
+    newStock,
+    receiptId,
+    `Recepción #${receiptNumber} - ${rawMaterialName} (${quantity} unidades) - Stock: ${currentStock} → ${newStock}`
+  ]);
+
+  // 3. Actualizar stock de la materia prima (NUEVO stock = stock + cantidad)
+  await query(`
+    UPDATE "${schema}".raw_materials
+    SET 
+      stock = $1,
+      unit_cost = $2,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = $3
+  `, [newStock, unitCost, rawMaterialId]);
+  
+  console.log(`  📦 Materia prima: ${rawMaterialName} → Stock: ${currentStock} → ${newStock} (+${quantity})`);
+}
+
+// ============================================================
+// GET /api/purchase-receipts
+// Listar todas las recepciones
+// ============================================================
+router.get('/', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    if (!schema) {
-      return res.status(400).json({ error: 'Business context required' });
-    }
-
+    
     const result = await query(`
       SELECT 
-        ip.*,
+        pr.*,
+        po.order_number,
+        s.name as supplier_name,
         (
-          SELECT COALESCE(
-            (SELECT first_name || ' ' || last_name FROM public.users WHERE id = ip.created_by_global),
-            (SELECT first_name || ' ' || last_name FROM "${schema}".users WHERE id = ip.created_by_tenant)
-          )
-        ) AS created_by_name,
+          SELECT COALESCE(COUNT(*), 0) FROM "${schema}".purchase_receipt_items_comm WHERE receipt_id = pr.id
+        ) + (
+          SELECT COALESCE(COUNT(*), 0) FROM "${schema}".purchase_receipt_items_man WHERE receipt_id = pr.id
+        ) as item_count,
         (
-          SELECT COALESCE(
-            (SELECT first_name || ' ' || last_name FROM public.users WHERE id = ip.closed_by_global),
-            (SELECT first_name || ' ' || last_name FROM "${schema}".users WHERE id = ip.closed_by_tenant)
-          )
-        ) AS closed_by_name,
-        (
-          SELECT COUNT(*) FROM "${schema}".inventory_physical_items WHERE inventory_id = ip.id
-        ) AS total_items,
-        (
-          SELECT COUNT(*) FROM "${schema}".inventory_physical_items WHERE inventory_id = ip.id AND status = 'counted'
-        ) AS counted_items,
-        (
-          SELECT COUNT(*) FROM "${schema}".inventory_physical_items WHERE inventory_id = ip.id AND status = 'pending'
-        ) AS pending_items
-      FROM "${schema}".inventory_physical ip
-      ORDER BY ip.created_at DESC
+          SELECT COALESCE(SUM(line_total), 0) FROM "${schema}".purchase_receipt_items_comm WHERE receipt_id = pr.id
+        ) + (
+          SELECT COALESCE(SUM(line_total), 0) FROM "${schema}".purchase_receipt_items_man WHERE receipt_id = pr.id
+        ) as total
+      FROM "${schema}".purchase_receipts pr
+      LEFT JOIN "${schema}".purchase_orders po ON pr.purchase_order_id = po.id
+      LEFT JOIN "${schema}".suppliers s ON pr.supplier_id = s.id
+      ORDER BY pr.created_at DESC
     `);
+    
     res.json(result.rows);
   } catch (err) {
-    console.error('Error in GET /physical:', err);
+    console.error('Error en GET /purchase-receipts:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-/* ─────────────────────────────────────────────
-   POST /api/inventory/physical
-   Crear un nuevo inventario físico
-───────────────────────────────────────────── */
-router.post('/physical', authMiddleware, async (req, res) => {
+// ============================================================
+// GET /api/purchase-receipts/pending
+// Órdenes aprobadas pendientes de recibir
+// ============================================================
+router.get('/pending', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    if (!schema) {
-      return res.status(400).json({ error: 'Business context required' });
-    }
-
-    const { categories } = req.body;
-    const userId = req.user?.id || req.user?.userId;
-
-    if (!userId) {
-      return res.status(400).json({ error: 'Usuario no identificado' });
-    }
-
-    // Obtener información del usuario
-    const user = await getUserInfo(schema, userId);
-    if (!user) {
-      return res.status(400).json({ error: 'Usuario no encontrado en el sistema' });
-    }
-
-    if (!categories?.length) {
-      return res.status(400).json({ error: 'Categorías requeridas' });
-    }
-
-    // Crear el encabezado del inventario
-    let insertQuery = `
-      INSERT INTO "${schema}".inventory_physical 
-        (started_date, started_time, status
-    `;
-    let values = `VALUES (CURRENT_DATE, CURRENT_TIME, 'open'`;
-    let params = [];
-
-    if (user.is_global) {
-      insertQuery += `, created_by_global`;
-      values += `, $1`;
-      params.push(userId);
-    } else {
-      insertQuery += `, created_by_tenant`;
-      values += `, $1`;
-      params.push(userId);
-    }
-
-    insertQuery += `) ${values}) RETURNING *`;
-
-    const inv = await query(insertQuery, params);
-    const inventoryId = inv.rows[0].id;
-
-    // Guardar las categorías seleccionadas
-    for (const catId of categories) {
-      await query(`
-        INSERT INTO "${schema}".inventory_physical_categories
-        (inventory_id, category_id)
-        VALUES ($1, $2)
-      `, [inventoryId, catId]);
-    }
-
-    // Insertar productos de las categorías seleccionadas
-    await query(`
-      INSERT INTO "${schema}".inventory_physical_items
-      (inventory_id, product_id, product_name, system_stock, counted_stock, difference, status)
-      SELECT
-        $1,
-        p.id,
-        p.name,
-        p.stock,
-        0,
-        0,
-        'pending'
-      FROM "${schema}".products p
-      WHERE p.category_id = ANY(
-        SELECT category_id 
-        FROM "${schema}".inventory_physical_categories 
-        WHERE inventory_id = $1
-      )
-    `, [inventoryId]);
-
-    // Actualizar contadores
-    await query(`
-      UPDATE "${schema}".inventory_physical
-      SET 
-        total_items = (SELECT COUNT(*) FROM "${schema}".inventory_physical_items WHERE inventory_id = $1)
-      WHERE id = $1
-    `, [inventoryId]);
-
-    const businessId = req.headers['x-business-id'] || req.user?.businessId;
-    emitToBusiness(businessId, 'data_changed', { entity: 'inventory', action: 'created' });
-
-    res.status(201).json(inv.rows[0]);
-  } catch (err) {
-    console.error('Error in POST /physical:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* ─────────────────────────────────────────────
-   GET /api/inventory/physical/:id
-   Obtener detalles de un inventario
-───────────────────────────────────────────── */
-router.get('/physical/:id', authMiddleware, async (req, res) => {
-  try {
-    const schema = await getSchemaName(req);
-    if (!schema) {
-      return res.status(400).json({ error: 'Business context required' });
-    }
-
-    const { id } = req.params;
-
-    const inventory = await query(`
-      SELECT 
-        ip.*,
-        (
-          SELECT COALESCE(
-            (SELECT first_name || ' ' || last_name FROM public.users WHERE id = ip.created_by_global),
-            (SELECT first_name || ' ' || last_name FROM "${schema}".users WHERE id = ip.created_by_tenant)
-          )
-        ) AS created_by_name,
-        (
-          SELECT COALESCE(
-            (SELECT first_name || ' ' || last_name FROM public.users WHERE id = ip.closed_by_global),
-            (SELECT first_name || ' ' || last_name FROM "${schema}".users WHERE id = ip.closed_by_tenant)
-          )
-        ) AS closed_by_name
-      FROM "${schema}".inventory_physical ip
-      WHERE ip.id = $1
-    `, [id]);
-
-    if (!inventory.rows.length) {
-      return res.status(404).json({ error: 'Inventario no encontrado' });
-    }
-
-    const items = await query(`
-      SELECT 
-        ipi.id, 
-        ipi.product_id, 
-        ipi.product_name, 
-        ipi.system_stock, 
-        ipi.counted_stock, 
-        ipi.difference, 
-        ipi.status,
-        ipi.updated_at,
-        p.code AS product_code,
-        p.barcode AS product_barcode,
-        p.description AS product_description,
-        p.category_id,
-        c.name AS category_name
-      FROM "${schema}".inventory_physical_items ipi
-      LEFT JOIN "${schema}".products p ON p.id = ipi.product_id
-      LEFT JOIN "${schema}".categories c ON c.id = p.category_id
-      WHERE ipi.inventory_id = $1
-      ORDER BY ipi.product_name
-    `, [id]);
-
-    res.json({ 
-      inventory: inventory.rows[0], 
-      items: items.rows 
-    });
-  } catch (err) {
-    console.error('Error in GET /physical/:id:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* ─────────────────────────────────────────────
-   POST /api/inventory/physical/:id/reopen
-   Reabrir un inventario cerrado para reconteo
-───────────────────────────────────────────── */
-router.post('/physical/:id/reopen', authMiddleware, async (req, res) => {
-  try {
-    const schema = await getSchemaName(req);
-    if (!schema) {
-      return res.status(400).json({ error: 'Business context required' });
-    }
-
-    const { id } = req.params;
-    const { notes } = req.body;
-    const userId = req.user?.id || req.user?.userId;
-
-    if (!userId) {
-      return res.status(400).json({ error: 'Usuario no identificado' });
-    }
-
-    // Verificar que el inventario existe y está cerrado
-    const invCheck = await query(`
-      SELECT * FROM "${schema}".inventory_physical 
-      WHERE id = $1 AND status = 'closed'
-    `, [id]);
-
-    if (!invCheck.rows.length) {
-      return res.status(404).json({ error: 'Inventario cerrado no encontrado' });
-    }
-
-    // Obtener información del usuario que reabre
-    const user = await getUserInfo(schema, userId);
-    if (!user) {
-      return res.status(400).json({ error: 'Usuario no encontrado en el sistema' });
-    }
-
-    // Reabrir el inventario (cambiar status a 'open' y limpiar campos de cierre)
+    
     const result = await query(`
-      UPDATE "${schema}".inventory_physical
-      SET
-        status = 'open',
-        notes = COALESCE($1, notes),
-        updated_at = NOW(),
-        closed_date = NULL,
-        closed_time = NULL,
-        closed_by_global = NULL,
-        closed_by_tenant = NULL
-      WHERE id = $2
-      RETURNING *
-    `, [notes || 'Reconteo solicitado', id]);
+      SELECT 
+        po.id,
+        po.order_number,
+        po.created_at,
+        po.order_type,
+        COUNT(DISTINCT poi.id) as total_items,
+        SUM(CASE WHEN poi.received_qty < poi.quantity THEN 1 ELSE 0 END) as pending_items
+      FROM "${schema}".purchase_orders po
+      JOIN "${schema}".purchase_order_items_comm poi ON po.id = poi.purchase_order_id
+      WHERE po.status = 'approved'
+        AND poi.quantity > poi.received_qty
+      GROUP BY po.id, po.order_type
+      HAVING SUM(CASE WHEN poi.received_qty < poi.quantity THEN 1 ELSE 0 END) > 0
+      
+      UNION ALL
+      
+      SELECT 
+        po.id,
+        po.order_number,
+        po.created_at,
+        po.order_type,
+        COUNT(DISTINCT poi.id) as total_items,
+        SUM(CASE WHEN poi.received_qty < poi.quantity THEN 1 ELSE 0 END) as pending_items
+      FROM "${schema}".purchase_orders po
+      JOIN "${schema}".purchase_order_items_man poi ON po.id = poi.purchase_order_id
+      WHERE po.status = 'approved'
+        AND poi.quantity > poi.received_qty
+      GROUP BY po.id, po.order_type
+      HAVING SUM(CASE WHEN poi.received_qty < poi.quantity THEN 1 ELSE 0 END) > 0
+      
+      ORDER BY created_at ASC
+    `);
+    
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error en GET /purchase-receipts/pending:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
-    const businessId = req.headers['x-business-id'] || req.user?.businessId;
-    emitToBusiness(businessId, 'data_changed', { entity: 'inventory', action: 'reopened' });
-
-    res.json({ 
-      success: true, 
-      message: 'Inventario reabierto para reconteo',
-      inventory: result.rows[0]
+// ============================================================
+// GET /api/purchase-receipts/:id
+// Obtener una recepción con sus items (TABLAS SEPARADAS)
+// ============================================================
+router.get('/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const schema = await getSchemaName(req);
+    
+    const receiptResult = await query(`
+      SELECT 
+        pr.*,
+        po.order_number,
+        s.name as supplier_name
+      FROM "${schema}".purchase_receipts pr
+      LEFT JOIN "${schema}".purchase_orders po ON pr.purchase_order_id = po.id
+      LEFT JOIN "${schema}".suppliers s ON pr.supplier_id = s.id
+      WHERE pr.id = $1
+    `, [id]);
+    
+    if (receiptResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Recepción no encontrada' });
+    }
+    
+    // Obtener items comerciales
+    const itemsComm = await query(`
+      SELECT 
+        pri.id,
+        pri.receipt_id,
+        pri.purchase_order_item_comm_id,
+        pri.purchase_order_item_supplier_id,
+        pri.product_id,
+        pri.product_name,
+        pri.quantity,
+        pri.unit_cost,
+        pri.line_total,
+        pri.notes,
+        pri.created_at,
+        p.code as product_code,
+        p.barcode,
+        'COMMERCIAL' as item_type
+      FROM "${schema}".purchase_receipt_items_comm pri
+      LEFT JOIN "${schema}".products p ON pri.product_id = p.id
+      WHERE pri.receipt_id = $1
+      ORDER BY pri.created_at ASC
+    `, [id]);
+    
+    // Obtener items manufacturados
+    const itemsMan = await query(`
+      SELECT 
+        pri.id,
+        pri.receipt_id,
+        pri.purchase_order_item_man_id,
+        pri.purchase_order_item_supplier_id,
+        pri.raw_material_id as product_id,
+        pri.raw_material_name as product_name,
+        pri.quantity,
+        pri.unit_cost,
+        pri.line_total,
+        pri.notes,
+        pri.created_at,
+        rm.code as product_code,
+        rm.barcode,
+        'MANUFACTURED' as item_type
+      FROM "${schema}".purchase_receipt_items_man pri
+      LEFT JOIN "${schema}".raw_materials rm ON pri.raw_material_id = rm.id
+      WHERE pri.receipt_id = $1
+      ORDER BY pri.created_at ASC
+    `, [id]);
+    
+    // Combinar ambos resultados
+    const allItems = [...itemsComm.rows, ...itemsMan.rows];
+    
+    res.json({
+      receipt: receiptResult.rows[0],
+      items: allItems
     });
   } catch (err) {
-    console.error('Error in POST /physical/:id/reopen:', err);
+    console.error('Error en GET /purchase-receipts/:id:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-/* ─────────────────────────────────────────────
-   PUT /api/inventory/physical/:id/items/:itemId
-   Actualizar conteo de un producto
-───────────────────────────────────────────── */
-router.put('/physical/:id/items/:itemId', authMiddleware, async (req, res) => {
+// ============================================================
+// GET /api/purchase-receipts/suppliers/:productId
+// Obtener proveedores para un producto (con fallback a todos)
+// ============================================================
+router.get('/suppliers/:productId', authMiddleware, async (req, res) => {
   try {
+    const { productId } = req.params;
     const schema = await getSchemaName(req);
-    if (!schema) {
-      return res.status(400).json({ error: 'Business context required' });
+    
+    const historyResult = await query(`
+      SELECT 
+        s.id,
+        s.name,
+        s.tax_id,
+        s.phone,
+        s.email,
+        s.is_active,
+        psh.last_unit_cost,
+        psh.total_orders,
+        psh.last_order_date,
+        true as has_history
+      FROM "${schema}".suppliers s
+      INNER JOIN "${schema}".product_supplier_history psh ON s.id = psh.supplier_id
+      WHERE psh.product_id = $1
+        AND s.is_active = true
+      ORDER BY psh.total_orders DESC, psh.last_order_date DESC
+    `, [productId]);
+    
+    if (historyResult.rows.length > 0) {
+      return res.json(historyResult.rows);
     }
-
-    const { id, itemId } = req.params;
-    const { counted_stock } = req.body;
-
-    if (counted_stock === undefined || counted_stock < 0) {
-      return res.status(400).json({ error: 'Conteo inválido' });
-    }
-
-    await query(`
-      UPDATE "${schema}".inventory_physical_items
-      SET
-        counted_stock = $1,
-        difference = $1 - system_stock,
-        status = 'counted',
-        updated_at = NOW()
-      WHERE id = $2 AND inventory_id = $3
-    `, [counted_stock, itemId, id]);
-
-    await query(`
-      UPDATE "${schema}".inventory_physical
-      SET 
-        counted_items = (SELECT COUNT(*) FROM "${schema}".inventory_physical_items WHERE inventory_id = $1 AND status = 'counted'),
-        pending_items = (SELECT COUNT(*) FROM "${schema}".inventory_physical_items WHERE inventory_id = $1 AND status = 'pending')
-      WHERE id = $1
-    `, [id]);
-
-    const businessId = req.headers['x-business-id'] || req.user?.businessId;
-    emitToBusiness(businessId, 'data_changed', { entity: 'inventory', action: 'updated' });
-
-    res.json({ success: true });
+    
+    const allSuppliers = await query(`
+      SELECT 
+        id,
+        name,
+        tax_id,
+        phone,
+        email,
+        is_active,
+        NULL as last_unit_cost,
+        0 as total_orders,
+        NULL as last_order_date,
+        false as has_history
+      FROM "${schema}".suppliers
+      WHERE is_active = true
+      ORDER BY name ASC
+    `);
+    
+    res.json(allSuppliers.rows);
+    
   } catch (err) {
-    console.error('Error in PUT /physical/:id/items/:itemId:', err);
+    console.error('Error en GET /purchase-receipts/suppliers/:productId:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-/* ─────────────────────────────────────────────
-   POST /api/inventory/physical/:id/close
-   Cerrar inventario (guarda el usuario que cierra)
-───────────────────────────────────────────── */
-router.post('/physical/:id/close', authMiddleware, async (req, res) => {
+// ============================================================
+// GET /api/purchase-receipts/suppliers/raw-material/:rawMaterialId
+// Obtener proveedores para una materia prima
+// ============================================================
+router.get('/suppliers/raw-material/:rawMaterialId', authMiddleware, async (req, res) => {
   try {
+    const { rawMaterialId } = req.params;
     const schema = await getSchemaName(req);
-    if (!schema) {
-      return res.status(400).json({ error: 'Business context required' });
+    
+    const historyResult = await query(`
+      SELECT 
+        s.id,
+        s.name,
+        s.tax_id,
+        s.phone,
+        s.email,
+        s.is_active,
+        rmsh.last_unit_cost,
+        rmsh.total_orders,
+        rmsh.last_order_date,
+        true as has_history
+      FROM "${schema}".suppliers s
+      INNER JOIN "${schema}".raw_material_supplier_history rmsh ON s.id = rmsh.supplier_id
+      WHERE rmsh.raw_material_id = $1
+        AND s.is_active = true
+      ORDER BY rmsh.total_orders DESC, rmsh.last_order_date DESC
+    `, [rawMaterialId]);
+    
+    if (historyResult.rows.length > 0) {
+      return res.json(historyResult.rows);
     }
+    
+    const allSuppliers = await query(`
+      SELECT 
+        id,
+        name,
+        tax_id,
+        phone,
+        email,
+        is_active,
+        NULL as last_unit_cost,
+        0 as total_orders,
+        NULL as last_order_date,
+        false as has_history
+      FROM "${schema}".suppliers
+      WHERE is_active = true
+      ORDER BY name ASC
+    `);
+    
+    res.json(allSuppliers.rows);
+    
+  } catch (err) {
+    console.error('Error en GET /purchase-receipts/suppliers/raw-material/:rawMaterialId:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
+// ============================================================
+// PATCH /api/purchase-receipts/:id/status
+// Actualizar estado de una recepción (para marcar como pagada)
+// ============================================================
+router.patch('/:id/status', authMiddleware, async (req, res) => {
+  try {
     const { id } = req.params;
-    const userId = req.user?.id || req.user?.userId;
-
-    if (!userId) {
-      return res.status(400).json({ error: 'Usuario no identificado' });
-    }
-
-    // Obtener información del usuario
-    const user = await getUserInfo(schema, userId);
-    if (!user) {
+    const { status, payment_method, payment_reference, paid_at } = req.body;
+    const schema = await getSchemaName(req);
+    
+    const validStatuses = ['draft', 'completed', 'paid'];
+    if (!validStatuses.includes(status)) {
       return res.status(400).json({ 
-        error: 'Usuario no encontrado en el sistema',
-        user_id: userId 
+        error: 'Estado no válido. Debe ser: draft, completed o paid' 
       });
     }
-
-    // Verificar que no queden items pendientes
-    const pending = await query(`
-      SELECT COUNT(*) as count
-      FROM "${schema}".inventory_physical_items
-      WHERE inventory_id = $1 AND status = 'pending'
+    
+    const checkResult = await query(`
+      SELECT id, receipt_number, status FROM "${schema}".purchase_receipts WHERE id = $1
     `, [id]);
-
-    if (Number(pending.rows[0].count) > 0) {
-      return res.status(400).json({ 
-        error: `Inventario incompleto: ${pending.rows[0].count} productos pendientes` 
-      });
+    
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Recepción no encontrada' });
     }
-
-    // Cerrar el inventario guardando en la columna correspondiente
-    let updateQuery = `
-      UPDATE "${schema}".inventory_physical
-      SET
-        status = 'closed',
-        closed_date = CURRENT_DATE,
-        closed_time = CURRENT_TIME,
-        updated_at = NOW()
-    `;
-
-    if (user.is_global) {
-      updateQuery += `, closed_by_global = $1`;
-    } else {
-      updateQuery += `, closed_by_tenant = $1`;
+    
+    const updateFields = ['status = $1'];
+    const values = [status];
+    let paramIndex = 2;
+    
+    if (payment_method) {
+      updateFields.push(`payment_method = $${paramIndex}`);
+      values.push(payment_method);
+      paramIndex++;
     }
+    
+    if (payment_reference) {
+      updateFields.push(`payment_reference = $${paramIndex}`);
+      values.push(payment_reference);
+      paramIndex++;
+    }
+    
+    if (paid_at) {
+      updateFields.push(`paid_at = $${paramIndex}`);
+      values.push(paid_at);
+      paramIndex++;
+    }
+    
+    updateFields.push(`updated_at = CURRENT_TIMESTAMP`);
+    values.push(id);
+    
+    await query(`
+      UPDATE "${schema}".purchase_receipts
+      SET ${updateFields.join(', ')}
+      WHERE id = $${values.length}
+    `, values);
+    
+    const result = await query(`
+      SELECT * FROM "${schema}".purchase_receipts WHERE id = $1
+    `, [id]);
+    
+    res.json(result.rows[0]);
+    
+  } catch (err) {
+    console.error('Error en PATCH /purchase-receipts/:id/status:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
-    updateQuery += ` WHERE id = $2 RETURNING *`;
-
-    const result = await query(updateQuery, [userId, id]);
-
-    const businessId = req.headers['x-business-id'] || req.user?.businessId;
-    emitToBusiness(businessId, 'data_changed', { entity: 'inventory', action: 'closed' });
-
-    res.json({ 
-      success: true, 
-      message: 'Inventario cerrado correctamente',
-      closed_by: {
-        id: user.id,
-        name: `${user.first_name} ${user.last_name}`,
-        source: user.source
+// ============================================================
+// POST /api/purchase-receipts - CON INVENTARIO COMPLETO (CONSISTENTE)
+// ============================================================
+router.post('/', authMiddleware, async (req, res) => {
+  try {
+    const { 
+      purchase_order_id, 
+      supplier_groups, 
+      notes 
+    } = req.body;
+    
+    const schema = await getSchemaName(req);
+    const userId = req.user.id;
+    
+    console.log('📦 Recibiendo recepción CON INVENTARIO:', { 
+      purchase_order_id, 
+      supplier_groups: supplier_groups?.length,
+      schema 
+    });
+    
+    // Validaciones básicas
+    if (!purchase_order_id) {
+      return res.status(400).json({ error: 'Orden de compra requerida' });
+    }
+    
+    if (!supplier_groups || supplier_groups.length === 0) {
+      return res.status(400).json({ error: 'Se requieren grupos de proveedores' });
+    }
+    
+    // Validar UUIDs
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    
+    for (const group of supplier_groups) {
+      if (!group.supplier_id) {
+        return res.status(400).json({ error: 'Todos los grupos deben tener un proveedor asignado' });
       }
-    });
-  } catch (err) {
-    console.error('Error in POST /physical/:id/close:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* ═══════════════════════════════════════════════════════════
-   INVENTARIOS CERRADOS PARA AJUSTES
-═══════════════════════════════════════════════════════════ */
-
-/* ─────────────────────────────────────────────
-   GET /api/inventory/closed
-   Obtener inventarios cerrados con diferencias
-───────────────────────────────────────────── */
-router.get('/closed', authMiddleware, async (req, res) => {
-  try {
-    const schema = await getSchemaName(req);
-    if (!schema) {
-      return res.status(400).json({ error: 'Business context required' });
-    }
-
-    const result = await query(`
-      SELECT 
-        ip.id,
-        ip.created_at,
-        ip.closed_date,
-        ip.closed_time,
-        ip.total_items,
-        COALESCE(u2.first_name, u4.first_name) || ' ' || 
-        COALESCE(u2.last_name, u4.last_name) AS closed_by_name,
-        COUNT(CASE WHEN ipi.difference <> 0 THEN 1 END) as items_with_difference,
-        json_agg(
-          json_build_object(
-            'id', ipi.id,
-            'product_id', ipi.product_id,
-            'product_name', ipi.product_name,
-            'product_code', p.code,
-            'product_barcode', p.barcode,
-            'product_description', p.description,
-            'category_id', p.category_id,
-            'category_name', c.name,
-            'system_stock', ipi.system_stock,
-            'counted_stock', ipi.counted_stock,
-            'difference', ipi.difference,
-            'status', ipi.status
-          ) ORDER BY ipi.product_name
-        ) as items
-      FROM "${schema}".inventory_physical ip
-      LEFT JOIN "${schema}".inventory_physical_items ipi ON ipi.inventory_id = ip.id
-      LEFT JOIN "${schema}".products p ON p.id = ipi.product_id
-      LEFT JOIN "${schema}".categories c ON c.id = p.category_id
-      LEFT JOIN public.users u2 ON u2.id = ip.closed_by_global
-      LEFT JOIN "${schema}".users u4 ON u4.id = ip.closed_by_tenant
-      WHERE ip.status = 'closed'
-      GROUP BY 
-        ip.id, 
-        ip.created_at,
-        ip.closed_date,
-        ip.closed_time,
-        ip.total_items,
-        u2.first_name, u2.last_name,
-        u4.first_name, u4.last_name
-      ORDER BY ip.closed_date DESC, ip.closed_time DESC
-    `);
-    res.json(result.rows);
-  } catch (err) {
-    console.error('Error in GET /closed:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* ─────────────────────────────────────────────
-   GET /api/inventory/closed/:id
-   Obtener inventario cerrado con items
-───────────────────────────────────────────── */
-router.get('/closed/:id', authMiddleware, async (req, res) => {
-  try {
-    const schema = await getSchemaName(req);
-    if (!schema) {
-      return res.status(400).json({ error: 'Business context required' });
-    }
-
-    const { id } = req.params;
-
-    const inventory = await query(`
-      SELECT 
-        ip.*,
-        (
-          SELECT COALESCE(
-            (SELECT first_name || ' ' || last_name FROM public.users WHERE id = ip.closed_by_global),
-            (SELECT first_name || ' ' || last_name FROM "${schema}".users WHERE id = ip.closed_by_tenant)
-          )
-        ) AS closed_by_name
-      FROM "${schema}".inventory_physical ip
-      WHERE ip.id = $1 AND ip.status = 'closed'
-    `, [id]);
-
-    if (!inventory.rows.length) {
-      return res.status(404).json({ error: 'Inventario cerrado no encontrado' });
-    }
-
-    const items = await query(`
-      SELECT 
-        ipi.id, 
-        ipi.product_id, 
-        ipi.product_name, 
-        ipi.system_stock, 
-        ipi.counted_stock, 
-        ipi.difference, 
-        ipi.status,
-        ipi.updated_at,
-        p.code AS product_code,
-        p.barcode AS product_barcode,
-        p.description AS product_description,
-        p.category_id,
-        c.name AS category_name
-      FROM "${schema}".inventory_physical_items ipi
-      LEFT JOIN "${schema}".products p ON p.id = ipi.product_id
-      LEFT JOIN "${schema}".categories c ON c.id = p.category_id
-      WHERE ipi.inventory_id = $1
-      ORDER BY ipi.product_name
-    `, [id]);
-
-    res.json({ 
-      inventory: inventory.rows[0], 
-      items: items.rows 
-    });
-  } catch (err) {
-    console.error('Error in GET /closed/:id:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-
-
-/* ─────────────────────────────────────────────
-   POST /api/inventory/closed/:id/apply
-   Aplicar ajustes de inventario cerrado
-───────────────────────────────────────────── */
-router.post('/closed/:id/apply', authMiddleware, async (req, res) => {
-  try {
-    const schema = await getSchemaName(req);
-    if (!schema) {
-      return res.status(400).json({ error: 'Business context required' });
-    }
-
-    const { id } = req.params;
-    const { product_ids = [] } = req.body;
-
-    const invCheck = await query(`
-      SELECT id FROM "${schema}".inventory_physical 
-      WHERE id = $1 AND status = 'closed'
-    `, [id]);
-
-    if (!invCheck.rows.length) {
-      return res.status(404).json({ error: 'Inventario cerrado no encontrado' });
-    }
-
-    let itemsQuery = `
-      SELECT 
-        id, 
-        product_id, 
-        product_name,
-        system_stock, 
-        counted_stock, 
-        difference
-      FROM "${schema}".inventory_physical_items
-      WHERE inventory_id = $1 
-        AND difference <> 0 
-        AND status != 'adjusted'
-    `;
-
-    const params = [id];
-    if (product_ids.length > 0) {
-      itemsQuery += ` AND product_id = ANY($2::uuid[])`;
-      params.push(product_ids);
-    }
-
-    const items = await query(itemsQuery, params);
-
-    if (!items.rows.length) {
-      const alreadyAdjusted = await query(`
-        SELECT COUNT(*) as count
-        FROM "${schema}".inventory_physical_items
-        WHERE inventory_id = $1 AND status = 'adjusted'
-      `, [id]);
-
-      if (Number(alreadyAdjusted.rows[0].count) > 0) {
-        const pendingItems = await query(`
-          SELECT COUNT(*) as count
-          FROM "${schema}".inventory_physical_items
-          WHERE inventory_id = $1 AND difference <> 0 AND status != 'adjusted'
-        `, [id]);
-
-        if (Number(pendingItems.rows[0].count) === 0) {
+      
+      if (!uuidRegex.test(group.supplier_id)) {
+        return res.status(400).json({ 
+          error: `ID de proveedor inválido: ${group.supplier_id}` 
+        });
+      }
+      
+      if (!group.items || group.items.length === 0) {
+        return res.status(400).json({ error: `El proveedor ${group.supplier_id} no tiene items` });
+      }
+      
+      for (const item of group.items) {
+        if (!item.purchase_order_item_id) {
           return res.status(400).json({ 
-            error: 'Todos los productos de este inventario ya han sido ajustados.',
-            code: 'ALL_ADJUSTED'
+            error: 'Cada item debe tener un purchase_order_item_id' 
+          });
+        }
+        
+        if (!uuidRegex.test(item.purchase_order_item_id)) {
+          return res.status(400).json({ 
+            error: `ID de item inválido: ${item.purchase_order_item_id}` 
           });
         }
       }
-
-      const hasDifferences = await query(`
-        SELECT COUNT(*) as count
-        FROM "${schema}".inventory_physical_items
-        WHERE inventory_id = $1 AND difference <> 0
-      `, [id]);
-
-      if (Number(hasDifferences.rows[0].count) === 0) {
-        return res.status(400).json({ error: 'No hay diferencias para ajustar' });
-      }
-
-      if (product_ids.length > 0) {
-        return res.status(400).json({ 
-          error: 'Los productos seleccionados ya han sido ajustados o no tienen diferencias.',
-          code: 'PRODUCTS_ALREADY_ADJUSTED'
-        });
-      }
-
-      return res.status(400).json({ error: 'No hay productos pendientes para ajustar' });
     }
-
-    let adjustmentsCount = 0;
-    const adjustedProductIds = [];
-
-    for (const item of items.rows) {
-      const newStock = item.system_stock + item.difference;
-      const adjustmentQuantity = Math.abs(item.difference);
-      const sign = item.difference > 0 ? '+' : '-';
-
-      await query(`
-        INSERT INTO "${schema}".inventory_movements
-        (product_id, type, quantity, unit_cost, reference_id, notes, applied)
-        VALUES ($1, 'adjustment', $2, $3, $4, $5, true)
-      `, [
-        item.product_id,
-        adjustmentQuantity,
-        null,
-        parseInt(id),
-        `Ajuste aplicado desde inventario #${id} - ${item.product_name} (${sign}${adjustmentQuantity})`
-      ]);
-
-      await query(`
-        UPDATE "${schema}".products
-        SET stock = GREATEST(0, $1), updated_at = NOW()
-        WHERE id = $2
-      `, [newStock, item.product_id]);
-
-      await query(`
-        UPDATE "${schema}".inventory_physical_items
-        SET status = 'adjusted', updated_at = NOW()
-        WHERE id = $1
-      `, [item.id]);
-
-      adjustmentsCount++;
-      adjustedProductIds.push({
-        product_id: item.product_id,
-        product_name: item.product_name,
-        difference: item.difference,
-        adjustment_quantity: adjustmentQuantity,
-        sign: sign
+    
+    // Verificar la orden
+    const orderCheck = await query(`
+      SELECT status, order_number, order_type FROM "${schema}".purchase_orders WHERE id = $1
+    `, [purchase_order_id]);
+    
+    if (orderCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Orden no encontrada' });
+    }
+    
+    if (orderCheck.rows[0].status !== 'approved') {
+      return res.status(400).json({ 
+        error: `La orden debe estar aprobada para recibir mercadería. Estado actual: ${orderCheck.rows[0].status}` 
       });
     }
-
-    const businessId = req.headers['x-business-id'] || req.user?.businessId;
-    emitToBusiness(businessId, 'data_changed', { entity: 'inventory', action: 'adjustments_applied' });
-
-    const remainingItems = await query(`
-      SELECT COUNT(*) as count
-      FROM "${schema}".inventory_physical_items
-      WHERE inventory_id = $1 AND difference <> 0 AND status != 'adjusted'
-    `, [id]);
-
-    const remainingCount = Number(remainingItems.rows[0].count);
-
-    res.json({ 
-      success: true, 
-      message: `Se aplicaron ${adjustmentsCount} ajuste(s) correctamente. ${remainingCount > 0 ? `Quedan ${remainingCount} producto(s) pendientes por ajustar.` : 'Todos los productos han sido ajustados.'}`,
-      adjustments: adjustmentsCount,
-      remaining: remainingCount,
-      adjusted_products: adjustedProductIds
-    });
-  } catch (err) {
-    console.error('Error in POST /closed/:id/apply:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* ═══════════════════════════════════════════════════════════
-   MOVIMIENTOS DE INVENTARIO
-═══════════════════════════════════════════════════════════ */
-
-/* ─────────────────────────────────────────────
-   GET /api/inventory/movements
-   Listar movimientos de inventario
-───────────────────────────────────────────── */
-router.get('/movements', authMiddleware, async (req, res) => {
-  try {
-    const schema = await getSchemaName(req);
-    if (!schema) {
-      return res.status(400).json({ error: 'Business context required' });
-    }
-
-    const { product_id, type, limit = 100 } = req.query;
-
-    let whereClause = '';
-    let params = [];
-
-    if (product_id) {
-      whereClause = 'WHERE m.product_id = $1';
-      params.push(product_id);
-    }
-
-    if (type) {
-      if (product_id) {
-        whereClause += ' AND m.type = $2';
-        params.push(type);
-      } else {
-        whereClause = 'WHERE m.type = $1';
-        params.push(type);
+    
+    const orderNumber = orderCheck.rows[0].order_number;
+    const orderType = orderCheck.rows[0].order_type;
+    
+    // Generar número de recepción
+    const receiptNumber = await generateReceiptNumber(schema);
+    
+    console.log(`📦 Nueva recepción: ${receiptNumber} para orden #${orderNumber}`);
+    
+    await query('BEGIN');
+    
+    const createdReceipts = [];
+    const allProcessedItems = [];
+    
+    for (const group of supplier_groups) {
+      const { supplier_id, items } = group;
+      
+      // Verificar proveedor
+      const supplierCheck = await query(`
+        SELECT id, name FROM "${schema}".suppliers WHERE id = $1 AND is_active = true
+      `, [supplier_id]);
+      
+      if (supplierCheck.rows.length === 0) {
+        throw new Error(`Proveedor ${supplier_id} no encontrado o inactivo`);
+      }
+      
+      const supplierName = supplierCheck.rows[0].name;
+      
+      // Calcular total del grupo
+      const groupTotal = items.reduce((sum, item) => sum + (Number(item.line_total) || 0), 0);
+      
+      // Crear recepción
+      const receiptResult = await query(`
+        INSERT INTO "${schema}".purchase_receipts (
+          receipt_number,
+          purchase_order_id,
+          supplier_id,
+          notes,
+          created_by,
+          status,
+          total
+        ) VALUES ($1, $2, $3, $4, $5, 'completed', $6)
+        RETURNING *
+      `, [
+        receiptNumber,
+        purchase_order_id,
+        supplier_id,
+        notes || null,
+        userId,
+        groupTotal
+      ]);
+      
+      const receipt = receiptResult.rows[0];
+      createdReceipts.push(receipt);
+      
+      console.log(`✅ Recepción creada para ${supplierName}: ${receiptNumber}`);
+      
+      // Procesar items
+      for (const item of items) {
+        const itemId = item.purchase_order_item_id;
+        const quantity = Number(item.quantity) || 0;
+        const unitCost = Number(item.unit_cost) || 0;
+        const lineTotal = Number(item.line_total) || 0;
+        
+        console.log(`🔍 Procesando item: ${itemId}, orderType: ${orderType}`);
+        
+        let orderItemData = null;
+        let productId = null;
+        let productName = null;
+        let rawMaterialId = null;
+        let rawMaterialName = null;
+        let itemCommId = null;
+        let itemManId = null;
+        
+        // Buscar el item en la tabla correspondiente según el tipo de orden
+        if (orderType === 'COMMERCIAL') {
+          const result = await query(`
+            SELECT 
+              poi.*,
+              p.id as product_id,
+              p.name as product_name,
+              p.code as product_code,
+              p.unit_cost as default_cost,
+              p.barcode
+            FROM "${schema}".purchase_order_items_comm poi
+            LEFT JOIN "${schema}".products p ON poi.product_id = p.id
+            WHERE poi.id = $1
+          `, [itemId]);
+          
+          if (result.rows.length === 0) {
+            throw new Error(`Item de orden ${itemId} no encontrado en purchase_order_items_comm`);
+          }
+          
+          orderItemData = result.rows[0];
+          productId = orderItemData.product_id;
+          productName = orderItemData.product_name;
+          itemCommId = itemId;
+          
+        } else if (orderType === 'MANUFACTURED') {
+          const result = await query(`
+            SELECT 
+              poi.*,
+              p.id as product_id,
+              p.name as product_name,
+              p.code as product_code,
+              p.unit_cost as default_cost,
+              p.barcode,
+              rm.id as raw_material_id,
+              rm.name as raw_material_name,
+              rm.code as raw_material_code
+            FROM "${schema}".purchase_order_items_man poi
+            LEFT JOIN "${schema}".products p ON poi.product_id = p.id
+            LEFT JOIN "${schema}".raw_materials rm ON poi.raw_material_id = rm.id
+            WHERE poi.id = $1
+          `, [itemId]);
+          
+          if (result.rows.length === 0) {
+            throw new Error(`Item de orden ${itemId} no encontrado en purchase_order_items_man`);
+          }
+          
+          orderItemData = result.rows[0];
+          productId = orderItemData.product_id;          // ✅ Producto final
+          productName = orderItemData.product_name;      // ✅ Nombre del producto final
+          rawMaterialId = orderItemData.raw_material_id; // ✅ Materia prima
+          rawMaterialName = orderItemData.raw_material_name;
+          itemManId = itemId;
+        }
+        
+        // 1. Insertar en la tabla de recepción correspondiente
+        let receiptItemId = null;
+        
+        if (orderType === 'COMMERCIAL') {
+          const receiptItemResult = await query(`
+            INSERT INTO "${schema}".purchase_receipt_items_comm (
+              receipt_id,
+              purchase_order_item_comm_id,
+              product_id,
+              product_name,
+              quantity,
+              unit_cost,
+              line_total,
+              purchase_order_item_supplier_id,
+              notes
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id
+          `, [
+            receipt.id,
+            itemCommId,
+            productId,
+            productName || 'Producto sin nombre',
+            quantity,
+            unitCost,
+            lineTotal,
+            null,
+            item.notes || null
+          ]);
+          receiptItemId = receiptItemResult.rows[0].id;
+          
+        } else if (orderType === 'MANUFACTURED') {
+          const receiptItemResult = await query(`
+            INSERT INTO "${schema}".purchase_receipt_items_man (
+              receipt_id,
+              purchase_order_item_man_id,
+              raw_material_id,
+              raw_material_name,
+              quantity,
+              unit_cost,
+              line_total,
+              purchase_order_item_supplier_id,
+              notes
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id
+          `, [
+            receipt.id,
+            itemManId,
+            rawMaterialId,
+            rawMaterialName || 'Materia prima sin nombre',
+            quantity,
+            unitCost,
+            lineTotal,
+            null,
+            item.notes || null
+          ]);
+          receiptItemId = receiptItemResult.rows[0].id;
+        }
+        
+        // 2. Crear/actualizar en purchase_order_item_suppliers
+        let supplierItemId = null;
+        
+        if (orderType === 'COMMERCIAL') {
+          const checkResult = await query(`
+            SELECT id FROM "${schema}".purchase_order_item_suppliers
+            WHERE item_comm_id = $1 AND supplier_id = $2
+          `, [itemCommId, supplier_id]);
+          
+          if (checkResult.rows.length > 0) {
+            const updateResult = await query(`
+              UPDATE "${schema}".purchase_order_item_suppliers
+              SET 
+                quantity = quantity + $1,
+                received_qty = received_qty + $2,
+                line_total = line_total + $3,
+                updated_at = CURRENT_TIMESTAMP
+              WHERE item_comm_id = $4 AND supplier_id = $5
+              RETURNING id
+            `, [
+              quantity,
+              quantity,
+              lineTotal,
+              itemCommId,
+              supplier_id
+            ]);
+            supplierItemId = updateResult.rows[0]?.id;
+          } else {
+            const insertResult = await query(`
+              INSERT INTO "${schema}".purchase_order_item_suppliers (
+                item_comm_id,
+                supplier_id,
+                quantity,
+                unit_cost,
+                line_total,
+                received_qty,
+                notes
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+              RETURNING id
+            `, [
+              itemCommId,
+              supplier_id,
+              quantity,
+              unitCost,
+              lineTotal,
+              quantity,
+              `Recepción #${receiptNumber} - ${item.notes || ''}`
+            ]);
+            supplierItemId = insertResult.rows[0]?.id;
+          }
+          
+        } else if (orderType === 'MANUFACTURED') {
+          const checkResult = await query(`
+            SELECT id FROM "${schema}".purchase_order_item_suppliers
+            WHERE item_man_id = $1 AND supplier_id = $2
+          `, [itemManId, supplier_id]);
+          
+          if (checkResult.rows.length > 0) {
+            const updateResult = await query(`
+              UPDATE "${schema}".purchase_order_item_suppliers
+              SET 
+                quantity = quantity + $1,
+                received_qty = received_qty + $2,
+                line_total = line_total + $3,
+                updated_at = CURRENT_TIMESTAMP
+              WHERE item_man_id = $4 AND supplier_id = $5
+              RETURNING id
+            `, [
+              quantity,
+              quantity,
+              lineTotal,
+              itemManId,
+              supplier_id
+            ]);
+            supplierItemId = updateResult.rows[0]?.id;
+          } else {
+            const insertResult = await query(`
+              INSERT INTO "${schema}".purchase_order_item_suppliers (
+                item_man_id,
+                supplier_id,
+                quantity,
+                unit_cost,
+                line_total,
+                received_qty,
+                notes
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+              RETURNING id
+            `, [
+              itemManId,
+              supplier_id,
+              quantity,
+              unitCost,
+              lineTotal,
+              quantity,
+              `Recepción #${receiptNumber} - ${item.notes || ''}`
+            ]);
+            supplierItemId = insertResult.rows[0]?.id;
+          }
+        }
+        
+        if (!supplierItemId) {
+          throw new Error(`No se pudo guardar el item en purchase_order_item_suppliers`);
+        }
+        
+        // 3. Actualizar la tabla de recepción con el supplier_id
+        if (orderType === 'COMMERCIAL') {
+          await query(`
+            UPDATE "${schema}".purchase_receipt_items_comm
+            SET purchase_order_item_supplier_id = $1
+            WHERE id = $2
+          `, [supplierItemId, receiptItemId]);
+        } else {
+          await query(`
+            UPDATE "${schema}".purchase_receipt_items_man
+            SET purchase_order_item_supplier_id = $1
+            WHERE id = $2
+          `, [supplierItemId, receiptItemId]);
+        }
+        
+        // 4. Actualizar received_qty
+        if (orderType === 'COMMERCIAL') {
+          await query(`
+            UPDATE "${schema}".purchase_order_items_comm 
+            SET received_qty = received_qty + $1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $2
+          `, [quantity, itemCommId]);
+        } else {
+          await query(`
+            UPDATE "${schema}".purchase_order_items_man 
+            SET received_qty = received_qty + $1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $2
+          `, [quantity, itemManId]);
+        }
+        
+        // 5. Actualizar historial según el tipo de orden
+        if (orderType === 'COMMERCIAL') {
+          await updateProductSupplierHistory(schema, productId, supplier_id, unitCost);
+        } else {
+          await updateRawMaterialSupplierHistory(schema, rawMaterialId, supplier_id, unitCost);
+        }
+        
+        // 6. ✅ Crear movimiento de inventario según el tipo de orden
+        if (orderType === 'COMMERCIAL') {
+          await createProductInventoryMovement(
+            schema,
+            productId,
+            quantity,
+            unitCost,
+            receipt.id,
+            receiptNumber,
+            productName || 'Producto sin nombre'
+          );
+        } else {
+          await createRawMaterialInventoryMovement(
+            schema,
+            rawMaterialId,
+            quantity,
+            unitCost,
+            receipt.id,
+            receiptNumber,
+            rawMaterialName || 'Materia prima sin nombre'
+          );
+        }
+        
+        allProcessedItems.push({
+          product_id: orderType === 'MANUFACTURED' ? rawMaterialId : productId,
+          product_name: orderType === 'MANUFACTURED' ? rawMaterialName : productName,
+          quantity,
+          unit_cost: unitCost,
+          line_total: lineTotal,
+          supplier_id,
+          receipt_id: receipt.id,
+          order_type: orderType
+        });
+        
+        console.log(`  ✅ ${quantity}x ${orderType === 'MANUFACTURED' ? rawMaterialName : productName} → ${supplierName} ($${unitCost}) - INVENTARIO ACTUALIZADO`);
       }
     }
-
-    const result = await query(`
-      SELECT 
-        m.id, 
-        m.type, 
-        m.quantity, 
-        m.unit_cost, 
-        m.reference_id, 
-        m.notes, 
-        m.created_at,
-        m.applied,
-        p.id AS product_id, 
-        p.name AS product_name, 
-        p.code AS product_code,
-        p.stock AS current_stock
-      FROM "${schema}".inventory_movements m
-      LEFT JOIN "${schema}".products p ON p.id = m.product_id
-      ${whereClause}
-      ORDER BY m.created_at DESC
-      LIMIT ${parseInt(limit)}
-    `, params);
-
-    res.json(result.rows);
+    
+    // 7. Verificar si todos los items fueron recibidos
+    let pendingCount = 0;
+    
+    if (orderType === 'COMMERCIAL') {
+      const pendingResult = await query(`
+        SELECT COUNT(*) as pending
+        FROM "${schema}".purchase_order_items_comm
+        WHERE purchase_order_id = $1
+          AND quantity > received_qty
+      `, [purchase_order_id]);
+      pendingCount = parseInt(pendingResult.rows[0].pending);
+    } else {
+      const pendingResult = await query(`
+        SELECT COUNT(*) as pending
+        FROM "${schema}".purchase_order_items_man
+        WHERE purchase_order_id = $1
+          AND quantity > received_qty
+      `, [purchase_order_id]);
+      pendingCount = parseInt(pendingResult.rows[0].pending);
+    }
+    
+    if (pendingCount === 0) {
+      await query(`
+        UPDATE "${schema}".purchase_orders 
+        SET 
+          status = 'received', 
+          received_at = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+      `, [purchase_order_id]);
+      
+      console.log(`✅ Orden #${orderNumber} completada (todos los items recibidos)`);
+    } else {
+      console.log(`⏳ Orden #${orderNumber}: ${pendingCount} items pendientes por recibir`);
+    }
+    
+    await query('COMMIT');
+    
+    // Emitir evento socket
+    try {
+      const businessId = req.headers['x-business-id'] || req.user?.businessId;
+      if (businessId && global.io) {
+        global.io.to(`business:${businessId}`).emit('data_changed', {
+          entity: 'purchase',
+          action: 'receipt_created',
+          data: { 
+            receipts: createdReceipts.length,
+            items: allProcessedItems.length
+          }
+        });
+      }
+    } catch (socketError) {
+      console.warn('⚠️ Error al emitir evento socket:', socketError.message);
+    }
+    
+    res.status(201).json({
+      success: true,
+      receipts: createdReceipts,
+      items_processed: allProcessedItems.length,
+      message: `Se crearon ${createdReceipts.length} recepción(es) para ${allProcessedItems.length} items - INVENTARIO ACTUALIZADO`,
+      pending_items: pendingCount
+    });
+    
   } catch (err) {
-    console.error('Error in GET /movements:', err);
-    res.status(500).json({ error: err.message });
+    await query('ROLLBACK');
+    console.error('❌ Error en POST /purchase-receipts:', err);
+    res.status(500).json({ 
+      error: err.message,
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
   }
 });
 
-/* ─────────────────────────────────────────────
-   POST /api/inventory/movements
-   Crear movimiento manual (entrada/salida)
-───────────────────────────────────────────── */
-router.post('/movements', authMiddleware, async (req, res) => {
+// ============================================================
+// DELETE /api/purchase-receipts/:id
+// Eliminar una recepción (solo si está en draft)
+// ============================================================
+router.delete('/:id', authMiddleware, async (req, res) => {
   try {
+    const { id } = req.params;
     const schema = await getSchemaName(req);
-    if (!schema) {
-      return res.status(400).json({ error: 'Business context required' });
+    
+    const checkResult = await query(`
+      SELECT status, receipt_number FROM "${schema}".purchase_receipts WHERE id = $1
+    `, [id]);
+    
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Recepción no encontrada' });
     }
-
-    const { product_id, type, quantity, unit_cost, notes } = req.body;
-
-    if (!product_id || !type || !quantity) {
-      return res.status(400).json({ error: 'product_id, type y quantity son requeridos' });
+    
+    if (checkResult.rows[0].status !== 'draft') {
+      return res.status(400).json({ error: 'Solo se pueden eliminar recepciones en borrador' });
     }
-
-    const qty = Math.abs(Number(quantity));
-    const delta = type === 'entrada' ? qty : -qty;
-
-    const { rows } = await query(`
-      INSERT INTO "${schema}".inventory_movements 
-        (product_id, type, quantity, unit_cost, notes, applied)
-      VALUES ($1, $2, $3, $4, $5, true)
-      RETURNING *
-    `, [product_id, type, qty, unit_cost || null, notes || null]);
-
+    
     await query(`
-      UPDATE "${schema}".products
-      SET stock = GREATEST(0, stock + $1), updated_at = NOW()
-      WHERE id = $2
-    `, [delta, product_id]);
-
-    const businessId = req.headers['x-business-id'] || req.user?.businessId;
-    emitToBusiness(businessId, 'data_changed', { entity: 'inventory', action: 'updated' });
-
-    res.status(201).json(rows[0]);
+      DELETE FROM "${schema}".purchase_receipts WHERE id = $1
+    `, [id]);
+    
+    res.json({ 
+      success: true, 
+      message: `Recepción ${checkResult.rows[0].receipt_number} eliminada correctamente` 
+    });
   } catch (err) {
-    console.error('Error in POST /movements:', err);
+    console.error('Error en DELETE /purchase-receipts/:id:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-/* ─────────────────────────────────────────────
-   GET /api/inventory/movements/stats
-   Estadísticas de movimientos
-───────────────────────────────────────────── */
-router.get('/movements/stats', authMiddleware, async (req, res) => {
+// ============================================================
+// GET /api/purchase-receipts/stats
+// Estadísticas de recepciones
+// ============================================================
+router.get('/stats', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
-    if (!schema) {
-      return res.status(400).json({ error: 'Business context required' });
-    }
-
+    
     const result = await query(`
       SELECT 
-        COUNT(*) as total,
-        COUNT(CASE WHEN type = 'entrada' THEN 1 END) as entradas,
-        COUNT(CASE WHEN type = 'salida' THEN 1 END) as salidas,
-        COUNT(CASE WHEN type = 'adjustment' THEN 1 END) as ajustes,
-        SUM(CASE WHEN type = 'entrada' THEN quantity ELSE 0 END) as total_entradas,
-        SUM(CASE WHEN type = 'salida' THEN quantity ELSE 0 END) as total_salidas,
-        COUNT(DISTINCT product_id) as productos_afectados
-      FROM "${schema}".inventory_movements
+        COUNT(*) as total_recepciones,
+        COUNT(CASE WHEN status = 'completed' THEN 1 END) as completadas,
+        COUNT(CASE WHEN status = 'draft' THEN 1 END) as borradores,
+        COALESCE(SUM(total), 0) as total_mercaderia,
+        COUNT(DISTINCT supplier_id) as proveedores_activos
+      FROM "${schema}".purchase_receipts
     `);
+    
     res.json(result.rows[0]);
   } catch (err) {
-    console.error('Error in GET /movements/stats:', err);
+    console.error('Error en GET /purchase-receipts/stats:', err);
     res.status(500).json({ error: err.message });
   }
 });
