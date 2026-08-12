@@ -78,6 +78,111 @@ async function updateRawMaterialSupplierHistory(schema, rawMaterialId, supplierI
 }
 
 // ============================================================
+// HELPERS - INVENTARIO (SUMA AL STOCK EXISTENTE)
+// ============================================================
+
+/**
+ * Crea movimiento de inventario para productos (COMMERCIAL)
+ * ✅ SUMA al stock existente: stock = stock + quantity
+ */
+async function createProductInventoryMovement(schema, productId, quantity, unitCost, receiptId, receiptNumber, productName) {
+  // 1. Obtener stock actual
+  const productResult = await query(`
+    SELECT COALESCE(stock, 0) as current_stock
+    FROM "${schema}".products
+    WHERE id = $1
+  `, [productId]);
+  
+  const currentStock = Number(productResult.rows[0]?.current_stock || 0);
+  const newStock = currentStock + quantity; // ✅ SUMA: 3 + 4 = 7
+
+  // 2. Insertar movimiento con previous_stock y current_stock
+  await query(`
+    INSERT INTO "${schema}".inventory_movements (
+      product_id,
+      type,
+      quantity,
+      previous_stock,
+      current_stock,
+      unit_cost,
+      reference_id,
+      reference_type,
+      notes,
+      applied
+    ) VALUES ($1, 'entrada', $2, $3, $4, $5, $6, 'purchase_receipt', $7, true)
+  `, [
+    productId,
+    quantity,
+    currentStock,
+    newStock,
+    unitCost,
+    receiptId,
+    `Recepción #${receiptNumber} - ${productName} (${quantity} unidades)`
+  ]);
+
+  // 3. Actualizar stock del producto (NUEVO stock = stock + cantidad)
+  await query(`
+    UPDATE "${schema}".products
+    SET 
+      stock = $1,
+      unit_cost = $2,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = $3
+  `, [newStock, unitCost, productId]);
+  
+  console.log(`  📦 Producto: ${productName} → Stock: ${currentStock} → ${newStock} (+${quantity})`);
+}
+
+/**
+ * Crea movimiento de inventario para materias primas (MANUFACTURED)
+ * ✅ SUMA al stock existente: stock = stock + quantity
+ */
+async function createRawMaterialInventoryMovement(schema, rawMaterialId, quantity, unitCost, receiptId, receiptNumber, rawMaterialName) {
+  // 1. Obtener stock actual
+  const materialResult = await query(`
+    SELECT COALESCE(stock, 0) as current_stock
+    FROM "${schema}".raw_materials
+    WHERE id = $1
+  `, [rawMaterialId]);
+  
+  const currentStock = Number(materialResult.rows[0]?.current_stock || 0);
+  const newStock = currentStock + quantity; // ✅ SUMA: 3 + 4 = 7
+
+  // 2. Insertar movimiento con previous_stock y current_stock
+  await query(`
+    INSERT INTO "${schema}".raw_material_movements (
+      raw_material_id,
+      movement_type,
+      quantity,
+      previous_stock,
+      current_stock,
+      reference_id,
+      reference_type,
+      notes
+    ) VALUES ($1, 'entrada', $2, $3, $4, $5, 'purchase_receipt', $6)
+  `, [
+    rawMaterialId,
+    quantity,
+    currentStock,
+    newStock,
+    receiptId,
+    `Recepción #${receiptNumber} - ${rawMaterialName} (${quantity} unidades)`
+  ]);
+
+  // 3. Actualizar stock de la materia prima (NUEVO stock = stock + cantidad)
+  await query(`
+    UPDATE "${schema}".raw_materials
+    SET 
+      stock = $1,
+      unit_cost = $2,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = $3
+  `, [newStock, unitCost, rawMaterialId]);
+  
+  console.log(`  📦 Materia prima: ${rawMaterialName} → Stock: ${currentStock} → ${newStock} (+${quantity})`);
+}
+
+// ============================================================
 // GET /api/purchase-receipts
 // Listar todas las recepciones
 // ============================================================
@@ -428,7 +533,7 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
 });
 
 // ============================================================
-// POST /api/purchase-receipts - CON TABLAS SEPARADAS Y HISTORIAL SEPARADO
+// POST /api/purchase-receipts - CON INVENTARIO COMPLETO
 // ============================================================
 router.post('/', authMiddleware, async (req, res) => {
   try {
@@ -441,7 +546,7 @@ router.post('/', authMiddleware, async (req, res) => {
     const schema = await getSchemaName(req);
     const userId = req.user.id;
     
-    console.log('📦 Recibiendo recepción:', { 
+    console.log('📦 Recibiendo recepción CON INVENTARIO:', { 
       purchase_order_id, 
       supplier_groups: supplier_groups?.length,
       schema 
@@ -827,11 +932,32 @@ router.post('/', authMiddleware, async (req, res) => {
         
         // 5. Actualizar historial según el tipo de orden
         if (orderType === 'COMMERCIAL') {
-          // ✅ Para COMMERCIAL: usar product_supplier_history
           await updateProductSupplierHistory(schema, productId, supplier_id, unitCost);
         } else {
-          // ✅ Para MANUFACTURED: usar raw_material_supplier_history
           await updateRawMaterialSupplierHistory(schema, rawMaterialId, supplier_id, unitCost);
+        }
+        
+        // 6. ✅ Crear movimiento de inventario según el tipo de orden (SUMA al stock)
+        if (orderType === 'COMMERCIAL') {
+          await createProductInventoryMovement(
+            schema,
+            productId,
+            quantity,
+            unitCost,
+            receipt.id,
+            receiptNumber,
+            productName || 'Producto sin nombre'
+          );
+        } else {
+          await createRawMaterialInventoryMovement(
+            schema,
+            rawMaterialId,
+            quantity,
+            unitCost,
+            receipt.id,
+            receiptNumber,
+            rawMaterialName || 'Materia prima sin nombre'
+          );
         }
         
         allProcessedItems.push({
@@ -845,11 +971,11 @@ router.post('/', authMiddleware, async (req, res) => {
           order_type: orderType
         });
         
-        console.log(`  📦 ${quantity}x ${orderType === 'MANUFACTURED' ? rawMaterialName : productName} → ${supplierName} ($${unitCost})`);
+        console.log(`  ✅ ${quantity}x ${orderType === 'MANUFACTURED' ? rawMaterialName : productName} → ${supplierName} ($${unitCost}) - INVENTARIO ACTUALIZADO`);
       }
     }
     
-    // 6. Verificar si todos los items fueron recibidos
+    // 7. Verificar si todos los items fueron recibidos
     let pendingCount = 0;
     
     if (orderType === 'COMMERCIAL') {
@@ -908,7 +1034,7 @@ router.post('/', authMiddleware, async (req, res) => {
       success: true,
       receipts: createdReceipts,
       items_processed: allProcessedItems.length,
-      message: `Se crearon ${createdReceipts.length} recepción(es) para ${allProcessedItems.length} items`,
+      message: `Se crearon ${createdReceipts.length} recepción(es) para ${allProcessedItems.length} items - INVENTARIO ACTUALIZADO`,
       pending_items: pendingCount
     });
     
