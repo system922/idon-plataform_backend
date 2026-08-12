@@ -8,11 +8,11 @@ import { generateReceiptNumber } from '../utils/orderNumberGenerator.js';
 const router = express.Router();
 
 // ============================================================
-// HELPERS - SOLO HISTORIAL (SIN INVENTARIO)
+// HELPERS - HISTORIAL SEPARADO
 // ============================================================
 
 /**
- * Actualiza o crea el historial de producto-proveedor
+ * Actualiza o crea el historial de producto-proveedor (para productos COMMERCIAL)
  */
 async function updateProductSupplierHistory(schema, productId, supplierId, unitCost) {
   const existing = await query(`
@@ -41,6 +41,39 @@ async function updateProductSupplierHistory(schema, productId, supplierId, unitC
         total_orders
       ) VALUES ($1, $2, $3, CURRENT_TIMESTAMP, 1)
     `, [productId, supplierId, unitCost]);
+  }
+}
+
+/**
+ * Actualiza o crea el historial de materia prima-proveedor (para productos MANUFACTURED)
+ */
+async function updateRawMaterialSupplierHistory(schema, rawMaterialId, supplierId, unitCost) {
+  const existing = await query(`
+    SELECT id, total_orders, last_unit_cost, last_order_date
+    FROM "${schema}".raw_material_supplier_history
+    WHERE raw_material_id = $1 AND supplier_id = $2
+  `, [rawMaterialId, supplierId]);
+
+  if (existing.rows.length > 0) {
+    await query(`
+      UPDATE "${schema}".raw_material_supplier_history
+      SET 
+        last_unit_cost = $3,
+        last_order_date = CURRENT_TIMESTAMP,
+        total_orders = total_orders + 1,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE raw_material_id = $1 AND supplier_id = $2
+    `, [rawMaterialId, supplierId, unitCost]);
+  } else {
+    await query(`
+      INSERT INTO "${schema}".raw_material_supplier_history (
+        raw_material_id,
+        supplier_id,
+        last_unit_cost,
+        last_order_date,
+        total_orders
+      ) VALUES ($1, $2, $3, CURRENT_TIMESTAMP, 1)
+    `, [rawMaterialId, supplierId, unitCost]);
   }
 }
 
@@ -270,6 +303,63 @@ router.get('/suppliers/:productId', authMiddleware, async (req, res) => {
 });
 
 // ============================================================
+// GET /api/purchase-receipts/suppliers/raw-material/:rawMaterialId
+// Obtener proveedores para una materia prima
+// ============================================================
+router.get('/suppliers/raw-material/:rawMaterialId', authMiddleware, async (req, res) => {
+  try {
+    const { rawMaterialId } = req.params;
+    const schema = await getSchemaName(req);
+    
+    const historyResult = await query(`
+      SELECT 
+        s.id,
+        s.name,
+        s.tax_id,
+        s.phone,
+        s.email,
+        s.is_active,
+        rmsh.last_unit_cost,
+        rmsh.total_orders,
+        rmsh.last_order_date,
+        true as has_history
+      FROM "${schema}".suppliers s
+      INNER JOIN "${schema}".raw_material_supplier_history rmsh ON s.id = rmsh.supplier_id
+      WHERE rmsh.raw_material_id = $1
+        AND s.is_active = true
+      ORDER BY rmsh.total_orders DESC, rmsh.last_order_date DESC
+    `, [rawMaterialId]);
+    
+    if (historyResult.rows.length > 0) {
+      return res.json(historyResult.rows);
+    }
+    
+    const allSuppliers = await query(`
+      SELECT 
+        id,
+        name,
+        tax_id,
+        phone,
+        email,
+        is_active,
+        NULL as last_unit_cost,
+        0 as total_orders,
+        NULL as last_order_date,
+        false as has_history
+      FROM "${schema}".suppliers
+      WHERE is_active = true
+      ORDER BY name ASC
+    `);
+    
+    res.json(allSuppliers.rows);
+    
+  } catch (err) {
+    console.error('Error en GET /purchase-receipts/suppliers/raw-material/:rawMaterialId:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
 // PATCH /api/purchase-receipts/:id/status
 // Actualizar estado de una recepción (para marcar como pagada)
 // ============================================================
@@ -338,7 +428,7 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
 });
 
 // ============================================================
-// POST /api/purchase-receipts - CON TABLAS SEPARADAS (SIN INVENTARIO)
+// POST /api/purchase-receipts - CON TABLAS SEPARADAS Y HISTORIAL SEPARADO
 // ============================================================
 router.post('/', authMiddleware, async (req, res) => {
   try {
@@ -351,7 +441,7 @@ router.post('/', authMiddleware, async (req, res) => {
     const schema = await getSchemaName(req);
     const userId = req.user.id;
     
-    console.log('📦 Recibiendo recepción (SIN INVENTARIO):', { 
+    console.log('📦 Recibiendo recepción:', { 
       purchase_order_id, 
       supplier_groups: supplier_groups?.length,
       schema 
@@ -545,7 +635,6 @@ router.post('/', authMiddleware, async (req, res) => {
         let receiptItemId = null;
         
         if (orderType === 'COMMERCIAL') {
-          // ✅ Insertar en purchase_receipt_items_comm
           const receiptItemResult = await query(`
             INSERT INTO "${schema}".purchase_receipt_items_comm (
               receipt_id,
@@ -573,7 +662,6 @@ router.post('/', authMiddleware, async (req, res) => {
           receiptItemId = receiptItemResult.rows[0].id;
           
         } else if (orderType === 'MANUFACTURED') {
-          // ✅ Insertar en purchase_receipt_items_man
           const receiptItemResult = await query(`
             INSERT INTO "${schema}".purchase_receipt_items_man (
               receipt_id,
@@ -737,10 +825,14 @@ router.post('/', authMiddleware, async (req, res) => {
           `, [quantity, itemManId]);
         }
         
-        // 5. updateProductSupplierHistory
-        // Para MANUFACTURED usar raw_material_id como "product_id" para el historial
-        const historyProductId = orderType === 'MANUFACTURED' ? rawMaterialId : productId;
-        await updateProductSupplierHistory(schema, historyProductId, supplier_id, unitCost);
+        // 5. Actualizar historial según el tipo de orden
+        if (orderType === 'COMMERCIAL') {
+          // ✅ Para COMMERCIAL: usar product_supplier_history
+          await updateProductSupplierHistory(schema, productId, supplier_id, unitCost);
+        } else {
+          // ✅ Para MANUFACTURED: usar raw_material_supplier_history
+          await updateRawMaterialSupplierHistory(schema, rawMaterialId, supplier_id, unitCost);
+        }
         
         allProcessedItems.push({
           product_id: orderType === 'MANUFACTURED' ? rawMaterialId : productId,
