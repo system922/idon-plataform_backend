@@ -340,6 +340,7 @@ router.get('/suppliers/:productId', authMiddleware, async (req, res) => {
     const { productId } = req.params;
     const schema = await getSchemaName(req);
     
+    // Obtener proveedores con historial para este producto
     const historyResult = await query(`
       SELECT 
         s.id,
@@ -359,10 +360,7 @@ router.get('/suppliers/:productId', authMiddleware, async (req, res) => {
       ORDER BY psh.total_orders DESC, psh.last_order_date DESC
     `, [productId]);
     
-    if (historyResult.rows.length > 0) {
-      return res.json(historyResult.rows);
-    }
-    
+    // Obtener todos los proveedores activos
     const allSuppliers = await query(`
       SELECT 
         id,
@@ -380,7 +378,13 @@ router.get('/suppliers/:productId', authMiddleware, async (req, res) => {
       ORDER BY name ASC
     `);
     
-    res.json(allSuppliers.rows);
+    // Combinar: primero los que tienen historial, luego el resto
+    const historyIds = new Set(historyResult.rows.map(s => s.id));
+    const suppliersWithoutHistory = allSuppliers.rows.filter(s => !historyIds.has(s.id));
+    
+    const result = [...historyResult.rows, ...suppliersWithoutHistory];
+    
+    res.json(result);
     
   } catch (err) {
     console.error('Error en GET /purchase-receipts/suppliers/:productId:', err);
@@ -390,7 +394,7 @@ router.get('/suppliers/:productId', authMiddleware, async (req, res) => {
 
 // ============================================================
 // GET /api/purchase-receipts/suppliers/raw-material/:rawMaterialId
-// Obtener proveedores para una materia prima
+// Obtener proveedores para una materia prima (con fallback a todos)
 // ============================================================
 router.get('/suppliers/raw-material/:rawMaterialId', authMiddleware, async (req, res) => {
   try {
@@ -416,10 +420,6 @@ router.get('/suppliers/raw-material/:rawMaterialId', authMiddleware, async (req,
       ORDER BY rmsh.total_orders DESC, rmsh.last_order_date DESC
     `, [rawMaterialId]);
     
-    if (historyResult.rows.length > 0) {
-      return res.json(historyResult.rows);
-    }
-    
     const allSuppliers = await query(`
       SELECT 
         id,
@@ -437,7 +437,12 @@ router.get('/suppliers/raw-material/:rawMaterialId', authMiddleware, async (req,
       ORDER BY name ASC
     `);
     
-    res.json(allSuppliers.rows);
+    const historyIds = new Set(historyResult.rows.map(s => s.id));
+    const suppliersWithoutHistory = allSuppliers.rows.filter(s => !historyIds.has(s.id));
+    
+    const result = [...historyResult.rows, ...suppliersWithoutHistory];
+    
+    res.json(result);
     
   } catch (err) {
     console.error('Error en GET /purchase-receipts/suppliers/raw-material/:rawMaterialId:', err);
@@ -521,7 +526,10 @@ router.post('/', authMiddleware, async (req, res) => {
     const { 
       purchase_order_id, 
       supplier_groups, 
-      notes 
+      notes,
+      payment_option,
+      payment_method,
+      payment_reference
     } = req.body;
     
     const schema = await getSchemaName(req);
@@ -627,6 +635,73 @@ router.post('/', authMiddleware, async (req, res) => {
       const receipt = receiptResult.rows[0];
       createdReceipts.push(receipt);
       
+      // ============================================================
+      // CREAR CUENTA POR PAGAR
+      // ============================================================
+      const dueDate = new Date();
+      dueDate.setDate(dueDate.getDate() + 30);
+      
+      const isPaidNow = payment_option === 'pay_now';
+      const accountStatus = isPaidNow ? 'paid' : 'pending';
+      const paidAmount = isPaidNow ? groupTotal : 0;
+      const balance = isPaidNow ? 0 : groupTotal;
+      
+      const accountResult = await query(`
+        INSERT INTO "${schema}".accounts_payable (
+          invoice_number,
+          supplier_name,
+          supplier_id,
+          amount,
+          paid_amount,
+          balance,
+          issue_date,
+          due_date,
+          status,
+          type,
+          description,
+          category
+        ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_DATE, $7, $8, 'purchase', $9, 'inventory')
+        RETURNING id
+      `, [
+        receiptNumber,
+        supplierName,
+        supplier_id,
+        groupTotal,
+        paidAmount,
+        balance,
+        dueDate.toISOString().split('T')[0],
+        accountStatus,
+        `Recepción #${receiptNumber} - ${supplierName}`
+      ]);
+      
+      const accountId = accountResult.rows[0].id;
+      
+      // Si se pagó ahora, registrar el pago y actualizar recepción
+      if (isPaidNow && payment_method) {
+        await query(`
+          INSERT INTO "${schema}".accounts_payable_payments (
+            payable_id,
+            payment_date,
+            amount,
+            payment_method,
+            reference_number
+          ) VALUES ($1, NOW(), $2, $3, $4)
+        `, [accountId, groupTotal, payment_method, payment_reference || null]);
+        
+        await query(`
+          UPDATE "${schema}".purchase_receipts
+          SET status = 'paid',
+              payment_method = $1,
+              payment_reference = $2,
+              paid_at = NOW(),
+              updated_at = NOW()
+          WHERE id = $3
+        `, [payment_method, payment_reference || null, receipt.id]);
+      }
+      
+      // ============================================================
+      // PROCESAR ITEMS
+      // ============================================================
       for (const item of items) {
         const itemId = item.purchase_order_item_id;
         const quantity = Number(item.quantity) || 0;
