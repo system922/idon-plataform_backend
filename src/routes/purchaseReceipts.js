@@ -340,7 +340,6 @@ router.get('/suppliers/:productId', authMiddleware, async (req, res) => {
     const { productId } = req.params;
     const schema = await getSchemaName(req);
     
-    // Obtener proveedores con historial para este producto
     const historyResult = await query(`
       SELECT 
         s.id,
@@ -360,7 +359,6 @@ router.get('/suppliers/:productId', authMiddleware, async (req, res) => {
       ORDER BY psh.total_orders DESC, psh.last_order_date DESC
     `, [productId]);
     
-    // Obtener todos los proveedores activos
     const allSuppliers = await query(`
       SELECT 
         id,
@@ -378,7 +376,6 @@ router.get('/suppliers/:productId', authMiddleware, async (req, res) => {
       ORDER BY name ASC
     `);
     
-    // Combinar: primero los que tienen historial, luego el resto
     const historyIds = new Set(historyResult.rows.map(s => s.id));
     const suppliersWithoutHistory = allSuppliers.rows.filter(s => !historyIds.has(s.id));
     
@@ -519,7 +516,7 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
 });
 
 // ============================================================
-// POST /api/purchase-receipts - CON INVENTARIO COMPLETO
+// POST /api/purchase-receipts - CON INVENTARIO COMPLETO Y SOPORTE PARA ABONOS
 // ============================================================
 router.post('/', authMiddleware, async (req, res) => {
   try {
@@ -529,11 +526,26 @@ router.post('/', authMiddleware, async (req, res) => {
       notes,
       payment_option,
       payment_method,
-      payment_reference
+      payment_reference,
+      invoice_number,
+      due_date,
+      abono_amount,
+      is_partial
     } = req.body;
     
     const schema = await getSchemaName(req);
     const userId = req.user.id;
+    
+    console.log('📦 Recibiendo recepción:', { 
+      purchase_order_id, 
+      supplier_groups: supplier_groups?.length,
+      payment_option,
+      payment_method,
+      invoice_number,
+      due_date,
+      abono_amount,
+      is_partial
+    });
     
     if (!purchase_order_id) {
       return res.status(400).json({ error: 'Orden de compra requerida' });
@@ -636,16 +648,52 @@ router.post('/', authMiddleware, async (req, res) => {
       createdReceipts.push(receipt);
       
       // ============================================================
-      // CREAR CUENTA POR PAGAR
+      // CREAR CUENTA POR PAGAR CON SOPORTE PARA ABONOS
       // ============================================================
-      const dueDate = new Date();
-      dueDate.setDate(dueDate.getDate() + 30);
       
+      // Determinar si es pago ahora o cuenta por pagar
       const isPaidNow = payment_option === 'pay_now';
-      const accountStatus = isPaidNow ? 'paid' : 'pending';
-      const paidAmount = isPaidNow ? groupTotal : 0;
-      const balance = isPaidNow ? 0 : groupTotal;
+      const abono = Number(abono_amount) || 0;
+      const hasAbono = abono > 0 && abono < groupTotal;
       
+      // Calcular valores para la cuenta
+      let accountStatus = 'pending';
+      let paidAmount = 0;
+      let balance = groupTotal;
+      let accountDueDate = due_date || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      let accountInvoiceNumber = invoice_number || receiptNumber;
+      
+      // Si es pago ahora con abono parcial
+      if (isPaidNow && hasAbono) {
+        // Crear cuenta por pagar por el saldo restante
+        balance = groupTotal - abono;
+        paidAmount = abono;
+        accountStatus = balance === 0 ? 'paid' : 'pending';
+        accountInvoiceNumber = invoice_number || `${receiptNumber}-P`;
+      } 
+      // Si es pago ahora sin abono (pago total)
+      else if (isPaidNow && !hasAbono) {
+        paidAmount = groupTotal;
+        balance = 0;
+        accountStatus = 'paid';
+        accountInvoiceNumber = invoice_number || receiptNumber;
+      } 
+      // Si es cuenta por pagar (pay_later) con abono
+      else if (!isPaidNow && hasAbono) {
+        balance = groupTotal - abono;
+        paidAmount = abono;
+        accountStatus = balance === 0 ? 'paid' : 'pending';
+        accountInvoiceNumber = invoice_number || receiptNumber;
+      }
+      // Si es cuenta por pagar sin abono
+      else {
+        balance = groupTotal;
+        paidAmount = 0;
+        accountStatus = 'pending';
+        accountInvoiceNumber = invoice_number || receiptNumber;
+      }
+      
+      // Crear la cuenta por pagar
       const accountResult = await query(`
         INSERT INTO "${schema}".accounts_payable (
           invoice_number,
@@ -663,21 +711,21 @@ router.post('/', authMiddleware, async (req, res) => {
         ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_DATE, $7, $8, 'purchase', $9, 'inventory')
         RETURNING id
       `, [
-        receiptNumber,
+        accountInvoiceNumber,
         supplierName,
         supplier_id,
         groupTotal,
         paidAmount,
         balance,
-        dueDate.toISOString().split('T')[0],
+        accountDueDate,
         accountStatus,
         `Recepción #${receiptNumber} - ${supplierName}`
       ]);
       
       const accountId = accountResult.rows[0].id;
       
-      // Si se pagó ahora, registrar el pago y actualizar recepción
-      if (isPaidNow && payment_method) {
+      // Registrar pago si hay abono o pago completo
+      if (paidAmount > 0 && payment_method) {
         await query(`
           INSERT INTO "${schema}".accounts_payable_payments (
             payable_id,
@@ -686,8 +734,19 @@ router.post('/', authMiddleware, async (req, res) => {
             payment_method,
             reference_number
           ) VALUES ($1, NOW(), $2, $3, $4)
-        `, [accountId, groupTotal, payment_method, payment_reference || null]);
+        `, [accountId, paidAmount, payment_method, payment_reference || null]);
+      }
+      
+      // Si el saldo es 0, marcar como pagada
+      if (balance === 0) {
+        await query(`
+          UPDATE "${schema}".accounts_payable
+          SET status = 'paid',
+              paid_date = NOW()
+          WHERE id = $1
+        `, [accountId]);
         
+        // Actualizar recepción como pagada
         await query(`
           UPDATE "${schema}".purchase_receipts
           SET status = 'paid',
@@ -696,8 +755,19 @@ router.post('/', authMiddleware, async (req, res) => {
               paid_at = NOW(),
               updated_at = NOW()
           WHERE id = $3
-        `, [payment_method, payment_reference || null, receipt.id]);
+        `, [payment_method || 'cash', payment_reference || null, receipt.id]);
+      } else if (isPaidNow && hasAbono) {
+        // Si es pago ahora con abono parcial, la recepción queda como completada (no pagada)
+        // pero ya tiene un abono registrado
+        await query(`
+          UPDATE "${schema}".purchase_receipts
+          SET notes = COALESCE(notes || '', '') || ' Abono parcial de ' || $1 || ' registrado.',
+              updated_at = NOW()
+          WHERE id = $2
+        `, [money(paidAmount), receipt.id]);
       }
+      
+      console.log(`💰 Cuenta por pagar creada: ${accountInvoiceNumber} - ${supplierName} - Total: $${groupTotal} - Pagado: $${paidAmount} - Saldo: $${balance}`);
       
       // ============================================================
       // PROCESAR ITEMS
