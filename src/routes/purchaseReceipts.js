@@ -8,75 +8,41 @@ import { generateReceiptNumber } from '../utils/orderNumberGenerator.js';
 const router = express.Router();
 
 // ============================================================
-// HELPERS - COMENTADAS PARA PRUEBA
+// HELPERS - SOLO HISTORIAL (SIN INVENTARIO)
 // ============================================================
 
 /**
  * Actualiza o crea el historial de producto-proveedor
- * ⚠️ COMENTADO PARA PRUEBA - Descomentar después
  */
- async function updateProductSupplierHistory(schema, productId, supplierId, unitCost) {
-   const existing = await query(`
-     SELECT id, total_orders, last_unit_cost, last_order_date
-     FROM "${schema}".product_supplier_history
-     WHERE product_id = $1 AND supplier_id = $2
-   `, [productId, supplierId]);
+async function updateProductSupplierHistory(schema, productId, supplierId, unitCost) {
+  const existing = await query(`
+    SELECT id, total_orders, last_unit_cost, last_order_date
+    FROM "${schema}".product_supplier_history
+    WHERE product_id = $1 AND supplier_id = $2
+  `, [productId, supplierId]);
 
-   if (existing.rows.length > 0) {
-     await query(`
-       UPDATE "${schema}".product_supplier_history
-       SET 
-         last_unit_cost = $3,
-         last_order_date = CURRENT_TIMESTAMP,
-         total_orders = total_orders + 1,
-         updated_at = CURRENT_TIMESTAMP
-       WHERE product_id = $1 AND supplier_id = $2
-     `, [productId, supplierId, unitCost]);
-   } else {
-     await query(`
-       INSERT INTO "${schema}".product_supplier_history (
-         product_id,
-         supplier_id,
-         last_unit_cost,
-         last_order_date,
-         total_orders
-       ) VALUES ($1, $2, $3, CURRENT_TIMESTAMP, 1)
-     `, [productId, supplierId, unitCost]);
-   }
- }
-
-/**
- * Crea un movimiento de inventario (entrada por compra)
- * ⚠️ COMENTADO PARA PRUEBA - Descomentar después
- */
-// async function createInventoryMovement(schema, productId, quantity, unitCost, receiptId, receiptNumber, productName) {
-//   await query(`
-//     INSERT INTO "${schema}".inventory_movements (
-//       product_id,
-//       type,
-//       quantity,
-//       unit_cost,
-//       reference_id,
-//       notes,
-//       applied
-//     ) VALUES ($1, 'entrada', $2, $3, $4, $5, true)
-//   `, [
-//     productId,
-//     quantity,
-//     unitCost,
-//     receiptId,
-//     `Recepción #${receiptNumber} - ${productName} (${quantity} unidades)`
-//   ]);
-//
-//   await query(`
-//     UPDATE "${schema}".products
-//     SET 
-//       stock = stock + $1,
-//       unit_cost = $2,
-//       updated_at = CURRENT_TIMESTAMP
-//     WHERE id = $3
-//   `, [quantity, unitCost, productId]);
-// }
+  if (existing.rows.length > 0) {
+    await query(`
+      UPDATE "${schema}".product_supplier_history
+      SET 
+        last_unit_cost = $3,
+        last_order_date = CURRENT_TIMESTAMP,
+        total_orders = total_orders + 1,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE product_id = $1 AND supplier_id = $2
+    `, [productId, supplierId, unitCost]);
+  } else {
+    await query(`
+      INSERT INTO "${schema}".product_supplier_history (
+        product_id,
+        supplier_id,
+        last_unit_cost,
+        last_order_date,
+        total_orders
+      ) VALUES ($1, $2, $3, CURRENT_TIMESTAMP, 1)
+    `, [productId, supplierId, unitCost]);
+  }
+}
 
 // ============================================================
 // GET /api/purchase-receipts
@@ -91,13 +57,19 @@ router.get('/', authMiddleware, async (req, res) => {
         pr.*,
         po.order_number,
         s.name as supplier_name,
-        COUNT(DISTINCT pri.id) as item_count,
-        COALESCE(SUM(pri.line_total), 0) as total
+        (
+          SELECT COALESCE(COUNT(*), 0) FROM "${schema}".purchase_receipt_items_comm WHERE receipt_id = pr.id
+        ) + (
+          SELECT COALESCE(COUNT(*), 0) FROM "${schema}".purchase_receipt_items_man WHERE receipt_id = pr.id
+        ) as item_count,
+        (
+          SELECT COALESCE(SUM(line_total), 0) FROM "${schema}".purchase_receipt_items_comm WHERE receipt_id = pr.id
+        ) + (
+          SELECT COALESCE(SUM(line_total), 0) FROM "${schema}".purchase_receipt_items_man WHERE receipt_id = pr.id
+        ) as total
       FROM "${schema}".purchase_receipts pr
       LEFT JOIN "${schema}".purchase_orders po ON pr.purchase_order_id = po.id
       LEFT JOIN "${schema}".suppliers s ON pr.supplier_id = s.id
-      LEFT JOIN "${schema}".purchase_receipt_items pri ON pr.id = pri.receipt_id
-      GROUP BY pr.id, po.order_number, s.name
       ORDER BY pr.created_at DESC
     `);
     
@@ -159,7 +131,7 @@ router.get('/pending', authMiddleware, async (req, res) => {
 
 // ============================================================
 // GET /api/purchase-receipts/:id
-// Obtener una recepción con sus items
+// Obtener una recepción con sus items (TABLAS SEPARADAS)
 // ============================================================
 router.get('/:id', authMiddleware, async (req, res) => {
   try {
@@ -181,20 +153,58 @@ router.get('/:id', authMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'Recepción no encontrada' });
     }
     
-    const itemsResult = await query(`
+    // Obtener items comerciales
+    const itemsComm = await query(`
       SELECT 
-        pri.*,
+        pri.id,
+        pri.receipt_id,
+        pri.purchase_order_item_comm_id,
+        pri.purchase_order_item_supplier_id,
+        pri.product_id,
+        pri.product_name,
+        pri.quantity,
+        pri.unit_cost,
+        pri.line_total,
+        pri.notes,
+        pri.created_at,
         p.code as product_code,
-        p.barcode
-      FROM "${schema}".purchase_receipt_items pri
+        p.barcode,
+        'COMMERCIAL' as item_type
+      FROM "${schema}".purchase_receipt_items_comm pri
       LEFT JOIN "${schema}".products p ON pri.product_id = p.id
       WHERE pri.receipt_id = $1
       ORDER BY pri.created_at ASC
     `, [id]);
     
+    // Obtener items manufacturados
+    const itemsMan = await query(`
+      SELECT 
+        pri.id,
+        pri.receipt_id,
+        pri.purchase_order_item_man_id,
+        pri.purchase_order_item_supplier_id,
+        pri.raw_material_id as product_id,
+        pri.raw_material_name as product_name,
+        pri.quantity,
+        pri.unit_cost,
+        pri.line_total,
+        pri.notes,
+        pri.created_at,
+        rm.code as product_code,
+        rm.barcode,
+        'MANUFACTURED' as item_type
+      FROM "${schema}".purchase_receipt_items_man pri
+      LEFT JOIN "${schema}".raw_materials rm ON pri.raw_material_id = rm.id
+      WHERE pri.receipt_id = $1
+      ORDER BY pri.created_at ASC
+    `, [id]);
+    
+    // Combinar ambos resultados
+    const allItems = [...itemsComm.rows, ...itemsMan.rows];
+    
     res.json({
       receipt: receiptResult.rows[0],
-      items: itemsResult.rows
+      items: allItems
     });
   } catch (err) {
     console.error('Error en GET /purchase-receipts/:id:', err);
@@ -328,7 +338,7 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
 });
 
 // ============================================================
-// POST /api/purchase-receipts - SOLO COMPRA (SIN INVENTARIO)
+// POST /api/purchase-receipts - CON TABLAS SEPARADAS (SIN INVENTARIO)
 // ============================================================
 router.post('/', authMiddleware, async (req, res) => {
   try {
@@ -472,6 +482,8 @@ router.post('/', authMiddleware, async (req, res) => {
         let orderItemData = null;
         let productId = null;
         let productName = null;
+        let rawMaterialId = null;
+        let rawMaterialName = null;
         let itemCommId = null;
         let itemManId = null;
         
@@ -508,6 +520,7 @@ router.post('/', authMiddleware, async (req, res) => {
               p.code as product_code,
               p.unit_cost as default_cost,
               p.barcode,
+              rm.id as raw_material_id,
               rm.name as raw_material_name,
               rm.code as raw_material_code
             FROM "${schema}".purchase_order_items_man poi
@@ -521,58 +534,83 @@ router.post('/', authMiddleware, async (req, res) => {
           }
           
           orderItemData = result.rows[0];
-          productId = orderItemData.raw_material_id;
-          productName = orderItemData.raw_material_name || orderItemData.product_name;
+          productId = orderItemData.product_id;          // ✅ Producto final
+          productName = orderItemData.product_name;      // ✅ Nombre del producto final
+          rawMaterialId = orderItemData.raw_material_id; // ✅ Materia prima
+          rawMaterialName = orderItemData.raw_material_name;
           itemManId = itemId;
         }
         
-        if (!productId) {
-          console.warn(`⚠️ Item ${itemId} no tiene product_id, saltando...`);
-          continue;
-        }
+        // 1. Insertar en la tabla de recepción correspondiente
+        let receiptItemId = null;
         
-        // 1. Insertar en purchase_receipt_items
-        const receiptItemResult = await query(`
-          INSERT INTO "${schema}".purchase_receipt_items (
-            receipt_id,
-            purchase_order_item_comm_id,
-            purchase_order_item_man_id,
-            purchase_order_item_supplier_id,
-            product_id,
-            product_name,
+        if (orderType === 'COMMERCIAL') {
+          // ✅ Insertar en purchase_receipt_items_comm
+          const receiptItemResult = await query(`
+            INSERT INTO "${schema}".purchase_receipt_items_comm (
+              receipt_id,
+              purchase_order_item_comm_id,
+              product_id,
+              product_name,
+              quantity,
+              unit_cost,
+              line_total,
+              purchase_order_item_supplier_id,
+              notes
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id
+          `, [
+            receipt.id,
+            itemCommId,
+            productId,
+            productName || 'Producto sin nombre',
             quantity,
-            unit_cost,
-            line_total,
-            notes
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-          RETURNING id
-        `, [
-          receipt.id,
-          itemCommId,
-          itemManId,
-          null,
-          productId,
-          productName || 'Producto sin nombre',
-          quantity,
-          unitCost,
-          lineTotal,
-          item.notes || null
-        ]);
-        
-        const receiptItemId = receiptItemResult.rows[0].id;
+            unitCost,
+            lineTotal,
+            null,
+            item.notes || null
+          ]);
+          receiptItemId = receiptItemResult.rows[0].id;
+          
+        } else if (orderType === 'MANUFACTURED') {
+          // ✅ Insertar en purchase_receipt_items_man
+          const receiptItemResult = await query(`
+            INSERT INTO "${schema}".purchase_receipt_items_man (
+              receipt_id,
+              purchase_order_item_man_id,
+              raw_material_id,
+              raw_material_name,
+              quantity,
+              unit_cost,
+              line_total,
+              purchase_order_item_supplier_id,
+              notes
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id
+          `, [
+            receipt.id,
+            itemManId,
+            rawMaterialId,
+            rawMaterialName || 'Materia prima sin nombre',
+            quantity,
+            unitCost,
+            lineTotal,
+            null,
+            item.notes || null
+          ]);
+          receiptItemId = receiptItemResult.rows[0].id;
+        }
         
         // 2. Crear/actualizar en purchase_order_item_suppliers
         let supplierItemId = null;
         
         if (orderType === 'COMMERCIAL') {
-          // Verificar usando item_comm_id
           const checkResult = await query(`
             SELECT id FROM "${schema}".purchase_order_item_suppliers
             WHERE item_comm_id = $1 AND supplier_id = $2
           `, [itemCommId, supplier_id]);
           
           if (checkResult.rows.length > 0) {
-            // Actualizar existente
             const updateResult = await query(`
               UPDATE "${schema}".purchase_order_item_suppliers
               SET 
@@ -591,7 +629,6 @@ router.post('/', authMiddleware, async (req, res) => {
             ]);
             supplierItemId = updateResult.rows[0]?.id;
           } else {
-            // Insertar nuevo registro - SIN purchase_order_item_id
             const insertResult = await query(`
               INSERT INTO "${schema}".purchase_order_item_suppliers (
                 item_comm_id,
@@ -616,14 +653,12 @@ router.post('/', authMiddleware, async (req, res) => {
           }
           
         } else if (orderType === 'MANUFACTURED') {
-          // Verificar usando item_man_id
           const checkResult = await query(`
             SELECT id FROM "${schema}".purchase_order_item_suppliers
             WHERE item_man_id = $1 AND supplier_id = $2
           `, [itemManId, supplier_id]);
           
           if (checkResult.rows.length > 0) {
-            // Actualizar existente
             const updateResult = await query(`
               UPDATE "${schema}".purchase_order_item_suppliers
               SET 
@@ -642,7 +677,6 @@ router.post('/', authMiddleware, async (req, res) => {
             ]);
             supplierItemId = updateResult.rows[0]?.id;
           } else {
-            // Insertar nuevo registro - SIN purchase_order_item_id
             const insertResult = await query(`
               INSERT INTO "${schema}".purchase_order_item_suppliers (
                 item_man_id,
@@ -671,14 +705,22 @@ router.post('/', authMiddleware, async (req, res) => {
           throw new Error(`No se pudo guardar el item en purchase_order_item_suppliers`);
         }
         
-        // 3. Actualizar purchase_receipt_items con el supplier_id
-        await query(`
-          UPDATE "${schema}".purchase_receipt_items
-          SET purchase_order_item_supplier_id = $1
-          WHERE id = $2
-        `, [supplierItemId, receiptItemId]);
+        // 3. Actualizar la tabla de recepción con el supplier_id
+        if (orderType === 'COMMERCIAL') {
+          await query(`
+            UPDATE "${schema}".purchase_receipt_items_comm
+            SET purchase_order_item_supplier_id = $1
+            WHERE id = $2
+          `, [supplierItemId, receiptItemId]);
+        } else {
+          await query(`
+            UPDATE "${schema}".purchase_receipt_items_man
+            SET purchase_order_item_supplier_id = $1
+            WHERE id = $2
+          `, [supplierItemId, receiptItemId]);
+        }
         
-        // 4. Actualizar received_qty en la tabla de items de orden
+        // 4. Actualizar received_qty
         if (orderType === 'COMMERCIAL') {
           await query(`
             UPDATE "${schema}".purchase_order_items_comm 
@@ -695,45 +737,27 @@ router.post('/', authMiddleware, async (req, res) => {
           `, [quantity, itemManId]);
         }
         
-        // updateProductSupplierHistory
-        await updateProductSupplierHistory(schema, productId, supplier_id, unitCost);
-        
-        // ⚠️ 6. COMENTADO: createInventoryMovement
-        // await createInventoryMovement(
-        //   schema, 
-        //   productId,
-        //   quantity, 
-        //   unitCost, 
-        //   receipt.id, 
-        //   receiptNumber, 
-        //   productName || 'Producto sin nombre'
-        // );
-        
-        // ⚠️ 7. COMENTADO: Actualizar stock en products
-        // await query(`
-        //   UPDATE "${schema}".products
-        //   SET 
-        //     stock = stock + $1,
-        //     unit_cost = $2,
-        //     updated_at = CURRENT_TIMESTAMP
-        //   WHERE id = $3
-        // `, [quantity, unitCost, productId]);
+        // 5. updateProductSupplierHistory
+        // Para MANUFACTURED usar raw_material_id como "product_id" para el historial
+        const historyProductId = orderType === 'MANUFACTURED' ? rawMaterialId : productId;
+        await updateProductSupplierHistory(schema, historyProductId, supplier_id, unitCost);
         
         allProcessedItems.push({
-          product_id: productId,
-          product_name: productName,
+          product_id: orderType === 'MANUFACTURED' ? rawMaterialId : productId,
+          product_name: orderType === 'MANUFACTURED' ? rawMaterialName : productName,
           quantity,
           unit_cost: unitCost,
           line_total: lineTotal,
           supplier_id,
-          receipt_id: receipt.id
+          receipt_id: receipt.id,
+          order_type: orderType
         });
         
-        console.log(`  📦 ${quantity}x ${productName} → ${supplierName} ($${unitCost}) - SIN INVENTARIO`);
+        console.log(`  📦 ${quantity}x ${orderType === 'MANUFACTURED' ? rawMaterialName : productName} → ${supplierName} ($${unitCost})`);
       }
     }
     
-    // 8. Verificar si todos los items fueron recibidos
+    // 6. Verificar si todos los items fueron recibidos
     let pendingCount = 0;
     
     if (orderType === 'COMMERCIAL') {
@@ -776,8 +800,8 @@ router.post('/', authMiddleware, async (req, res) => {
       const businessId = req.headers['x-business-id'] || req.user?.businessId;
       if (businessId && global.io) {
         global.io.to(`business:${businessId}`).emit('data_changed', {
-          entity: 'inventory',
-          action: 'updated',
+          entity: 'purchase',
+          action: 'receipt_created',
           data: { 
             receipts: createdReceipts.length,
             items: allProcessedItems.length
@@ -792,7 +816,7 @@ router.post('/', authMiddleware, async (req, res) => {
       success: true,
       receipts: createdReceipts,
       items_processed: allProcessedItems.length,
-      message: `Se crearon ${createdReceipts.length} recepción(es) para ${allProcessedItems.length} items (SIN INVENTARIO)`,
+      message: `Se crearon ${createdReceipts.length} recepción(es) para ${allProcessedItems.length} items`,
       pending_items: pendingCount
     });
     
