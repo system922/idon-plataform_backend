@@ -3,6 +3,7 @@ import express from 'express';
 import { query } from '../config/database.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 import { authMiddleware } from '../middleware/auth.js';
+import { generateReceiptNumber } from '../utils/orderNumberGenerator.js';
 
 const router = express.Router();
 
@@ -304,14 +305,10 @@ router.post('/', authMiddleware, async (req, res) => {
     const orderNumber = orderCheck.rows[0].order_number;
     const orderType = orderCheck.rows[0].order_type;
     
-    const numberResult = await query(`
-      SELECT 'RC-' || TO_CHAR(NOW(), 'YYYYMMDD') || '-' || 
-      LPAD(COALESCE(MAX(CAST(SUBSTRING(receipt_number FROM '-(\\d+)$') AS INTEGER)), 0) + 1, 4, '0') as receipt_number
-      FROM "${schema}".purchase_receipts
-      WHERE receipt_number LIKE 'RC-' || TO_CHAR(NOW(), 'YYYYMMDD') || '%'
-    `);
+    // ✅ Generar número de recepción usando el helper
+    const receiptNumber = await generateReceiptNumber(schema);
     
-    const receiptNumber = numberResult.rows[0].receipt_number;
+    console.log(`📦 Nueva recepción: ${receiptNumber} para orden #${orderNumber}`);
     
     await query('BEGIN');
     
@@ -445,7 +442,7 @@ router.post('/', authMiddleware, async (req, res) => {
           receipt.id,
           itemCommId,
           itemManId,
-          null, // purchase_order_item_supplier_id se asignará después
+          null,
           productId,
           productName,
           quantity,
