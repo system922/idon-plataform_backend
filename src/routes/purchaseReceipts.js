@@ -78,15 +78,15 @@ async function updateRawMaterialSupplierHistory(schema, rawMaterialId, supplierI
 }
 
 // ============================================================
-// HELPERS - INVENTARIO (SUMA AL STOCK EXISTENTE)
+// HELPERS - INVENTARIO (CORREGIDO)
 // ============================================================
 
 /**
  * Crea movimiento de inventario para productos (COMMERCIAL)
  * ✅ SUMA al stock existente: stock = stock + quantity
+ * ✅ SOLO columnas que existen en inventory_movements
  */
 async function createProductInventoryMovement(schema, productId, quantity, unitCost, receiptId, receiptNumber, productName) {
-  // 1. Obtener stock actual
   const productResult = await query(`
     SELECT COALESCE(stock, 0) as current_stock
     FROM "${schema}".products
@@ -94,33 +94,24 @@ async function createProductInventoryMovement(schema, productId, quantity, unitC
   `, [productId]);
   
   const currentStock = Number(productResult.rows[0]?.current_stock || 0);
-  const newStock = currentStock + quantity; // ✅ SUMA: 3 + 4 = 7
+  const newStock = currentStock + quantity;
 
-  // 2. Insertar movimiento con previous_stock y current_stock
   await query(`
     INSERT INTO "${schema}".inventory_movements (
       product_id,
       type,
       quantity,
-      previous_stock,
-      current_stock,
       unit_cost,
-      reference_id,
-      reference_type,
       notes,
       applied
-    ) VALUES ($1, 'entrada', $2, $3, $4, $5, $6, 'purchase_receipt', $7, true)
+    ) VALUES ($1, 'entrada', $2, $3, $4, true)
   `, [
     productId,
     quantity,
-    currentStock,
-    newStock,
     unitCost,
-    receiptId,
-    `Recepción #${receiptNumber} - ${productName} (${quantity} unidades)`
+    `Recepción #${receiptNumber} - ${productName} (${quantity} unidades) - Stock: ${currentStock} → ${newStock}`
   ]);
 
-  // 3. Actualizar stock del producto (NUEVO stock = stock + cantidad)
   await query(`
     UPDATE "${schema}".products
     SET 
@@ -129,8 +120,6 @@ async function createProductInventoryMovement(schema, productId, quantity, unitC
       updated_at = CURRENT_TIMESTAMP
     WHERE id = $3
   `, [newStock, unitCost, productId]);
-  
-  console.log(`  📦 Producto: ${productName} → Stock: ${currentStock} → ${newStock} (+${quantity})`);
 }
 
 /**
@@ -138,7 +127,6 @@ async function createProductInventoryMovement(schema, productId, quantity, unitC
  * ✅ SUMA al stock existente: stock = stock + quantity
  */
 async function createRawMaterialInventoryMovement(schema, rawMaterialId, quantity, unitCost, receiptId, receiptNumber, rawMaterialName) {
-  // 1. Obtener stock actual
   const materialResult = await query(`
     SELECT COALESCE(stock, 0) as current_stock
     FROM "${schema}".raw_materials
@@ -146,9 +134,8 @@ async function createRawMaterialInventoryMovement(schema, rawMaterialId, quantit
   `, [rawMaterialId]);
   
   const currentStock = Number(materialResult.rows[0]?.current_stock || 0);
-  const newStock = currentStock + quantity; // ✅ SUMA: 3 + 4 = 7
+  const newStock = currentStock + quantity;
 
-  // 2. Insertar movimiento con previous_stock y current_stock
   await query(`
     INSERT INTO "${schema}".raw_material_movements (
       raw_material_id,
@@ -166,10 +153,9 @@ async function createRawMaterialInventoryMovement(schema, rawMaterialId, quantit
     currentStock,
     newStock,
     receiptId,
-    `Recepción #${receiptNumber} - ${rawMaterialName} (${quantity} unidades)`
+    `Recepción #${receiptNumber} - ${rawMaterialName} (${quantity} unidades) - Stock: ${currentStock} → ${newStock}`
   ]);
 
-  // 3. Actualizar stock de la materia prima (NUEVO stock = stock + cantidad)
   await query(`
     UPDATE "${schema}".raw_materials
     SET 
@@ -178,8 +164,6 @@ async function createRawMaterialInventoryMovement(schema, rawMaterialId, quantit
       updated_at = CURRENT_TIMESTAMP
     WHERE id = $3
   `, [newStock, unitCost, rawMaterialId]);
-  
-  console.log(`  📦 Materia prima: ${rawMaterialName} → Stock: ${currentStock} → ${newStock} (+${quantity})`);
 }
 
 // ============================================================
@@ -291,7 +275,6 @@ router.get('/:id', authMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'Recepción no encontrada' });
     }
     
-    // Obtener items comerciales
     const itemsComm = await query(`
       SELECT 
         pri.id,
@@ -314,7 +297,6 @@ router.get('/:id', authMiddleware, async (req, res) => {
       ORDER BY pri.created_at ASC
     `, [id]);
     
-    // Obtener items manufacturados
     const itemsMan = await query(`
       SELECT 
         pri.id,
@@ -337,7 +319,6 @@ router.get('/:id', authMiddleware, async (req, res) => {
       ORDER BY pri.created_at ASC
     `, [id]);
     
-    // Combinar ambos resultados
     const allItems = [...itemsComm.rows, ...itemsMan.rows];
     
     res.json({
@@ -546,13 +527,6 @@ router.post('/', authMiddleware, async (req, res) => {
     const schema = await getSchemaName(req);
     const userId = req.user.id;
     
-    console.log('📦 Recibiendo recepción CON INVENTARIO:', { 
-      purchase_order_id, 
-      supplier_groups: supplier_groups?.length,
-      schema 
-    });
-    
-    // Validaciones básicas
     if (!purchase_order_id) {
       return res.status(400).json({ error: 'Orden de compra requerida' });
     }
@@ -561,7 +535,6 @@ router.post('/', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Se requieren grupos de proveedores' });
     }
     
-    // Validar UUIDs
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     
     for (const group of supplier_groups) {
@@ -594,7 +567,6 @@ router.post('/', authMiddleware, async (req, res) => {
       }
     }
     
-    // Verificar la orden
     const orderCheck = await query(`
       SELECT status, order_number, order_type FROM "${schema}".purchase_orders WHERE id = $1
     `, [purchase_order_id]);
@@ -611,11 +583,7 @@ router.post('/', authMiddleware, async (req, res) => {
     
     const orderNumber = orderCheck.rows[0].order_number;
     const orderType = orderCheck.rows[0].order_type;
-    
-    // Generar número de recepción
     const receiptNumber = await generateReceiptNumber(schema);
-    
-    console.log(`📦 Nueva recepción: ${receiptNumber} para orden #${orderNumber}`);
     
     await query('BEGIN');
     
@@ -625,7 +593,6 @@ router.post('/', authMiddleware, async (req, res) => {
     for (const group of supplier_groups) {
       const { supplier_id, items } = group;
       
-      // Verificar proveedor
       const supplierCheck = await query(`
         SELECT id, name FROM "${schema}".suppliers WHERE id = $1 AND is_active = true
       `, [supplier_id]);
@@ -635,11 +602,8 @@ router.post('/', authMiddleware, async (req, res) => {
       }
       
       const supplierName = supplierCheck.rows[0].name;
-      
-      // Calcular total del grupo
       const groupTotal = items.reduce((sum, item) => sum + (Number(item.line_total) || 0), 0);
       
-      // Crear recepción
       const receiptResult = await query(`
         INSERT INTO "${schema}".purchase_receipts (
           receipt_number,
@@ -663,16 +627,11 @@ router.post('/', authMiddleware, async (req, res) => {
       const receipt = receiptResult.rows[0];
       createdReceipts.push(receipt);
       
-      console.log(`✅ Recepción creada para ${supplierName}: ${receiptNumber}`);
-      
-      // Procesar items
       for (const item of items) {
         const itemId = item.purchase_order_item_id;
         const quantity = Number(item.quantity) || 0;
         const unitCost = Number(item.unit_cost) || 0;
         const lineTotal = Number(item.line_total) || 0;
-        
-        console.log(`🔍 Procesando item: ${itemId}, orderType: ${orderType}`);
         
         let orderItemData = null;
         let productId = null;
@@ -682,7 +641,6 @@ router.post('/', authMiddleware, async (req, res) => {
         let itemCommId = null;
         let itemManId = null;
         
-        // Buscar el item en la tabla correspondiente según el tipo de orden
         if (orderType === 'COMMERCIAL') {
           const result = await query(`
             SELECT 
@@ -729,14 +687,13 @@ router.post('/', authMiddleware, async (req, res) => {
           }
           
           orderItemData = result.rows[0];
-          productId = orderItemData.product_id;          // ✅ Producto final
-          productName = orderItemData.product_name;      // ✅ Nombre del producto final
-          rawMaterialId = orderItemData.raw_material_id; // ✅ Materia prima
+          productId = orderItemData.product_id;
+          productName = orderItemData.product_name;
+          rawMaterialId = orderItemData.raw_material_id;
           rawMaterialName = orderItemData.raw_material_name;
           itemManId = itemId;
         }
         
-        // 1. Insertar en la tabla de recepción correspondiente
         let receiptItemId = null;
         
         if (orderType === 'COMMERCIAL') {
@@ -794,7 +751,6 @@ router.post('/', authMiddleware, async (req, res) => {
           receiptItemId = receiptItemResult.rows[0].id;
         }
         
-        // 2. Crear/actualizar en purchase_order_item_suppliers
         let supplierItemId = null;
         
         if (orderType === 'COMMERCIAL') {
@@ -898,7 +854,6 @@ router.post('/', authMiddleware, async (req, res) => {
           throw new Error(`No se pudo guardar el item en purchase_order_item_suppliers`);
         }
         
-        // 3. Actualizar la tabla de recepción con el supplier_id
         if (orderType === 'COMMERCIAL') {
           await query(`
             UPDATE "${schema}".purchase_receipt_items_comm
@@ -913,7 +868,6 @@ router.post('/', authMiddleware, async (req, res) => {
           `, [supplierItemId, receiptItemId]);
         }
         
-        // 4. Actualizar received_qty
         if (orderType === 'COMMERCIAL') {
           await query(`
             UPDATE "${schema}".purchase_order_items_comm 
@@ -930,14 +884,12 @@ router.post('/', authMiddleware, async (req, res) => {
           `, [quantity, itemManId]);
         }
         
-        // 5. Actualizar historial según el tipo de orden
         if (orderType === 'COMMERCIAL') {
           await updateProductSupplierHistory(schema, productId, supplier_id, unitCost);
         } else {
           await updateRawMaterialSupplierHistory(schema, rawMaterialId, supplier_id, unitCost);
         }
         
-        // 6. ✅ Crear movimiento de inventario según el tipo de orden (SUMA al stock)
         if (orderType === 'COMMERCIAL') {
           await createProductInventoryMovement(
             schema,
@@ -970,12 +922,9 @@ router.post('/', authMiddleware, async (req, res) => {
           receipt_id: receipt.id,
           order_type: orderType
         });
-        
-        console.log(`  ✅ ${quantity}x ${orderType === 'MANUFACTURED' ? rawMaterialName : productName} → ${supplierName} ($${unitCost}) - INVENTARIO ACTUALIZADO`);
       }
     }
     
-    // 7. Verificar si todos los items fueron recibidos
     let pendingCount = 0;
     
     if (orderType === 'COMMERCIAL') {
@@ -1005,15 +954,10 @@ router.post('/', authMiddleware, async (req, res) => {
           updated_at = CURRENT_TIMESTAMP
         WHERE id = $1
       `, [purchase_order_id]);
-      
-      console.log(`✅ Orden #${orderNumber} completada (todos los items recibidos)`);
-    } else {
-      console.log(`⏳ Orden #${orderNumber}: ${pendingCount} items pendientes por recibir`);
     }
     
     await query('COMMIT');
     
-    // Emitir evento socket
     try {
       const businessId = req.headers['x-business-id'] || req.user?.businessId;
       if (businessId && global.io) {
