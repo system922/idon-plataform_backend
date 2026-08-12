@@ -522,15 +522,22 @@ router.post('/', authMiddleware, async (req, res) => {
         const receiptItemId = receiptItemResult.rows[0].id;
         
         // 2. Guardar/actualizar en purchase_order_item_suppliers (CORREGIDO)
-        // La tabla tiene UNIQUE (purchase_order_item_id, supplier_id)
         let supplierItemId = null;
-        const purchaseOrderItemId = item.purchase_order_item_id;
         
-        // Verificar si ya existe un registro para este purchase_order_item_id y supplier_id
+        // Determinar qué ID usar (item_comm_id o item_man_id)
+        const idToUse = orderType === 'COMMERCIAL' ? itemCommId : itemManId;
+        const idColumn = orderType === 'COMMERCIAL' ? 'item_comm_id' : 'item_man_id';
+        
+        if (!idToUse) {
+          console.warn(`⚠️ No se pudo determinar el ID para ${idColumn}`);
+          continue;
+        }
+        
+        // Verificar si ya existe un registro para este item_id y supplier_id
         const checkSupplierResult = await query(`
           SELECT id FROM "${schema}".purchase_order_item_suppliers
-          WHERE purchase_order_item_id = $1 AND supplier_id = $2
-        `, [purchaseOrderItemId, supplier_id]);
+          WHERE ${idColumn} = $1 AND supplier_id = $2
+        `, [idToUse, supplier_id]);
         
         if (checkSupplierResult.rows.length > 0) {
           // Actualizar existente (sumar cantidades)
@@ -541,13 +548,13 @@ router.post('/', authMiddleware, async (req, res) => {
               received_qty = received_qty + $2,
               line_total = line_total + $3,
               updated_at = CURRENT_TIMESTAMP
-            WHERE purchase_order_item_id = $4 AND supplier_id = $5
+            WHERE ${idColumn} = $4 AND supplier_id = $5
             RETURNING id
           `, [
             quantity,
             quantity,
             lineTotal,
-            purchaseOrderItemId,
+            idToUse,
             supplier_id
           ]);
           supplierItemId = updateSupplierResult.rows[0]?.id;
@@ -555,21 +562,17 @@ router.post('/', authMiddleware, async (req, res) => {
           // Insertar nuevo registro
           const insertSupplierResult = await query(`
             INSERT INTO "${schema}".purchase_order_item_suppliers (
-              purchase_order_item_id,
-              item_comm_id,
-              item_man_id,
+              ${idColumn},
               supplier_id,
               quantity,
               unit_cost,
               line_total,
               received_qty,
               notes
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
             RETURNING id
           `, [
-            purchaseOrderItemId,
-            itemCommId,
-            itemManId,
+            idToUse,
             supplier_id,
             quantity,
             unitCost,
@@ -578,6 +581,10 @@ router.post('/', authMiddleware, async (req, res) => {
             `Recepción #${receiptNumber} - ${item.notes || ''}`
           ]);
           supplierItemId = insertSupplierResult.rows[0]?.id;
+        }
+        
+        if (!supplierItemId) {
+          throw new Error(`No se pudo guardar el item en purchase_order_item_suppliers`);
         }
         
         // 3. Actualizar purchase_receipt_items con el supplier_id
