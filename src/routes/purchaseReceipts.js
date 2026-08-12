@@ -256,6 +256,74 @@ router.get('/suppliers/:productId', authMiddleware, async (req, res) => {
 });
 
 // ============================================================
+// PATCH /api/purchase-receipts/:id/status
+// Actualizar estado de una recepción (para marcar como pagada)
+// ============================================================
+router.patch('/:id/status', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, payment_method, payment_reference, paid_at } = req.body;
+    const schema = await getSchemaName(req);
+    
+    const validStatuses = ['draft', 'completed', 'paid'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ 
+        error: 'Estado no válido. Debe ser: draft, completed o paid' 
+      });
+    }
+    
+    const checkResult = await query(`
+      SELECT id, receipt_number, status FROM "${schema}".purchase_receipts WHERE id = $1
+    `, [id]);
+    
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Recepción no encontrada' });
+    }
+    
+    const updateFields = ['status = $1'];
+    const values = [status];
+    let paramIndex = 2;
+    
+    if (payment_method) {
+      updateFields.push(`payment_method = $${paramIndex}`);
+      values.push(payment_method);
+      paramIndex++;
+    }
+    
+    if (payment_reference) {
+      updateFields.push(`payment_reference = $${paramIndex}`);
+      values.push(payment_reference);
+      paramIndex++;
+    }
+    
+    if (paid_at) {
+      updateFields.push(`paid_at = $${paramIndex}`);
+      values.push(paid_at);
+      paramIndex++;
+    }
+    
+    updateFields.push(`updated_at = CURRENT_TIMESTAMP`);
+    values.push(id);
+    
+    await query(`
+      UPDATE "${schema}".purchase_receipts
+      SET ${updateFields.join(', ')}
+      WHERE id = $${values.length}
+    `, values);
+    
+    const result = await query(`
+      SELECT * FROM "${schema}".purchase_receipts WHERE id = $1
+    `, [id]);
+    
+    res.json(result.rows[0]);
+    
+  } catch (err) {
+    console.error('Error en PATCH /purchase-receipts/:id/status:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
 // POST /api/purchase-receipts - CON MÚLTIPLES PROVEEDORES
 // ============================================================
 router.post('/', authMiddleware, async (req, res) => {
@@ -453,37 +521,64 @@ router.post('/', authMiddleware, async (req, res) => {
         
         const receiptItemId = receiptItemResult.rows[0].id;
         
-        // 2. Guardar/actualizar en purchase_order_item_suppliers
-        const supplierResult = await query(`
-          INSERT INTO "${schema}".purchase_order_item_suppliers (
-            item_comm_id,
-            item_man_id,
+        // 2. Guardar/actualizar en purchase_order_item_suppliers (CORREGIDO)
+        // La tabla tiene UNIQUE (purchase_order_item_id, supplier_id)
+        let supplierItemId = null;
+        const purchaseOrderItemId = item.purchase_order_item_id;
+        
+        // Verificar si ya existe un registro para este purchase_order_item_id y supplier_id
+        const checkSupplierResult = await query(`
+          SELECT id FROM "${schema}".purchase_order_item_suppliers
+          WHERE purchase_order_item_id = $1 AND supplier_id = $2
+        `, [purchaseOrderItemId, supplier_id]);
+        
+        if (checkSupplierResult.rows.length > 0) {
+          // Actualizar existente (sumar cantidades)
+          const updateSupplierResult = await query(`
+            UPDATE "${schema}".purchase_order_item_suppliers
+            SET 
+              quantity = quantity + $1,
+              received_qty = received_qty + $2,
+              line_total = line_total + $3,
+              updated_at = CURRENT_TIMESTAMP
+            WHERE purchase_order_item_id = $4 AND supplier_id = $5
+            RETURNING id
+          `, [
+            quantity,
+            quantity,
+            lineTotal,
+            purchaseOrderItemId,
+            supplier_id
+          ]);
+          supplierItemId = updateSupplierResult.rows[0]?.id;
+        } else {
+          // Insertar nuevo registro
+          const insertSupplierResult = await query(`
+            INSERT INTO "${schema}".purchase_order_item_suppliers (
+              purchase_order_item_id,
+              item_comm_id,
+              item_man_id,
+              supplier_id,
+              quantity,
+              unit_cost,
+              line_total,
+              received_qty,
+              notes
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id
+          `, [
+            purchaseOrderItemId,
+            itemCommId,
+            itemManId,
             supplier_id,
             quantity,
-            unit_cost,
-            line_total,
-            received_qty,
-            notes
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-          ON CONFLICT (item_comm_id, supplier_id) WHERE item_comm_id IS NOT NULL
-          DO UPDATE SET
-            quantity = purchase_order_item_suppliers.quantity + EXCLUDED.quantity,
-            received_qty = purchase_order_item_suppliers.received_qty + EXCLUDED.received_qty,
-            line_total = purchase_order_item_suppliers.line_total + EXCLUDED.line_total,
-            updated_at = CURRENT_TIMESTAMP
-          RETURNING id
-        `, [
-          itemCommId,
-          itemManId,
-          supplier_id,
-          quantity,
-          unitCost,
-          lineTotal,
-          quantity,
-          `Recepción #${receiptNumber} - ${item.notes || ''}`
-        ]);
-        
-        const supplierItemId = supplierResult.rows[0].id;
+            unitCost,
+            lineTotal,
+            quantity,
+            `Recepción #${receiptNumber} - ${item.notes || ''}`
+          ]);
+          supplierItemId = insertSupplierResult.rows[0]?.id;
+        }
         
         // 3. Actualizar purchase_receipt_items con el supplier_id
         await query(`
