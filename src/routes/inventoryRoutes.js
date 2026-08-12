@@ -95,28 +95,26 @@ async function createProductInventoryMovement(schema, productId, quantity, unitC
   `, [productId]);
   
   const currentStock = Number(productResult.rows[0]?.current_stock || 0);
-  const newStock = currentStock + quantity; // ✅ SUMA: 3 + 4 = 7
+  const newStock = currentStock + quantity;
 
-  // 2. Insertar movimiento (mismo formato que POST /api/inventory/movements)
+  // 2. Insertar movimiento (SIN reference_id - la base de datos usará su DEFAULT)
   await query(`
     INSERT INTO "${schema}".inventory_movements (
       product_id,
       type,
       quantity,
       unit_cost,
-      reference_id,
       notes,
       applied
-    ) VALUES ($1, 'entrada', $2, $3, $4, $5, true)
+    ) VALUES ($1, 'entrada', $2, $3, $4, true)
   `, [
     productId,
     quantity,
     unitCost,
-    receiptId,  // reference_id (UUID)
     `Recepción #${receiptNumber} - ${productName} (${quantity} unidades) - Stock: ${currentStock} → ${newStock}`
   ]);
 
-  // 3. Actualizar stock del producto (NUEVO stock = stock + cantidad)
+  // 3. Actualizar stock del producto
   await query(`
     UPDATE "${schema}".products
     SET 
