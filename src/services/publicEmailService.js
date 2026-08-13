@@ -1,5 +1,5 @@
-import { query } from '../../config/database.js';
-import logger from '../../utils/logger.js';
+import { query } from '../config/database.js';
+import logger from '../utils/logger.js';
 import { sendGenericEmail } from './crmEmailService.js';
 
 /**
