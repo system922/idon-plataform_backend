@@ -1,5 +1,4 @@
 import { Resend } from 'resend';
-import logger from '../utils/logger.js';
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 const NOTIFICATIONS_ADDRESS = process.env.NOTIFICATIONS_EMAIL || process.env.FROM_EMAIL || 'onboarding@resend.dev';
@@ -9,9 +8,6 @@ function buildFrom(businessName) {
   return `${name} <${NOTIFICATIONS_ADDRESS}>`;
 }
 
-/**
- * Función base para enviar correos (no usarla directamente, usar las específicas)
- */
 async function sendEmail({ to, subject, html, attachments = [], businessName }) {
   const payload = {
     from: buildFrom(businessName),
@@ -22,20 +18,13 @@ async function sendEmail({ to, subject, html, attachments = [], businessName }) 
   };
   const { data, error } = await resend.emails.send(payload);
   if (error) {
-    logger.error({ err: error }, 'Resend email error');
+    console.error('❌ Resend email error:', error);
     throw new Error(error.message || 'Error al enviar correo');
   }
-  logger.info({ emailId: data?.id, to }, 'Email sent');
+  console.log(`✅ Email sent to ${to}, id: ${data?.id}`);
   return data;
 }
 
-/**
- * Envía una campaña a múltiples destinatarios (ocultos entre sí, usando BCC)
- * @param {string[]} recipients - Array de correos
- * @param {string} subject
- * @param {string} html
- * @param {number} batchSize - máx por lote (Resend permite hasta 50 en BCC)
- */
 export async function sendCampaign({ recipients, subject, html, batchSize = 50, businessName }) {
   const results = { sent: 0, failed: 0, errors: [] };
   for (let i = 0; i < recipients.length; i += batchSize) {
@@ -43,33 +32,27 @@ export async function sendCampaign({ recipients, subject, html, batchSize = 50, 
     try {
       const { data, error } = await resend.emails.send({
         from: buildFrom(businessName),
-        to:   [NOTIFICATIONS_ADDRESS], // Resend requiere "to" — clientes van en BCC
+        to:   [NOTIFICATIONS_ADDRESS],
         bcc:  batch,
         subject,
         html,
       });
       if (error) throw error;
       results.sent += batch.length;
-      logger.info({ batchLen: batch.length, first: batch[0] }, 'Campaign batch sent');
+      console.log(`✅ Campaign batch sent: ${batch.length} emails`);
     } catch (err) {
       results.failed += batch.length;
       results.errors.push({ batch: batch.slice(0, 3), error: err.message });
-      logger.error({ err, batchLen: batch.length }, 'Campaign batch failed');
+      console.error('❌ Campaign batch failed:', err.message);
     }
   }
   return results;
 }
 
-/**
- * Correo genérico a un solo destinatario (para notificaciones, alertas, etc.)
- */
 export async function sendGenericEmail({ to, subject, html, businessName, attachments = [] }) {
   return sendEmail({ to, subject, html, businessName, attachments });
 }
 
-/**
- * Ejemplo: correo de bienvenida a nuevos clientes
- */
 export async function sendWelcomeEmail(to, customerName, businessName) {
   const subject = `¡Bienvenido a ${businessName}!`;
   const html = `
@@ -81,9 +64,6 @@ export async function sendWelcomeEmail(to, customerName, businessName) {
   return sendGenericEmail({ to, subject, html });
 }
 
-/**
- * Ejemplo: restablecimiento de contraseña
- */
 export async function sendPasswordResetEmail(to, resetLink, businessName) {
   const subject = `Restablece tu contraseña - ${businessName}`;
   const html = `

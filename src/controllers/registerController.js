@@ -8,17 +8,20 @@
  *     3. Hash password → INSERT public.users
  *     4. INSERT public.business_owners
  *     5. INSERT public.business_registration_requests
+ *     6. Send registration pending email
  *
  *  B) Existing owner (ownerExists = true):
  *     1. Validate required fields (no password needed)
  *     2. Lookup existing business_owner by documentType + documentNumber
  *     3. INSERT public.business_registration_requests linking to existing owner
+ *     4. Send registration pending email
  */
 
 import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import { getClient } from '../config/database.js';
 import logger from '../utils/logger.js';
+import { sendGenericEmail } from '../services/crmEmailService.js'; // 🔥 NUEVO
 
 /* ─── Helpers ─────────────────────────────────────────────── */
 
@@ -43,6 +46,62 @@ async function uniqueSlug(client, base) {
     slug = `${base}-${Math.random().toString(36).substring(2, 6)}`;
   }
   return slug;
+}
+
+/* ─── Función para enviar email de registro pendiente ────── */ // 🔥 NUEVO
+
+async function sendRegistrationPendingEmail(email, ownerName, businessName) {
+  try {
+    const client = await getClient();
+    
+    // Buscar la plantilla
+    const { rows } = await client.query(
+      `SELECT subject, body, is_active FROM public.email_templates WHERE type = $1`,
+      ['registration_pending']
+    );
+    client.release();
+
+    if (!rows.length || !rows[0].is_active) {
+      console.log('⚠️ Plantilla registration_pending no encontrada o inactiva');
+      return;
+    }
+
+    // Formatear fecha
+    const fmtDate = new Date().toLocaleDateString('es-EC', { 
+      day: '2-digit', 
+      month: 'long', 
+      year: 'numeric' 
+    });
+
+    // Variables para reemplazar
+    const vars = {
+      owner_name: ownerName || 'usuario',
+      business_name: businessName || '—',
+      email: email,
+      request_date: fmtDate,
+    };
+
+    // Función para reemplazar variables
+    const interpolate = (str) =>
+      str.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? `{{${k}}}`);
+
+    const subject = interpolate(rows[0].subject);
+    const html = interpolate(rows[0].body);
+
+    // Enviar email
+    await sendGenericEmail({ 
+      to: email, 
+      subject, 
+      html, 
+      businessName: 'IDON PLATAFORM' 
+    });
+
+    console.log(`✅ Email de registro pendiente enviado a ${email}`);
+
+  } catch (error) {
+    console.error('❌ Error enviando email de registro pendiente:', error.message);
+    // No bloqueamos el registro si falla el email
+  }
 }
 
 /* ─── Controller ──────────────────────────────────────────── */
@@ -170,6 +229,14 @@ export const submitRegistration = async (req, res) => {
 
       logger.info(`[REGISTRO-EXISTENTE] owner=${existingOwner.id} request=${requestId}`);
 
+      // 🔥 ENVIAR EMAIL DESPUÉS DEL REGISTRO EXITOSO
+      const ownerFullName = `${existingOwner.first_name} ${existingOwner.last_name}`;
+      sendRegistrationPendingEmail(
+        existingOwner.email,
+        ownerFullName,
+        businessName.trim()
+      );
+
       res.status(201).json({
         ok: true,
         message: 'Solicitud enviada. Un administrador la revisará pronto.',
@@ -282,6 +349,14 @@ export const submitRegistration = async (req, res) => {
     await client.query('COMMIT');
 
     logger.info(`[REGISTRO] user=${userId} owner=${ownerId} request=${requestId} email=${emailClean}`);
+
+    // 🔥 ENVIAR EMAIL DESPUÉS DEL REGISTRO EXITOSO
+    const ownerFullName = `${firstName.trim()} ${lastName.trim()}`;
+    sendRegistrationPendingEmail(
+      emailClean,
+      ownerFullName,
+      businessName.trim()
+    );
 
     res.status(201).json({
       ok: true,

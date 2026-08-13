@@ -1,94 +1,9 @@
 import express from 'express';
 import { query } from '../config/database.js';
-import { sendRegistrationPendingEmail } from '../services/publicEmailService.js';
+import { sendGenericEmail } from '../services/crmEmailService.js';  // 🔥 AGREGAR ESTA IMPORTACIÓN
+// import { sendRegistrationPendingEmail } from '../services/publicEmailService.js'; // No lo usas
+
 const router = express.Router();
-
-// POST /api/public/send-registration-pending
-router.post('/send-registration-pending', async (req, res, next) => {
-  try {
-    const { email, ownerName, businessName, requestDate } = req.body;
-    
-    // Validar campos requeridos
-    if (!email || !ownerName || !businessName) {
-      return res.status(400).json({ 
-        ok: false, 
-        message: 'Faltan campos requeridos: email, ownerName, businessName' 
-      });
-    }
-
-    // Buscar la plantilla en la base de datos
-    const { rows } = await query(
-      `SELECT subject, body, is_active FROM public.email_templates WHERE type = $1`,
-      ['registration_pending']
-    );
-
-    if (!rows.length) {
-      return res.status(404).json({ 
-        ok: false, 
-        message: 'Plantilla no encontrada: registration_pending' 
-      });
-    }
-    
-    if (!rows[0].is_active) {
-      return res.status(400).json({ 
-        ok: false, 
-        message: 'Plantilla inactiva' 
-      });
-    }
-
-    // Formatear fecha
-    const fmtDate = (d) => {
-      if (!d) return new Date().toLocaleDateString('es-EC', { 
-        day: '2-digit', 
-        month: 'long', 
-        year: 'numeric' 
-      });
-      return new Date(d).toLocaleDateString('es-EC', { 
-        day: '2-digit', 
-        month: 'long', 
-        year: 'numeric' 
-      });
-    };
-
-    // Variables para reemplazar
-    const vars = {
-      owner_name: ownerName || 'usuario',
-      business_name: businessName || '—',
-      email: email,
-      request_date: fmtDate(requestDate),
-    };
-
-    // Función para reemplazar variables
-    const interpolate = (str) =>
-      str.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? `{{${k}}}`);
-
-    const subject = interpolate(rows[0].subject);
-    const html = interpolate(rows[0].body);
-
-    // Enviar email usando el servicio existente
-    await sendGenericEmail({ 
-      to: email, 
-      subject, 
-      html, 
-      businessName: 'IDON PLATAFORM' 
-    });
-
-    logger.info({ 
-      to: email, 
-      templateKey: 'registration_pending', 
-      businessName 
-    }, 'Public registration pending email sent');
-
-    res.json({ 
-      ok: true, 
-      message: 'Correo de registro pendiente enviado correctamente' 
-    });
-
-  } catch (error) {
-    logger.error('Error enviando email de registro pendiente:', error);
-    next(error);
-  }
-});
 
 
 // ── GET /api/public/business/:slug ──────────────────────────────────────
