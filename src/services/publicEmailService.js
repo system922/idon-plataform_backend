@@ -1,5 +1,4 @@
 import { query } from '../config/database.js';
-import logger from '../utils/logger.js';
 import { sendGenericEmail } from './crmEmailService.js';
 
 /**
@@ -85,12 +84,7 @@ export async function sendPublicEmail({
       businessName: businessName || 'IDON PLATAFORM'
     });
 
-    logger.info({
-      to,
-      templateKey,
-      businessName,
-      emailId: result?.id
-    }, 'Public email sent successfully');
+    console.log(`✅ Email enviado a ${to} - Plantilla: ${templateKey}`);
 
     return {
       success: true,
@@ -99,13 +93,7 @@ export async function sendPublicEmail({
     };
 
   } catch (error) {
-    logger.error({
-      error: error.message,
-      to,
-      templateKey,
-      stack: error.stack
-    }, 'Error sending public email');
-    
+    console.error(`❌ Error enviando email a ${to}:`, error.message);
     throw error;
   }
 }
