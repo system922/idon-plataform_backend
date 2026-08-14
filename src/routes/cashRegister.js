@@ -1413,7 +1413,7 @@ router.get('/audit/openings', authMiddleware, businessContextMiddleware, async (
           o.user_name,
           u_public.first_name || ' ' || u_public.last_name,
           u_public.email,
-          u_schema.name,
+          u_schema.first_name || ' ' || u_schema.last_name,
           u_schema.email,
           o.user_id
         ) AS user_name,
@@ -1496,7 +1496,7 @@ router.get('/audit/closings', authMiddleware, businessContextMiddleware, async (
         COALESCE(
           u_public.first_name || ' ' || u_public.last_name,
           u_public.email,
-          u_schema.name,
+          u_schema.first_name || ' ' || u_schema.last_name,
           u_schema.email,
           c.closing_user_id
         ) AS closing_user_name,
@@ -1588,7 +1588,7 @@ router.get('/audit/summary', authMiddleware, businessContextMiddleware, async (r
           o.user_name,
           u_public.first_name || ' ' || u_public.last_name,
           u_public.email,
-          u_schema.name,
+          u_schema.first_name || ' ' || u_schema.last_name,
           u_schema.email,
           o.user_id
         ) AS user_name_display,
@@ -1611,7 +1611,7 @@ router.get('/audit/summary', authMiddleware, businessContextMiddleware, async (r
         COALESCE(
           u_public.first_name || ' ' || u_public.last_name,
           u_public.email,
-          u_schema.name,
+          u_schema.first_name || ' ' || u_schema.last_name,
           u_schema.email,
           c.closing_user_id
         ) AS closing_user_name_display,
@@ -1639,5 +1639,4 @@ router.get('/audit/summary', authMiddleware, businessContextMiddleware, async (r
     res.status(500).json({ error: err.message });
   }
 });
-
 export default router;
