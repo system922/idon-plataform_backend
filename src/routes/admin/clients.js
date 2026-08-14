@@ -217,7 +217,7 @@ router.post('/businesses/:businessId/subscribe', async (req, res, next) => {
         VALUES ($1, $2, 1, $3, $3)
         ON CONFLICT (subscription_id, module_id) DO UPDATE SET
           unit_price = $3,
-          total_price = $3,
+          total_price = $3
       `, [newSub[0].id, mod.id, unitPrice]);
     }
 
