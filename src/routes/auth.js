@@ -11,7 +11,11 @@ const router = express.Router();
 // ── POST /api/auth/refresh ────────────────────────────────────
 router.post('/refresh', async (req, res, next) => {
   try {
-    const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
+    // ✅ PRIORIDAD: body (sessionStorage) > cookie (respaldo)
+    const refreshToken = req.body?.refreshToken || req.cookies?.refreshToken;
+    
+    console.log('📦 Refresh token en body:', req.body?.refreshToken ? '✅ Sí' : '❌ No');
+    console.log('🍪 Refresh token en cookie:', req.cookies?.refreshToken ? '✅ Sí' : '❌ No');
     
     if (!refreshToken) {
       return res.status(401).json(errorResponse('Refresh token no encontrado', 401));
@@ -19,6 +23,8 @@ router.post('/refresh', async (req, res, next) => {
 
     const result = await authService.refreshAccessToken(refreshToken, req);
     
+    // ✅ Enviar nuevo refresh token en el body (para sessionStorage)
+    // ✅ También en cookie (para compatibilidad)
     res.cookie('refreshToken', result.refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
@@ -28,10 +34,11 @@ router.post('/refresh', async (req, res, next) => {
 
     res.json(successResponse({
       token: result.token,
-      refreshToken: result.refreshToken
+      refreshToken: result.refreshToken // ✅ Enviar en body
     }, 'Token renovado'));
 
   } catch (error) {
+    console.error('❌ Error en refresh:', error.message);
     if (error.message === 'Invalid refresh token' || 
         error.message === 'Refresh token no encontrado' ||
         error.message === 'Refresh token revocado' ||
@@ -46,89 +53,22 @@ router.post('/refresh', async (req, res, next) => {
 // ── POST /api/auth/logout ────────────────────────────────────
 router.post('/logout', async (req, res, next) => {
   try {
-    const refreshToken = req.cookies?.refreshToken;
+    // ✅ Obtener refresh token del body o cookie
+    const refreshToken = req.body?.refreshToken || req.cookies?.refreshToken;
     
     if (refreshToken) {
       await authService.invalidateRefreshToken(refreshToken);
     }
+    
     res.clearCookie('refreshToken', {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax' 
+      sameSite: 'lax'
     });
 
     res.json(successResponse(null, 'Logout exitoso'));
 
   } catch (error) {
-    next(error);
-  }
-});
-
-// ── POST /api/auth/register ─────────────────────────────────────
-router.post('/register', async (req, res, next) => {
-  try {
-    const { email, firstName, lastName, password, documentNumber } = req.body;
-
-    if (!email || !password) {
-      return res.status(400).json(errorResponse('Email and password are required', 400));
-    }
-
-    const user = await authService.register({
-      email,
-      firstName,
-      lastName,
-      password,
-      documentNumber,
-    });
-
-    res.json(successResponse(user, 'User registered successfully', 201));
-  } catch (error) {
-    next(error);
-  }
-});
-
-// ── POST /api/auth/register-business ──────────────────────────
-router.post('/register-business', async (req, res, next) => {
-  try {
-    const {
-      businessName,
-      businessType,
-      businessSlug,
-      ownerFirstName,
-      ownerLastName,
-      ownerEmail,
-      ownerPhone,
-      ownerDocumentNumber,
-      password,
-    } = req.body;
-
-    if (!businessName || !businessType || !businessSlug || !ownerEmail || !ownerDocumentNumber || !password) {
-      return res.status(400).json(
-        errorResponse('Missing required fields: businessName, businessType, businessSlug, ownerEmail, ownerDocumentNumber, password', 400)
-      );
-    }
-
-    const result = await authService.registerBusiness({
-      businessName,
-      businessType,
-      businessSlug,
-      ownerFirstName,
-      ownerLastName,
-      ownerEmail,
-      ownerPhone,
-      ownerDocumentNumber,
-      password,
-    });
-
-    res.status(201).json(successResponse(result, 'Business registration request created', 201));
-
-  } catch (error) {
-    if (error.message.includes('already')) {
-      return res.status(409).json(errorResponse(error.message, 409));
-    }
-    if (error.message === 'Invalid business type') {
-      return res.status(400).json(errorResponse(error.message, 400));
-    }
     next(error);
   }
 });
@@ -146,12 +86,12 @@ router.post('/login', async (req, res, next) => {
 
     const result = await authService.login(email, password);
     
-    // Guardar refresh token en cookie HttpOnly
+    // ✅ Guardar refresh token en cookie HttpOnly (respaldo)
     if (result.refreshToken) {
       res.cookie('refreshToken', result.refreshToken, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax', 
+        sameSite: 'lax',
         maxAge: 7 * 24 * 60 * 60 * 1000 // 7 días
       });
     }
@@ -160,7 +100,7 @@ router.post('/login', async (req, res, next) => {
     logger.info(`[LOGIN] requiresBusinessSelection: ${result.requiresBusinessSelection}`);
     logger.info(`[LOGIN] Negocios: ${result.businesses?.length || 0}`);
     
-    // ✅ Estructura correcta de respuesta con refreshToken en body
+    // ✅ Enviar refresh token en el body (para sessionStorage)
     const responseData = {
       token: result.token,
       user: result.user,
@@ -169,7 +109,7 @@ router.post('/login', async (req, res, next) => {
       hasSuspendedBusinesses: result.hasSuspendedBusinesses || false,
       warnings: result.warnings || null,
       type: result.type || null,
-      refreshToken: result.refreshToken // ✅ AGREGADO
+      refreshToken: result.refreshToken // ✅ Enviar en body
     };
 
     res.json(successResponse(responseData, 'Login successful'));
@@ -183,28 +123,6 @@ router.post('/login', async (req, res, next) => {
     if (error.statusCode === 403 || 
         error.message.includes('suspendido') || 
         error.message.includes('pagos pendientes')) {
-      return res.status(403).json(errorResponse(error.message, 403));
-    }
-    next(error);
-  }
-});
-
-// ── POST /api/auth/login-business ─────────────────────────────
-router.post('/login-business', async (req, res, next) => {
-  try {
-    const { email, password, businessSlug } = req.body;
-
-    if (!email || !password || !businessSlug) {
-      return res.status(400).json(errorResponse('Email, password, and businessSlug are required', 400));
-    }
-
-    const result = await authService.loginBusiness(email, password, businessSlug);
-    res.json(successResponse(result, 'Business login successful'));
-  } catch (error) {
-    if (error.message.includes('Invalid credentials')) {
-      return res.status(401).json(errorResponse(error.message, 401));
-    }
-    if (error.statusCode === 403 || error.message.includes('suspendido')) {
       return res.status(403).json(errorResponse(error.message, 403));
     }
     next(error);
@@ -232,21 +150,21 @@ router.post('/select-business', async (req, res, next) => {
 
     const result = await authService.selectBusiness(decoded.userId, businessId);
     
-    // Guardar refresh token en cookie HttpOnly
+    // ✅ Guardar refresh token en cookie HttpOnly (respaldo)
     if (result.refreshToken) {
       res.cookie('refreshToken', result.refreshToken, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax', 
+        sameSite: 'lax',
         maxAge: 7 * 24 * 60 * 60 * 1000 // 7 días
       });
     }
 
-    // ✅ Estructura correcta de respuesta con refreshToken en body
+    // ✅ Enviar refresh token en el body (para sessionStorage)
     const responseData = {
       token: result.token,
       user: result.user,
-      refreshToken: result.refreshToken // ✅ AGREGADO
+      refreshToken: result.refreshToken // ✅ Enviar en body
     };
 
     res.json(successResponse(responseData, 'Business selected'));
