@@ -1466,7 +1466,7 @@ router.get('/audit/openings', authMiddleware, businessContextMiddleware, async (
 });
 
 // ================================
-// GET /audit/closings - TODOS LOS CIERRES
+// GET /audit/closings - TODOS LOS CIERRES (igual que aperturas)
 // ================================
 router.get('/audit/closings', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
@@ -1476,13 +1476,12 @@ router.get('/audit/closings', authMiddleware, businessContextMiddleware, async (
     }
 
     const { startDate, endDate, userId } = req.query;
-    const TZ = 'America/Guayaquil';
     
     let queryText = `
       SELECT 
         id,
         closing_user_id,
-        closing_user_name,
+        closing_user_id AS closing_user_name,
         closing_date,
         closing_time,
         cash_counted,
