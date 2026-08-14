@@ -1326,7 +1326,7 @@ router.get('/opening', authMiddleware, businessContextMiddleware, async (req, re
 });
 
 // ===============================
-// POST /opening
+// POST /opening - CORREGIDO
 // ===============================
 router.post('/opening', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
@@ -1334,16 +1334,14 @@ router.post('/opening', authMiddleware, businessContextMiddleware, async (req, r
     if (!schema) return res.status(400).json({ error: 'Business context required' });
 
     const userId   = req.user?.id || req.user?.userId || 'unknown';
-    const userName = [req.user?.firstName, req.user?.lastName].filter(Boolean).join(' ')
-                     || req.user?.email || userId;
     const date     = req.body.date || ecuadorToday();
 
     const existing = await query(
-      `SELECT id FROM "${schema}".cash_register_openings WHERE date = $1 LIMIT 1`,
-      [date]
+      `SELECT id FROM "${schema}".cash_register_openings WHERE date = $1 AND user_id = $2 LIMIT 1`,
+      [date, userId]
     );
     if (existing.rows.length > 0) {
-      return res.status(409).json({ error: 'Ya existe una apertura de caja para hoy' });
+      return res.status(409).json({ error: 'Ya existe una apertura de caja para hoy para este usuario' });
     }
 
     const {
@@ -1362,20 +1360,21 @@ router.post('/opening', authMiddleware, businessContextMiddleware, async (req, r
 
     const totalInicial = totalEfectivo + Number(monto_banca);
 
+    // ✅ SOLO campos que existen en la tabla (SIN user_name)
     const result = await query(
       `INSERT INTO "${schema}".cash_register_openings (
-        user_id, user_name, date,
+        user_id, date,
         moneda_001, moneda_005, moneda_010, moneda_025, moneda_050, moneda_100,
         billete_1,  billete_5,  billete_10, billete_20, billete_50, billete_100,
         total_efectivo, monto_banca, total_inicial, observaciones
       ) VALUES (
-        $1,  $2,  $3,
-        $4,  $5,  $6,  $7,  $8,  $9,
-        $10, $11, $12, $13, $14, $15,
-        $16, $17, $18, $19
+        $1,  $2,
+        $3,  $4,  $5,  $6,  $7,  $8,
+        $9, $10, $11, $12, $13, $14,
+        $15, $16, $17, $18
       ) RETURNING *`,
       [
-        userId, userName, date,
+        userId, date,
         Number(moneda_001), Number(moneda_005), Number(moneda_010),
         Number(moneda_025), Number(moneda_050), Number(moneda_100),
         Number(billete_1),  Number(billete_5),  Number(billete_10),
@@ -1389,6 +1388,7 @@ router.post('/opening', authMiddleware, businessContextMiddleware, async (req, r
 
     res.status(201).json(result.rows[0]);
   } catch (err) {
+    console.error('❌ Error en POST /opening:', err);
     res.status(500).json({ error: err.message });
   }
 });
