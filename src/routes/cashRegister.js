@@ -1394,7 +1394,7 @@ router.post('/opening', authMiddleware, businessContextMiddleware, async (req, r
 });
 
 // ================================
-// GET /audit/openings - TODAS LAS APERTURAS
+// GET /audit/openings - TODAS LAS APERTURAS CON DATOS DEL USUARIO
 // ================================
 router.get('/audit/openings', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
@@ -1404,32 +1404,44 @@ router.get('/audit/openings', authMiddleware, businessContextMiddleware, async (
     }
 
     const { startDate, endDate, userId } = req.query;
-    const TZ = 'America/Guayaquil';
     
     let queryText = `
       SELECT 
-        id,
-        user_id,
-        user_name,
-        date,
-        total_efectivo,
-        monto_banca,
-        total_inicial,
-        observaciones,
-        created_at,
-        moneda_001,
-        moneda_005,
-        moneda_010,
-        moneda_025,
-        moneda_050,
-        moneda_100,
-        billete_1,
-        billete_5,
-        billete_10,
-        billete_20,
-        billete_50,
-        billete_100
-      FROM "${schema}".cash_register_openings
+        o.id,
+        o.user_id,
+        COALESCE(
+          o.user_name,
+          u_public.first_name || ' ' || u_public.last_name,
+          u_public.email,
+          u_schema.name,
+          u_schema.email,
+          o.user_id
+        ) AS user_name,
+        COALESCE(
+          u_public.email,
+          u_schema.email
+        ) AS user_email,
+        o.date,
+        o.total_efectivo,
+        o.monto_banca,
+        o.total_inicial,
+        o.observaciones,
+        o.created_at,
+        o.moneda_001,
+        o.moneda_005,
+        o.moneda_010,
+        o.moneda_025,
+        o.moneda_050,
+        o.moneda_100,
+        o.billete_1,
+        o.billete_5,
+        o.billete_10,
+        o.billete_20,
+        o.billete_50,
+        o.billete_100
+      FROM "${schema}".cash_register_openings o
+      LEFT JOIN public.users u_public ON u_public.id::text = o.user_id
+      LEFT JOIN "${schema}".users u_schema ON u_schema.id::text = o.user_id
       WHERE 1=1
     `;
     
@@ -1437,24 +1449,24 @@ router.get('/audit/openings', authMiddleware, businessContextMiddleware, async (
     let paramIndex = 1;
     
     if (startDate) {
-      queryText += ` AND date >= $${paramIndex}`;
+      queryText += ` AND o.date >= $${paramIndex}`;
       params.push(startDate);
       paramIndex++;
     }
     
     if (endDate) {
-      queryText += ` AND date <= $${paramIndex}`;
+      queryText += ` AND o.date <= $${paramIndex}`;
       params.push(endDate);
       paramIndex++;
     }
     
     if (userId) {
-      queryText += ` AND user_id = $${paramIndex}`;
+      queryText += ` AND o.user_id = $${paramIndex}`;
       params.push(userId);
       paramIndex++;
     }
     
-    queryText += ` ORDER BY created_at DESC`;
+    queryText += ` ORDER BY o.created_at DESC`;
     
     const result = await query(queryText, params);
     res.json(result.rows);
@@ -1466,7 +1478,7 @@ router.get('/audit/openings', authMiddleware, businessContextMiddleware, async (
 });
 
 // ================================
-// GET /audit/closings - TODOS LOS CIERRES (igual que aperturas)
+// GET /audit/closings - TODOS LOS CIERRES CON DATOS DEL USUARIO
 // ================================
 router.get('/audit/closings', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
@@ -1479,34 +1491,46 @@ router.get('/audit/closings', authMiddleware, businessContextMiddleware, async (
     
     let queryText = `
       SELECT 
-        id,
-        closing_user_id,
-        closing_user_id AS closing_user_name,
-        closing_date,
-        closing_time,
-        cash_counted,
-        cash_system,
-        diff_cash,
-        transfer_counted,
-        transfer_system,
-        diff_transfer,
-        card_counted,
-        card_system,
-        diff_card,
-        orders_counted,
-        orders_system,
-        diff_orders,
-        extras,
-        expenses_total,
-        total_counted,
-        total_system,
-        diff_total,
-        net_system,
-        net_counted,
-        diff_net,
-        remarks,
-        created_at
-      FROM "${schema}".cash_register_closing
+        c.id,
+        c.closing_user_id,
+        COALESCE(
+          u_public.first_name || ' ' || u_public.last_name,
+          u_public.email,
+          u_schema.name,
+          u_schema.email,
+          c.closing_user_id
+        ) AS closing_user_name,
+        COALESCE(
+          u_public.email,
+          u_schema.email
+        ) AS closing_user_email,
+        c.closing_date,
+        c.closing_time,
+        c.cash_counted,
+        c.cash_system,
+        c.diff_cash,
+        c.transfer_counted,
+        c.transfer_system,
+        c.diff_transfer,
+        c.card_counted,
+        c.card_system,
+        c.diff_card,
+        c.orders_counted,
+        c.orders_system,
+        c.diff_orders,
+        c.extras,
+        c.expenses_total,
+        c.total_counted,
+        c.total_system,
+        c.diff_total,
+        c.net_system,
+        c.net_counted,
+        c.diff_net,
+        c.remarks,
+        c.created_at
+      FROM "${schema}".cash_register_closing c
+      LEFT JOIN public.users u_public ON u_public.id::text = c.closing_user_id
+      LEFT JOIN "${schema}".users u_schema ON u_schema.id::text = c.closing_user_id
       WHERE 1=1
     `;
     
@@ -1514,24 +1538,24 @@ router.get('/audit/closings', authMiddleware, businessContextMiddleware, async (
     let paramIndex = 1;
     
     if (startDate) {
-      queryText += ` AND closing_date >= $${paramIndex}`;
+      queryText += ` AND c.closing_date >= $${paramIndex}`;
       params.push(startDate);
       paramIndex++;
     }
     
     if (endDate) {
-      queryText += ` AND closing_date <= $${paramIndex}`;
+      queryText += ` AND c.closing_date <= $${paramIndex}`;
       params.push(endDate);
       paramIndex++;
     }
     
     if (userId) {
-      queryText += ` AND closing_user_id = $${paramIndex}`;
+      queryText += ` AND c.closing_user_id = $${paramIndex}`;
       params.push(userId);
       paramIndex++;
     }
     
-    queryText += ` ORDER BY created_at DESC`;
+    queryText += ` ORDER BY c.created_at DESC`;
     
     const result = await query(queryText, params);
     res.json(result.rows);
@@ -1555,15 +1579,50 @@ router.get('/audit/summary', authMiddleware, businessContextMiddleware, async (r
     const { date } = req.query;
     const targetDate = date || ecuadorToday();
     
-    // Obtener apertura del día
+    // Obtener apertura del día con datos del usuario
     const openingResult = await query(
-      `SELECT * FROM "${schema}".cash_register_openings WHERE date = $1 ORDER BY created_at DESC LIMIT 1`,
+      `
+      SELECT 
+        o.*,
+        COALESCE(
+          o.user_name,
+          u_public.first_name || ' ' || u_public.last_name,
+          u_public.email,
+          u_schema.name,
+          u_schema.email,
+          o.user_id
+        ) AS user_name_display,
+        COALESCE(u_public.email, u_schema.email) AS user_email_display
+      FROM "${schema}".cash_register_openings o
+      LEFT JOIN public.users u_public ON u_public.id::text = o.user_id
+      LEFT JOIN "${schema}".users u_schema ON u_schema.id::text = o.user_id
+      WHERE o.date = $1 
+      ORDER BY o.created_at DESC 
+      LIMIT 1
+      `,
       [targetDate]
     );
     
-    // Obtener cierre del día
+    // Obtener cierre del día con datos del usuario
     const closingResult = await query(
-      `SELECT * FROM "${schema}".cash_register_closing WHERE closing_date = $1 ORDER BY created_at DESC LIMIT 1`,
+      `
+      SELECT 
+        c.*,
+        COALESCE(
+          u_public.first_name || ' ' || u_public.last_name,
+          u_public.email,
+          u_schema.name,
+          u_schema.email,
+          c.closing_user_id
+        ) AS closing_user_name_display,
+        COALESCE(u_public.email, u_schema.email) AS closing_user_email_display
+      FROM "${schema}".cash_register_closing c
+      LEFT JOIN public.users u_public ON u_public.id::text = c.closing_user_id
+      LEFT JOIN "${schema}".users u_schema ON u_schema.id::text = c.closing_user_id
+      WHERE c.closing_date = $1 
+      ORDER BY c.created_at DESC 
+      LIMIT 1
+      `,
       [targetDate]
     );
     
