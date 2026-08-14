@@ -11,8 +11,8 @@ const router = express.Router();
 // ── POST /api/auth/refresh ────────────────────────────────────
 router.post('/refresh', async (req, res, next) => {
   try {
-    // Obtener refresh token de la cookie HttpOnly
-    const refreshToken = req.cookies?.refreshToken;
+    // ✅ MODIFICADO: Obtener refresh token de la cookie HttpOnly O del body
+    const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
     
     if (!refreshToken) {
       return res.status(401).json(errorResponse('Refresh token no encontrado', 401));
@@ -28,8 +28,10 @@ router.post('/refresh', async (req, res, next) => {
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 días
     });
 
+    // ✅ MODIFICADO: Enviar refresh token en el body también
     res.json(successResponse({
-      token: result.token
+      token: result.token,
+      refreshToken: result.refreshToken
     }, 'Token renovado'));
 
   } catch (error) {
@@ -159,13 +161,11 @@ router.post('/login', async (req, res, next) => {
       });
     }
 
-    // ✅ Log de la respuesta para depuración
     logger.info(`[LOGIN] Login exitoso para: ${email}`);
     logger.info(`[LOGIN] requiresBusinessSelection: ${result.requiresBusinessSelection}`);
     logger.info(`[LOGIN] Negocios: ${result.businesses?.length || 0}`);
     
-    // ✅ Estructura correcta de respuesta
-    // Los datos van dentro de 'data' según successResponse
+    // ✅ Estructura correcta de respuesta con refreshToken en body
     const responseData = {
       token: result.token,
       user: result.user,
@@ -173,10 +173,10 @@ router.post('/login', async (req, res, next) => {
       requiresBusinessSelection: result.requiresBusinessSelection || false,
       hasSuspendedBusinesses: result.hasSuspendedBusinesses || false,
       warnings: result.warnings || null,
-      type: result.type || null
+      type: result.type || null,
+      refreshToken: result.refreshToken // ✅ AGREGADO
     };
 
-    // ✅ Usar successResponse que ya estructura { success: true, data: ... }
     res.json(successResponse(responseData, 'Login successful'));
 
   } catch (error) {
@@ -247,10 +247,11 @@ router.post('/select-business', async (req, res, next) => {
       });
     }
 
-    // ✅ Estructura correcta de respuesta
+    // ✅ Estructura correcta de respuesta con refreshToken en body
     const responseData = {
       token: result.token,
-      user: result.user
+      user: result.user,
+      refreshToken: result.refreshToken // ✅ AGREGADO
     };
 
     res.json(successResponse(responseData, 'Business selected'));
@@ -311,6 +312,42 @@ router.get('/me', async (req, res, next) => {
     res.json({ ok: true, data: profile });
   } catch (e) { 
     next(e); 
+  }
+});
+
+// ── GET /api/auth/businesses ──────────────────────────────────────────
+router.get('/businesses', async (req, res, next) => {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!token) return res.status(401).json({ ok: false, message: 'Token requerido' });
+
+  let decoded;
+  try {
+    decoded = authService.verifyToken(token);
+  } catch { 
+    return res.status(401).json({ ok: false, message: 'Token inválido' }); 
+  }
+
+  const userId = decoded.userId || decoded.id;
+
+  try {
+    const { rows } = await query(
+      `SELECT 
+        b.id, 
+        b.name, 
+        b.slug, 
+        b.schema_name,
+        bu.role
+       FROM public.businesses b
+       JOIN public.business_users bu ON bu.business_id = b.id
+       WHERE bu.user_id = $1
+       ORDER BY b.name`,
+      [userId]
+    );
+    
+    res.json({ ok: true, data: rows });
+  } catch (e) {
+    next(e);
   }
 });
 
