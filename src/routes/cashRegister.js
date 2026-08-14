@@ -1360,7 +1360,7 @@ router.post('/opening', authMiddleware, businessContextMiddleware, async (req, r
 
     const totalInicial = totalEfectivo + Number(monto_banca);
 
-    // ✅ SOLO campos que existen en la tabla (SIN user_name)
+    // SOLO campos que existen en la tabla (SIN user_name)
     const result = await query(
       `INSERT INTO "${schema}".cash_register_openings (
         user_id, date,

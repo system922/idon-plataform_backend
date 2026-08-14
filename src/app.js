@@ -111,7 +111,6 @@ const app = express();
 // ─── Core middleware ──────────────────────────────────────────────────────────
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(cookieParser());
 app.use(cors({
   origin: (origin, cb) => {
     // allow requests with no origin (mobile apps, curl, Render health checks)
@@ -123,6 +122,7 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-business-id', 'x-db-name'],
 }));
+app.use(cookieParser());
 app.options('*', cors());
 app.use((req, res, next) => { logger.info(`${req.method} ${req.path}`); next(); });
 

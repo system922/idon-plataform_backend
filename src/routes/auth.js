@@ -11,7 +11,6 @@ const router = express.Router();
 // ── POST /api/auth/refresh ────────────────────────────────────
 router.post('/refresh', async (req, res, next) => {
   try {
-    // ✅ MODIFICADO: Obtener refresh token de la cookie HttpOnly O del body
     const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
     
     if (!refreshToken) {
@@ -20,15 +19,13 @@ router.post('/refresh', async (req, res, next) => {
 
     const result = await authService.refreshAccessToken(refreshToken, req);
     
-    // Nuevo refresh token en cookie HttpOnly
     res.cookie('refreshToken', result.refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      sameSite: 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 días
     });
 
-    // ✅ MODIFICADO: Enviar refresh token en el body también
     res.json(successResponse({
       token: result.token,
       refreshToken: result.refreshToken
@@ -54,12 +51,10 @@ router.post('/logout', async (req, res, next) => {
     if (refreshToken) {
       await authService.invalidateRefreshToken(refreshToken);
     }
-
-    // Limpiar cookie
     res.clearCookie('refreshToken', {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict'
+      sameSite: 'lax' 
     });
 
     res.json(successResponse(null, 'Logout exitoso'));
@@ -156,7 +151,7 @@ router.post('/login', async (req, res, next) => {
       res.cookie('refreshToken', result.refreshToken, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
+        sameSite: 'lax', 
         maxAge: 7 * 24 * 60 * 60 * 1000 // 7 días
       });
     }
@@ -242,7 +237,7 @@ router.post('/select-business', async (req, res, next) => {
       res.cookie('refreshToken', result.refreshToken, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
+        sameSite: 'lax', 
         maxAge: 7 * 24 * 60 * 60 * 1000 // 7 días
       });
     }
