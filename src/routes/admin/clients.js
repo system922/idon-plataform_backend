@@ -218,11 +218,10 @@ router.post('/businesses/:businessId/subscribe', async (req, res, next) => {
         ON CONFLICT (subscription_id, module_id) DO UPDATE SET
           unit_price = $3,
           total_price = $3,
-          updated_at = NOW()
       `, [newSub[0].id, mod.id, unitPrice]);
     }
 
-    // 🔥 ENVIAR EMAIL DE SUSCRIPCIÓN PENDIENTE
+    // ENVIAR EMAIL DE SUSCRIPCIÓN PENDIENTE
     try {
       await sendSubscriptionPendingEmail(newSub[0].id);
     } catch (emailError) {
