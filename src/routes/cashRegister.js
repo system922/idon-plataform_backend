@@ -1393,4 +1393,193 @@ router.post('/opening', authMiddleware, businessContextMiddleware, async (req, r
   }
 });
 
+// ================================
+// GET /audit/openings - TODAS LAS APERTURAS
+// ================================
+router.get('/audit/openings', authMiddleware, businessContextMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
+    const { startDate, endDate, userId } = req.query;
+    const TZ = 'America/Guayaquil';
+    
+    let queryText = `
+      SELECT 
+        id,
+        user_id,
+        user_name,
+        date,
+        total_efectivo,
+        monto_banca,
+        total_inicial,
+        observaciones,
+        created_at,
+        moneda_001,
+        moneda_005,
+        moneda_010,
+        moneda_025,
+        moneda_050,
+        moneda_100,
+        billete_1,
+        billete_5,
+        billete_10,
+        billete_20,
+        billete_50,
+        billete_100
+      FROM "${schema}".cash_register_openings
+      WHERE 1=1
+    `;
+    
+    const params = [];
+    let paramIndex = 1;
+    
+    if (startDate) {
+      queryText += ` AND date >= $${paramIndex}`;
+      params.push(startDate);
+      paramIndex++;
+    }
+    
+    if (endDate) {
+      queryText += ` AND date <= $${paramIndex}`;
+      params.push(endDate);
+      paramIndex++;
+    }
+    
+    if (userId) {
+      queryText += ` AND user_id = $${paramIndex}`;
+      params.push(userId);
+      paramIndex++;
+    }
+    
+    queryText += ` ORDER BY created_at DESC`;
+    
+    const result = await query(queryText, params);
+    res.json(result.rows);
+    
+  } catch (err) {
+    console.error('❌ Error en audit/openings:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================================
+// GET /audit/closings - TODOS LOS CIERRES
+// ================================
+router.get('/audit/closings', authMiddleware, businessContextMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
+    const { startDate, endDate, userId } = req.query;
+    const TZ = 'America/Guayaquil';
+    
+    let queryText = `
+      SELECT 
+        id,
+        closing_user_id,
+        closing_user_name,
+        closing_date,
+        closing_time,
+        cash_counted,
+        cash_system,
+        diff_cash,
+        transfer_counted,
+        transfer_system,
+        diff_transfer,
+        card_counted,
+        card_system,
+        diff_card,
+        orders_counted,
+        orders_system,
+        diff_orders,
+        extras,
+        expenses_total,
+        total_counted,
+        total_system,
+        diff_total,
+        net_system,
+        net_counted,
+        diff_net,
+        remarks,
+        created_at
+      FROM "${schema}".cash_register_closing
+      WHERE 1=1
+    `;
+    
+    const params = [];
+    let paramIndex = 1;
+    
+    if (startDate) {
+      queryText += ` AND closing_date >= $${paramIndex}`;
+      params.push(startDate);
+      paramIndex++;
+    }
+    
+    if (endDate) {
+      queryText += ` AND closing_date <= $${paramIndex}`;
+      params.push(endDate);
+      paramIndex++;
+    }
+    
+    if (userId) {
+      queryText += ` AND closing_user_id = $${paramIndex}`;
+      params.push(userId);
+      paramIndex++;
+    }
+    
+    queryText += ` ORDER BY created_at DESC`;
+    
+    const result = await query(queryText, params);
+    res.json(result.rows);
+    
+  } catch (err) {
+    console.error('❌ Error en audit/closings:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================================
+// GET /audit/summary - RESUMEN DE APERTURAS Y CIERRES
+// ================================
+router.get('/audit/summary', authMiddleware, businessContextMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) {
+      return res.status(400).json({ error: 'Business context required' });
+    }
+
+    const { date } = req.query;
+    const targetDate = date || ecuadorToday();
+    
+    // Obtener apertura del día
+    const openingResult = await query(
+      `SELECT * FROM "${schema}".cash_register_openings WHERE date = $1 ORDER BY created_at DESC LIMIT 1`,
+      [targetDate]
+    );
+    
+    // Obtener cierre del día
+    const closingResult = await query(
+      `SELECT * FROM "${schema}".cash_register_closing WHERE closing_date = $1 ORDER BY created_at DESC LIMIT 1`,
+      [targetDate]
+    );
+    
+    res.json({
+      date: targetDate,
+      opening: openingResult.rows[0] || null,
+      closing: closingResult.rows[0] || null,
+      has_opening: openingResult.rows.length > 0,
+      has_closing: closingResult.rows.length > 0
+    });
+    
+  } catch (err) {
+    console.error('❌ Error en audit/summary:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;
