@@ -1410,7 +1410,6 @@ router.get('/audit/openings', authMiddleware, businessContextMiddleware, async (
         o.id,
         o.user_id,
         COALESCE(
-          o.user_name,
           u_public.first_name || ' ' || u_public.last_name,
           u_public.email,
           u_schema.first_name || ' ' || u_schema.last_name,
@@ -1567,7 +1566,7 @@ router.get('/audit/closings', authMiddleware, businessContextMiddleware, async (
 });
 
 // ================================
-// GET /audit/summary - RESUMEN DE APERTURAS Y CIERRES
+// GET /audit/summary - RESUMEN DE APERTURAS Y CIERRES POR USUARIO
 // ================================
 router.get('/audit/summary', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
@@ -1576,62 +1575,187 @@ router.get('/audit/summary', authMiddleware, businessContextMiddleware, async (r
       return res.status(400).json({ error: 'Business context required' });
     }
 
-    const { date } = req.query;
+    const { date, userId } = req.query;
     const targetDate = date || ecuadorToday();
+    const targetUserId = userId || req.user?.id || req.user?.userId;
     
-    // Obtener apertura del día con datos del usuario
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'User ID required' });
+    }
+    
+    // Obtener apertura del día para el usuario específico
     const openingResult = await query(
       `
       SELECT 
-        o.*,
+        o.id,
+        o.user_id,
         COALESCE(
-          o.user_name,
           u_public.first_name || ' ' || u_public.last_name,
           u_public.email,
           u_schema.first_name || ' ' || u_schema.last_name,
           u_schema.email,
           o.user_id
-        ) AS user_name_display,
-        COALESCE(u_public.email, u_schema.email) AS user_email_display
+        ) AS user_name,
+        COALESCE(
+          u_public.email,
+          u_schema.email
+        ) AS user_email,
+        o.date,
+        o.total_efectivo,
+        o.monto_banca,
+        o.total_inicial,
+        o.observaciones,
+        o.created_at,
+        o.moneda_001,
+        o.moneda_005,
+        o.moneda_010,
+        o.moneda_025,
+        o.moneda_050,
+        o.moneda_100,
+        o.billete_1,
+        o.billete_5,
+        o.billete_10,
+        o.billete_20,
+        o.billete_50,
+        o.billete_100
       FROM "${schema}".cash_register_openings o
       LEFT JOIN public.users u_public ON u_public.id::text = o.user_id
       LEFT JOIN "${schema}".users u_schema ON u_schema.id::text = o.user_id
       WHERE o.date = $1 
+        AND o.user_id = $2
       ORDER BY o.created_at DESC 
       LIMIT 1
       `,
-      [targetDate]
+      [targetDate, targetUserId]
     );
     
-    // Obtener cierre del día con datos del usuario
+    // Obtener cierre del día para el usuario específico
     const closingResult = await query(
       `
       SELECT 
-        c.*,
+        c.id,
+        c.closing_user_id,
         COALESCE(
           u_public.first_name || ' ' || u_public.last_name,
           u_public.email,
           u_schema.first_name || ' ' || u_schema.last_name,
           u_schema.email,
           c.closing_user_id
-        ) AS closing_user_name_display,
-        COALESCE(u_public.email, u_schema.email) AS closing_user_email_display
+        ) AS closing_user_name,
+        COALESCE(
+          u_public.email,
+          u_schema.email
+        ) AS closing_user_email,
+        c.closing_date,
+        c.closing_time,
+        c.cash_counted,
+        c.cash_system,
+        c.diff_cash,
+        c.transfer_counted,
+        c.transfer_system,
+        c.diff_transfer,
+        c.card_counted,
+        c.card_system,
+        c.diff_card,
+        c.orders_counted,
+        c.orders_system,
+        c.diff_orders,
+        c.extras,
+        c.expenses_total,
+        c.total_counted,
+        c.total_system,
+        c.diff_total,
+        c.net_system,
+        c.net_counted,
+        c.diff_net,
+        c.remarks,
+        c.created_at
       FROM "${schema}".cash_register_closing c
       LEFT JOIN public.users u_public ON u_public.id::text = c.closing_user_id
       LEFT JOIN "${schema}".users u_schema ON u_schema.id::text = c.closing_user_id
       WHERE c.closing_date = $1 
+        AND c.closing_user_id = $2
       ORDER BY c.created_at DESC 
       LIMIT 1
+      `,
+      [targetDate, targetUserId]
+    );
+    
+    // Obtener todas las aperturas del día (para mostrar quiénes abrieron)
+    const allOpeningsResult = await query(
+      `
+      SELECT 
+        o.id,
+        o.user_id,
+        COALESCE(
+          u_public.first_name || ' ' || u_public.last_name,
+          u_public.email,
+          u_schema.first_name || ' ' || u_schema.last_name,
+          u_schema.email,
+          o.user_id
+        ) AS user_name,
+        COALESCE(
+          u_public.email,
+          u_schema.email
+        ) AS user_email,
+        o.date,
+        o.total_inicial,
+        o.created_at
+      FROM "${schema}".cash_register_openings o
+      LEFT JOIN public.users u_public ON u_public.id::text = o.user_id
+      LEFT JOIN "${schema}".users u_schema ON u_schema.id::text = o.user_id
+      WHERE o.date = $1
+      ORDER BY o.created_at DESC
+      `,
+      [targetDate]
+    );
+    
+    // Obtener todos los cierres del día (para mostrar quiénes cerraron)
+    const allClosingsResult = await query(
+      `
+      SELECT 
+        c.id,
+        c.closing_user_id,
+        COALESCE(
+          u_public.first_name || ' ' || u_public.last_name,
+          u_public.email,
+          u_schema.first_name || ' ' || u_schema.last_name,
+          u_schema.email,
+          c.closing_user_id
+        ) AS closing_user_name,
+        COALESCE(
+          u_public.email,
+          u_schema.email
+        ) AS closing_user_email,
+        c.closing_date,
+        c.total_counted,
+        c.total_system,
+        c.diff_total,
+        c.created_at
+      FROM "${schema}".cash_register_closing c
+      LEFT JOIN public.users u_public ON u_public.id::text = c.closing_user_id
+      LEFT JOIN "${schema}".users u_schema ON u_schema.id::text = c.closing_user_id
+      WHERE c.closing_date = $1
+      ORDER BY c.created_at DESC
       `,
       [targetDate]
     );
     
     res.json({
       date: targetDate,
-      opening: openingResult.rows[0] || null,
-      closing: closingResult.rows[0] || null,
-      has_opening: openingResult.rows.length > 0,
-      has_closing: closingResult.rows.length > 0
+      user: {
+        id: targetUserId,
+        opening: openingResult.rows[0] || null,
+        closing: closingResult.rows[0] || null,
+        has_opening: openingResult.rows.length > 0,
+        has_closing: closingResult.rows.length > 0
+      },
+      summary: {
+        total_openings: allOpeningsResult.rows.length,
+        total_closings: allClosingsResult.rows.length,
+        openings: allOpeningsResult.rows,
+        closings: allClosingsResult.rows
+      }
     });
     
   } catch (err) {
@@ -1639,4 +1763,5 @@ router.get('/audit/summary', authMiddleware, businessContextMiddleware, async (r
     res.status(500).json({ error: err.message });
   }
 });
+
 export default router;
