@@ -60,7 +60,7 @@ router.patch('/subscriptions/:subId/discount', async (req, res, next) => {
   }
 });
 
-// POST /api/admin/subscriptions/:subId/mark-paid
+// POST /api/admin/payments/:subId/mark-paid
 router.post('/subscriptions/:subId/mark-paid', async (req, res, next) => {
   try {
     const { subId } = req.params;
