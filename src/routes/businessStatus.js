@@ -11,7 +11,7 @@ import env from '../config/env.js';
 const router = express.Router();
 
 // =====================================================
-// Helper para decodificar token y obtener datos del usuario
+// Helper para decodificar token
 // =====================================================
 const getUserFromToken = (req) => {
   try {
@@ -85,7 +85,7 @@ router.get('/my-status', async (req, res, next) => {
     console.log(`📌 Usuario ${isPublicUser ? 'ESTÁ' : 'NO ESTÁ'} en public.users`);
 
     // ============================================================
-    // PASO 2: SI ESTÁ EN public.users → BUSCAR SOLICITUD (OWNER)
+    // CASO 1: USUARIO EN public.users → ES OWNER
     // ============================================================
     if (isPublicUser) {
       const publicUser = publicUserRows[0];
@@ -113,6 +113,23 @@ router.get('/my-status', async (req, res, next) => {
 
       console.log('👤 Usuario es OWNER (public.users) - Activo:', publicUser.is_active);
 
+      // ✅ Verificar si es business_owner
+      const { rows: ownerRows } = await query(`
+        SELECT 
+          bo.id,
+          bo.user_id,
+          bo.email,
+          bo.first_name,
+          bo.last_name,
+          bo.document_number
+        FROM public.business_owners bo
+        WHERE bo.user_id = $1 OR bo.email = $2
+        LIMIT 1
+      `, [userId, email]);
+
+      const isBusinessOwner = ownerRows.length > 0;
+      console.log(`📌 Usuario ${isBusinessOwner ? 'ES' : 'NO ES'} business_owner`);
+
       // Buscar su solicitud de registro
       const { rows: requestRows } = await query(`
         SELECT 
@@ -133,10 +150,10 @@ router.get('/my-status', async (req, res, next) => {
           bt.name AS business_type_name
         FROM public.business_registration_requests brs
         LEFT JOIN public.business_types bt ON brs.business_type_id = bt.id
-        WHERE brs.user_id = $1
+        WHERE brs.user_id = $1 OR brs.owner_email = $2
         ORDER BY brs.created_at DESC
         LIMIT 1
-      `, [userId]);
+      `, [userId, email]);
 
       // Si no tiene solicitud
       if (requestRows.length === 0) {
@@ -154,7 +171,8 @@ router.get('/my-status', async (req, res, next) => {
             is_rejected: false,
             is_provisioned: false,
             is_suspended: false,
-            user_is_active: true
+            user_is_active: true,
+            is_business_owner: isBusinessOwner
           }
         });
       }
@@ -174,6 +192,7 @@ router.get('/my-status', async (req, res, next) => {
             b.slug,
             b.is_active,
             b.is_verified,
+            b.schema_name,
             b.created_at,
             b.updated_at
           FROM public.businesses b
@@ -282,6 +301,7 @@ router.get('/my-status', async (req, res, next) => {
           message: stepDescription,
           user_type: 'owner',
           user_is_active: true,
+          is_business_owner: isBusinessOwner,
           request_id: request.request_id,
           slug: request.slug,
           business_name: businessData?.name || request.business_name,
@@ -300,6 +320,7 @@ router.get('/my-status', async (req, res, next) => {
           business_id: businessData?.id || null,
           business_active: businessData?.is_active || false,
           is_verified: businessData?.is_verified || false,
+          schema_name: businessData?.schema_name || null,
           subscription_id: subscriptionData?.subscription_id || null,
           subscription_status: subscriptionData?.subscription_status || null,
           billing_period: subscriptionData?.billing_period || null,
@@ -325,44 +346,19 @@ router.get('/my-status', async (req, res, next) => {
     }
 
     // ============================================================
-    // PASO 3: SI NO ESTÁ EN public.users → BUSCAR EN business_users
+    // CASO 2: USUARIO NO ESTÁ EN public.users → BUSCAR EN ESQUEMA (COLABORADOR)
     // ============================================================
-    console.log('👤 Usuario NO está en public.users, buscando en business_users...');
+    console.log('👤 Usuario NO está en public.users, buscando en el esquema...');
 
-    const { rows: businessUserRows } = await query(`
-      SELECT 
-        bu.business_id,
-        bu.role_id,
-        r.code AS role_code,
-        r.name AS role_name,
-        b.id AS business_id,
-        b.name AS business_name,
-        b.slug,
-        b.is_active,
-        b.is_verified,
-        b.schema_name,
-        s.status AS subscription_status,
-        s.next_billing_at,
-        s.total_amount,
-        s.amount_monthly,
-        s.amount_annual,
-        s.billing_period
-      FROM public.business_users bu
-      JOIN public.businesses b ON bu.business_id = b.id
-      LEFT JOIN public.roles r ON bu.role_id = r.id
-      LEFT JOIN public.subscriptions s ON s.business_id = b.id
-      WHERE bu.user_id = $1
-      ORDER BY b.created_at DESC
-      LIMIT 1
-    `, [userId]);
-
-    // Si no está en business_users, es un usuario sin acceso
-    if (businessUserRows.length === 0) {
+    // ✅ Obtener el schemaName del token
+    const schemaName = user.schemaName;
+    
+    if (!schemaName) {
       return res.json({
         ok: true,
         data: {
           status: 'no_request',
-          message: 'No tienes ningún negocio asociado.',
+          message: 'No se encontró el esquema del negocio.',
           step: 0,
           user_type: 'unknown',
           has_business: false,
@@ -377,119 +373,142 @@ router.get('/my-status', async (req, res, next) => {
       });
     }
 
-    // ============================================================
-    // PASO 4: USUARIO ES COLABORADOR (schema_employee)
-    // ============================================================
-    const bizUser = businessUserRows[0];
-    const schemaName = bizUser.schema_name;
+    // ✅ Buscar usuario en el esquema
+    const { rows: schemaUserRows } = await query(`
+      SELECT 
+        u.id,
+        u.email,
+        u.first_name,
+        u.last_name,
+        u.is_active,
+        u.role_id,
+        r.name AS role_name,
+        r.code AS role_code
+      FROM "${schemaName}".users u
+      LEFT JOIN "${schemaName}".roles r ON u.role_id = r.id
+      WHERE u.id = $1 OR u.email = $2
+      LIMIT 1
+    `, [userId, email]);
 
-    console.log('👤 Usuario es COLABORADOR (schema_employee):', {
-      businessId: bizUser.business_id,
-      businessName: bizUser.business_name,
-      role: bizUser.role_code,
-      isActive: bizUser.is_active,
-      subscriptionStatus: bizUser.subscription_status,
-      schemaName: schemaName
-    });
-
-    // ✅ VALIDAR: Verificar que el usuario exista en el esquema del negocio
-    let schemaUser = null;
-    let userIsActive = false;
-
-    if (schemaName) {
-      try {
-        const { rows: schemaUserRows } = await query(`
-          SELECT 
-            u.id,
-            u.email,
-            u.first_name,
-            u.last_name,
-            u.is_active
-          FROM "${schemaName}".users u
-          WHERE u.id = $1 OR u.email = $2
-          LIMIT 1
-        `, [userId, email]);
-
-        if (schemaUserRows.length === 0) {
-          console.warn(`⚠️ Usuario ${userId} no encontrado en esquema ${schemaName}`);
-          return res.json({
-            ok: true,
-            data: {
-              status: 'user_not_found',
-              message: 'Usuario no encontrado en el esquema del negocio.',
-              step: 0,
-              user_type: 'schema_employee',
-              has_business: true,
-              is_active: false,
-              is_pending: false,
-              is_approved: false,
-              is_rejected: false,
-              is_provisioned: false,
-              is_suspended: false,
-              user_is_active: false
-            }
-          });
+    if (schemaUserRows.length === 0) {
+      console.warn(`⚠️ Usuario ${userId} no encontrado en esquema ${schemaName}`);
+      return res.json({
+        ok: true,
+        data: {
+          status: 'user_not_found',
+          message: 'Usuario no encontrado en el negocio.',
+          step: 0,
+          user_type: 'schema_employee',
+          has_business: false,
+          is_active: false,
+          is_pending: false,
+          is_approved: false,
+          is_rejected: false,
+          is_provisioned: false,
+          is_suspended: false,
+          user_is_active: false,
+          schema_name: schemaName
         }
-
-        schemaUser = schemaUserRows[0];
-        userIsActive = schemaUser.is_active === true;
-
-        console.log(`✅ Usuario encontrado en esquema ${schemaName}, activo: ${userIsActive}`);
-
-        // ✅ VALIDAR: Verificar si el usuario colaborador está activo
-        if (!userIsActive) {
-          return res.json({
-            ok: true,
-            data: {
-              status: 'inactive',
-              message: 'Tu cuenta de usuario está inactiva en el negocio. Contacta al administrador.',
-              step: 0,
-              user_type: 'schema_employee',
-              business_id: bizUser.business_id,
-              business_name: bizUser.business_name,
-              business_slug: bizUser.slug,
-              schema_name: schemaName,
-              role: {
-                id: bizUser.role_id,
-                code: bizUser.role_code,
-                name: bizUser.role_name
-              },
-              has_business: true,
-              has_subscription: !!bizUser.subscription_status,
-              is_active: false,
-              is_suspended: false,
-              is_pending: false,
-              is_provisioned: false,
-              user_is_active: false
-            }
-          });
-        }
-
-      } catch (err) {
-        console.error(`Error verificando usuario en esquema ${schemaName}:`, err.message);
-        return res.json({
-          ok: true,
-          data: {
-            status: 'error',
-            message: 'Error verificando el estado del usuario en el negocio.',
-            step: 0,
-            user_type: 'schema_employee',
-            has_business: true,
-            is_active: false,
-            is_pending: false,
-            is_approved: false,
-            is_rejected: false,
-            is_provisioned: false,
-            is_suspended: false,
-            user_is_active: false
-          }
-        });
-      }
+      });
     }
 
-    // Verificar estado del negocio para COLABORADOR
-    const isBusinessActive = bizUser.is_active === true;
-    const isSubscriptionActive = bizUser.subscription_status === 'active';
+    const schemaUser = schemaUserRows[0];
+    const userIsActive = schemaUser.is_active === true;
+
+    console.log(`✅ Usuario encontrado en esquema ${schemaName}`, {
+      id: schemaUser.id,
+      email: schemaUser.email,
+      is_active: schemaUser.is_active,
+      role: schemaUser.role_code
+    });
+
+    // ✅ VALIDAR: Verificar si el usuario colaborador está activo
+    if (!userIsActive) {
+      return res.json({
+        ok: true,
+        data: {
+          status: 'inactive',
+          message: 'Tu cuenta de usuario está inactiva en el negocio. Contacta al administrador.',
+          step: 0,
+          user_type: 'schema_employee',
+          has_business: false,
+          is_active: false,
+          is_pending: false,
+          is_approved: false,
+          is_rejected: false,
+          is_provisioned: false,
+          is_suspended: false,
+          user_is_active: false,
+          schema_name: schemaName,
+          role: {
+            id: schemaUser.role_id,
+            code: schemaUser.role_code,
+            name: schemaUser.role_name
+          }
+        }
+      });
+    }
+
+    // ✅ Buscar el negocio asociado al esquema
+    const { rows: businessRows } = await query(`
+      SELECT 
+        b.id,
+        b.name,
+        b.slug,
+        b.is_active,
+        b.is_verified,
+        b.schema_name,
+        s.status AS subscription_status,
+        s.next_billing_at,
+        s.total_amount,
+        s.amount_monthly,
+        s.amount_annual,
+        s.billing_period
+      FROM public.businesses b
+      LEFT JOIN public.subscriptions s ON s.business_id = b.id
+      WHERE b.schema_name = $1
+      LIMIT 1
+    `, [schemaName]);
+
+    if (businessRows.length === 0) {
+      console.warn(`⚠️ No se encontró negocio para el esquema ${schemaName}`);
+      return res.json({
+        ok: true,
+        data: {
+          status: 'no_business',
+          message: 'No se encontró el negocio asociado.',
+          step: 0,
+          user_type: 'schema_employee',
+          has_business: false,
+          is_active: false,
+          is_pending: false,
+          is_approved: false,
+          is_rejected: false,
+          is_provisioned: false,
+          is_suspended: false,
+          user_is_active: true,
+          schema_name: schemaName,
+          role: {
+            id: schemaUser.role_id,
+            code: schemaUser.role_code,
+            name: schemaUser.role_name
+          }
+        }
+      });
+    }
+
+    const business = businessRows[0];
+
+    console.log('🏢 Negocio encontrado:', {
+      id: business.id,
+      name: business.name,
+      is_active: business.is_active,
+      subscription_status: business.subscription_status
+    });
+
+    // ✅ Validar estado del negocio para COLABORADOR
+    const isBusinessActive = business.is_active === true;
+    const isSubscriptionActive = business.subscription_status === 'active';
 
     let status = 'pending';
     let step = 1;
@@ -500,11 +519,11 @@ router.get('/my-status', async (req, res, next) => {
       status = 'active';
       step = 4;
       stepDescription = '¡El negocio está activo! Disfruta de todas las funcionalidades.';
-    } else if (isBusinessActive && bizUser.subscription_status === 'suspended') {
+    } else if (isBusinessActive && business.subscription_status === 'suspended') {
       status = 'suspended';
       step = 3;
       stepDescription = 'La suscripción del negocio está suspendida. Contacta al administrador.';
-    } else if (isBusinessActive && bizUser.subscription_status === 'pending_activation') {
+    } else if (isBusinessActive && business.subscription_status === 'pending_activation') {
       status = 'provisioned';
       step = 3;
       stepDescription = 'La suscripción está pendiente de pago. Contacta al administrador.';
@@ -527,25 +546,25 @@ router.get('/my-status', async (req, res, next) => {
         message: stepDescription,
         user_type: 'schema_employee',
         user_is_active: true,
-        business_id: bizUser.business_id,
-        business_name: bizUser.business_name,
-        business_slug: bizUser.slug,
-        business_active: bizUser.is_active,
-        is_verified: bizUser.is_verified,
-        schema_name: schemaName,
+        business_id: business.id,
+        business_name: business.name,
+        business_slug: business.slug,
+        business_active: business.is_active,
+        is_verified: business.is_verified,
+        schema_name: business.schema_name,
         role: {
-          id: bizUser.role_id,
-          code: bizUser.role_code,
-          name: bizUser.role_name
+          id: schemaUser.role_id,
+          code: schemaUser.role_code,
+          name: schemaUser.role_name
         },
-        subscription_status: bizUser.subscription_status,
-        next_billing_at: bizUser.next_billing_at,
-        total_amount: parseFloat(bizUser.total_amount || 0),
-        amount_monthly: parseFloat(bizUser.amount_monthly || 0),
-        amount_annual: parseFloat(bizUser.amount_annual || 0),
-        billing_period: bizUser.billing_period || null,
+        subscription_status: business.subscription_status,
+        next_billing_at: business.next_billing_at,
+        total_amount: parseFloat(business.total_amount || 0),
+        amount_monthly: parseFloat(business.amount_monthly || 0),
+        amount_annual: parseFloat(business.amount_annual || 0),
+        billing_period: business.billing_period || null,
         has_business: true,
-        has_subscription: !!bizUser.subscription_status,
+        has_subscription: !!business.subscription_status,
         is_active: status === 'active',
         is_suspended: status === 'suspended',
         is_pending: status === 'pending',
@@ -574,7 +593,48 @@ router.get('/', async (req, res, next) => {
     }
 
     const userId = user.userId;
+    const schemaName = user.schemaName;
 
+    // Si tiene schemaName, buscar directamente en el esquema
+    if (schemaName) {
+      const { rows: schemaUserRows } = await query(`
+        SELECT u.id, u.email, u.first_name, u.last_name, u.is_active
+        FROM "${schemaName}".users u
+        WHERE u.id = $1 OR u.email = $2
+        LIMIT 1
+      `, [userId, user.email]);
+
+      if (schemaUserRows.length > 0) {
+        const schemaUser = schemaUserRows[0];
+        
+        const { rows: businessRows } = await query(`
+          SELECT b.id, b.name, b.slug, b.is_active, b.schema_name,
+                 s.status AS subscription_status
+          FROM public.businesses b
+          LEFT JOIN public.subscriptions s ON s.business_id = b.id
+          WHERE b.schema_name = $1
+          LIMIT 1
+        `, [schemaName]);
+
+        if (businessRows.length > 0) {
+          const biz = businessRows[0];
+          return res.json({
+            ok: true,
+            status: biz.is_active && biz.subscription_status === 'active' ? 'approved' : 'suspended',
+            business: {
+              id: biz.id,
+              name: biz.name,
+              slug: biz.slug,
+              type: 'Negocio',
+              subscription_status: biz.subscription_status,
+              role: schemaUser.role_id ? 'employee' : 'user'
+            }
+          });
+        }
+      }
+    }
+
+    // Si no tiene schemaName o no se encontró, buscar en business_users
     const { rows: bizRows } = await query(`
       SELECT
         b.id         AS business_id,
@@ -685,8 +745,8 @@ router.get('/my-businesses', async (req, res, next) => {
 
     const userId = user.userId;
 
-    if (req.user?.userType === 'schema_employee') {
-      const { businessId, schemaName } = req.user;
+    if (req.user?.userType === 'schema_employee' || user.schemaName) {
+      const schemaName = user.schemaName;
       const { rows } = await query(`
         SELECT b.id, b.name, b.slug,
                b.schema_name AS "schemaName",
@@ -697,8 +757,8 @@ router.get('/my-businesses', async (req, res, next) => {
         FROM public.businesses b
         JOIN public.business_types bt  ON b.business_type_id = bt.id
         LEFT JOIN public.subscriptions s ON s.business_id = b.id
-        WHERE b.id = $1
-      `, [businessId]);
+        WHERE b.schema_name = $1
+      `, [schemaName]);
       return res.json({ ok: true, businesses: rows });
     }
 
@@ -767,8 +827,8 @@ router.get('/navigation', async (req, res, next) => {
     };
 
     // ── Empleados de esquema (nivel 3) ──────────────────────────────────────
-    if (req.user?.userType === 'schema_employee') {
-      const { businessId, schemaName } = req.user;
+    if (req.user?.userType === 'schema_employee' || user.schemaName) {
+      const schemaName = user.schemaName;
 
       let roleId = null, roleName = 'employee', rolePermissions = null;
       try {
@@ -808,9 +868,10 @@ router.get('/navigation', async (req, res, next) => {
         SELECT m.id, m.code, m.name, m.icon, m.sort_order
         FROM public.business_modules bm
         JOIN public.modules m ON bm.module_id = m.id
-        WHERE bm.business_id = $1 AND bm.is_active = true
+        WHERE bm.business_id = (SELECT id FROM public.businesses WHERE schema_name = $1) 
+        AND bm.is_active = true
         ORDER BY m.sort_order ASC
-      `, [businessId]);
+      `, [schemaName]);
 
       const allowedModules = permsByModule
         ? allModules.filter(m => permsByModule.hasOwnProperty(m.id))
@@ -822,9 +883,10 @@ router.get('/navigation', async (req, res, next) => {
           SELECT f.id, f.code, f.name
           FROM public.business_features bf
           JOIN public.features f ON bf.feature_id = f.id
-          WHERE bf.business_id = $1 AND f.module_id = $2 AND bf.is_active = true
+          WHERE bf.business_id = (SELECT id FROM public.businesses WHERE schema_name = $1) 
+          AND f.module_id = $2 AND bf.is_active = true
           ORDER BY f.name ASC
-        `, [businessId, mod.id]);
+        `, [schemaName, mod.id]);
 
         const allowedFeatures = (permsByModule && permsByModule[mod.id])
           ? bizFeatures.filter(f => permsByModule[mod.id].has(f.id))
