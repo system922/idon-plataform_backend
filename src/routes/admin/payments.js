@@ -66,17 +66,21 @@ router.post('/subscriptions/:subId/mark-paid', async (req, res, next) => {
     const { subId } = req.params;
     const { notes, payment_method, reference } = req.body;
 
-    // Obtener suscripción con datos del negocio y propietario
+    // ✅ CONSULTA CORREGIDA - Usando business_users
     const { rows: subRows } = await query(`
       SELECT 
         s.*,
         b.name AS business_name,
-        b.owner_user_id,
-        bo.first_name || ' ' || bo.last_name AS owner_name,
-        bo.email AS owner_email
+        u.id AS user_id,
+        u.first_name,
+        u.last_name,
+        u.email AS owner_email,
+        bo.id AS owner_id
       FROM public.subscriptions s
       JOIN public.businesses b ON s.business_id = b.id
-      JOIN public.business_owners bo ON bo.user_id = b.owner_user_id
+      JOIN public.business_users bu ON bu.business_id = b.id AND bu.is_owner = TRUE
+      JOIN public.users u ON u.id = bu.user_id
+      JOIN public.business_owners bo ON bo.user_id = u.id
       WHERE s.id = $1
     `, [subId]);
 
@@ -85,6 +89,7 @@ router.post('/subscriptions/:subId/mark-paid', async (req, res, next) => {
     }
 
     const sub = subRows[0];
+    const ownerName = `${sub.first_name} ${sub.last_name || ''}`.trim();
 
     // Verificar que no esté ya activa
     if (sub.status === 'active') {
@@ -131,17 +136,16 @@ router.post('/subscriptions/:subId/mark-paid', async (req, res, next) => {
 
     // 🔥 ENVIAR EMAIL DE PAGO CONFIRMADO
     try {
-      await sendPaymentConfirmedEmail(subId);
+      await sendPaymentConfirmedEmail(subId, ownerName, sub.owner_email);
     } catch (emailError) {
       logger.error('Error enviando email de pago confirmado:', emailError);
-      // No bloqueamos el registro del pago
     }
 
     logger.info(`[PAYMENT] Pago registrado para suscripción ${subId}, invoice ${invoiceNumber}`);
 
     res.json({
       ok: true,
-      message: 'Pago registrado correctamente. Suscripción activada y email enviado al cliente.',
+      message: 'Pago registrado correctamente. Suscripción activada.',
       data: {
         invoice_number: invoiceNumber,
         next_billing_at: nextBilling,
@@ -151,23 +155,23 @@ router.post('/subscriptions/:subId/mark-paid', async (req, res, next) => {
 
   } catch (error) {
     logger.error('Error registrando pago:', error);
-    next(error);
+    res.status(500).json({ 
+      ok: false, 
+      message: 'Error al registrar el pago: ' + error.message 
+    });
   }
 });
 
 // 🔥 Función para enviar email de pago confirmado
-async function sendPaymentConfirmedEmail(subscriptionId) {
+async function sendPaymentConfirmedEmail(subscriptionId, ownerName, ownerEmail) {
   try {
     // Obtener datos de la suscripción
     const { rows } = await query(`
       SELECT 
         s.*,
-        b.name AS business_name,
-        bo.first_name || ' ' || bo.last_name AS owner_name,
-        bo.email AS owner_email
+        b.name AS business_name
       FROM public.subscriptions s
       JOIN public.businesses b ON s.business_id = b.id
-      JOIN public.business_owners bo ON bo.user_id = b.owner_user_id
       WHERE s.id = $1
     `, [subscriptionId]);
 
@@ -176,6 +180,8 @@ async function sendPaymentConfirmedEmail(subscriptionId) {
     }
 
     const sub = rows[0];
+    const email = ownerEmail || sub.owner_email;
+    const name = ownerName || 'usuario';
 
     // Buscar plantilla de pago confirmado
     const { rows: tplRows } = await query(
@@ -201,7 +207,7 @@ async function sendPaymentConfirmedEmail(subscriptionId) {
     };
 
     const vars = {
-      owner_name: sub.owner_name || 'usuario',
+      owner_name: name,
       business_name: sub.business_name || '—',
       amount: `$${parseFloat(sub.total_amount || 0).toFixed(2)}`,
       due_date: fmtDate(sub.next_billing_at),
@@ -215,13 +221,13 @@ async function sendPaymentConfirmedEmail(subscriptionId) {
 
     // Enviar email
     await sendGenericEmail({
-      to: sub.owner_email,
+      to: email,
       subject,
       html,
       businessName: 'IDON PLATAFORM'
     });
 
-    logger.info(`Email de pago confirmado enviado a ${sub.owner_email}`);
+    logger.info(`✅ Email de pago confirmado enviado a ${email}`);
 
   } catch (error) {
     logger.error('Error en sendPaymentConfirmedEmail:', error);
