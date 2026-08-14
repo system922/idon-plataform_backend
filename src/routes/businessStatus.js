@@ -53,11 +53,119 @@ router.get('/my-status', async (req, res, next) => {
     }
 
     const userId = user.userId;
-
-    console.log('🔑 Usuario autenticado:', { userId });
+    console.log('🔑 Usuario autenticado:', { userId, role: user.roleCode, userType: user.userType });
 
     // ============================================================
-    // PASO 1: Buscar la solicitud de registro del usuario
+    // ✅ PASO 1: VERIFICAR SI EL USUARIO ES EMPLEADO DE UN NEGOCIO
+    // ============================================================
+    const { rows: businessUserRows } = await query(`
+      SELECT 
+        bu.business_id,
+        bu.role_id,
+        r.code AS role_code,
+        r.name AS role_name,
+        b.id AS business_id,
+        b.name AS business_name,
+        b.slug,
+        b.is_active,
+        b.is_verified,
+        b.schema_name,
+        s.status AS subscription_status,
+        s.next_billing_at,
+        s.total_amount,
+        s.amount_monthly,
+        s.amount_annual,
+        s.billing_period
+      FROM public.business_users bu
+      JOIN public.businesses b ON bu.business_id = b.id
+      LEFT JOIN public.roles r ON bu.role_id = r.id
+      LEFT JOIN public.subscriptions s ON s.business_id = b.id
+      WHERE bu.user_id = $1
+      ORDER BY b.created_at DESC
+      LIMIT 1
+    `, [userId]);
+
+    // ✅ CASO 1: El usuario es empleado de un negocio
+    if (businessUserRows.length > 0) {
+      const bizUser = businessUserRows[0];
+      
+      console.log('👤 Usuario es empleado del negocio:', {
+        businessId: bizUser.business_id,
+        businessName: bizUser.business_name,
+        role: bizUser.role_code,
+        isActive: bizUser.is_active,
+        subscriptionStatus: bizUser.subscription_status
+      });
+
+      // Verificar si el negocio está activo y la suscripción está activa
+      const isBusinessActive = bizUser.is_active === true;
+      const isSubscriptionActive = bizUser.subscription_status === 'active';
+
+      let status = 'pending';
+      let step = 1;
+      let stepDescription = '';
+
+      if (isBusinessActive && isSubscriptionActive) {
+        // ✅ NEGOCIO ACTIVO - Acceso permitido
+        status = 'active';
+        step = 4;
+        stepDescription = '¡El negocio está activo! Disfruta de todas las funcionalidades.';
+      } else if (isBusinessActive && bizUser.subscription_status === 'suspended') {
+        // ❌ NEGOCIO SUSPENDIDO
+        status = 'suspended';
+        step = 3;
+        stepDescription = 'La suscripción del negocio está suspendida. Contacta al administrador.';
+      } else if (isBusinessActive && bizUser.subscription_status === 'pending_activation') {
+        // ⏳ PAGO PENDIENTE
+        status = 'provisioned';
+        step = 3;
+        stepDescription = 'La suscripción está pendiente de pago. Contacta al administrador.';
+      } else if (!isBusinessActive) {
+        // ❌ NEGOCIO INACTIVO
+        status = 'pending';
+        step = 1;
+        stepDescription = 'El negocio no está activo. Contacta al administrador.';
+      } else {
+        status = 'pending';
+        step = 1;
+        stepDescription = 'El negocio está en proceso de activación.';
+      }
+
+      // ✅ Devolver respuesta con el estado del negocio
+      return res.json({
+        ok: true,
+        data: {
+          status: status,
+          step: step,
+          message: stepDescription,
+          business_id: bizUser.business_id,
+          business_name: bizUser.business_name,
+          business_slug: bizUser.slug,
+          business_active: bizUser.is_active,
+          is_verified: bizUser.is_verified,
+          role: {
+            id: bizUser.role_id,
+            code: bizUser.role_code,
+            name: bizUser.role_name
+          },
+          subscription_status: bizUser.subscription_status,
+          next_billing_at: bizUser.next_billing_at,
+          total_amount: parseFloat(bizUser.total_amount || 0),
+          amount_monthly: parseFloat(bizUser.amount_monthly || 0),
+          amount_annual: parseFloat(bizUser.amount_annual || 0),
+          billing_period: bizUser.billing_period || null,
+          is_active: status === 'active',
+          is_suspended: status === 'suspended',
+          is_pending: status === 'pending',
+          is_provisioned: status === 'provisioned',
+          has_business: true,
+          has_subscription: !!bizUser.subscription_status
+        }
+      });
+    }
+
+    // ============================================================
+    // PASO 2: BUSCAR SOLICITUD DE REGISTRO (para owners)
     // ============================================================
     const { rows: requestRows } = await query(`
       SELECT 
@@ -84,14 +192,14 @@ router.get('/my-status', async (req, res, next) => {
     `, [userId]);
 
     // ============================================================
-    // CASO: No hay solicitud
+    // CASO: No hay solicitud ni negocio (usuario sin acceso)
     // ============================================================
     if (requestRows.length === 0) {
       return res.json({
         ok: true,
         data: {
           status: 'no_request',
-          message: 'No tienes ninguna solicitud de registro. Completa el registro para comenzar.',
+          message: 'No tienes ninguna solicitud de registro ni negocio asociado.',
           step: 0,
           business_name: null,
           request_status: null,
@@ -104,17 +212,24 @@ router.get('/my-status', async (req, res, next) => {
           provisioned_at: null,
           rejection_reason: null,
           total_amount: null,
-          next_billing_at: null
+          next_billing_at: null,
+          has_business: false,
+          has_subscription: false,
+          is_active: false,
+          is_suspended: false,
+          is_pending: true,
+          is_provisioned: false,
+          is_rejected: false
         }
       });
     }
 
+    // ============================================================
+    // PASO 3: PROCESAR SOLICITUD DE REGISTRO (para owners)
+    // ============================================================
     const request = requestRows[0];
     const provisionedBusinessId = request.provisioned_business_id;
 
-    // ============================================================
-    // PASO 2: Si tiene negocio provisionado, obtener datos del negocio y suscripción
-    // ============================================================
     let businessData = null;
     let subscriptionData = null;
 
@@ -162,112 +277,73 @@ router.get('/my-status', async (req, res, next) => {
       }
     }
 
-    // ============================================================
-    // PASO 3: Determinar el estado final según el flujo completo
-    // ============================================================
-    
-    // --- Estados de la solicitud ---
-    // pending: Solicitud en revisión
-    // approved: Solicitud aprobada (sin suscripción aún)
-    // rejected: Solicitud rechazada
-    // provisioned: Negocio provisionado
-
-    // --- Estados de la suscripción ---
-    // pending_activation: Suscripción creada, pendiente de pago
-    // active: Suscripción activa
-    // suspended: Suscripción suspendida
-
+    // Determinar el estado final para owners
     let status = request.request_status;
-    let step = 1; // 1=pendiente, 2=aprobado, 3=provisioned, 4=activo
+    let step = 1;
     let stepDescription = '';
 
-    // 🔥 FLUJO COMPLETO DE ESTADOS
     if (request.request_status === 'pending') {
-      // CASO 1: Solicitud en revisión
       status = 'pending';
       step = 1;
       stepDescription = 'Tu solicitud está siendo revisada por nuestro equipo. Te notificaremos cuando sea aprobada.';
-    }
-    else if (request.request_status === 'rejected') {
-      // CASO 2: Solicitud rechazada
+    } else if (request.request_status === 'rejected') {
       status = 'rejected';
       step = 0;
       stepDescription = request.rejection_reason || 'Tu solicitud ha sido rechazada. Por favor contacta a soporte.';
-    }
-    else if (request.request_status === 'approved' && !subscriptionData) {
-      // CASO 3: Aprobado, sin suscripción aún (esperando que admin cree suscripción)
+    } else if (request.request_status === 'approved' && !subscriptionData) {
       status = 'approved';
       step = 2;
       stepDescription = '¡Tu negocio ha sido aprobado! El equipo de IDON se pondrá en contacto para coordinar tu suscripción.';
-    }
-    else if (request.request_status === 'approved' && subscriptionData) {
-      // Si tiene suscripción, revisar su estado
+    } else if (request.request_status === 'approved' && subscriptionData) {
       if (subscriptionData.subscription_status === 'pending_activation') {
-        // CASO 4: Suscripción creada, pendiente de pago
         status = 'provisioned';
         step = 3;
         stepDescription = 'Tu suscripción está pendiente de pago. Realiza el pago para activar tu negocio.';
-      }
-      else if (subscriptionData.subscription_status === 'active') {
-        // CASO 5: Todo activo
+      } else if (subscriptionData.subscription_status === 'active') {
         status = 'active';
         step = 4;
         stepDescription = '¡Tu negocio está activo! Disfruta de todas las funcionalidades de IDON.';
-      }
-      else if (subscriptionData.subscription_status === 'suspended') {
-        // CASO 6: Suspendido por falta de pago
+      } else if (subscriptionData.subscription_status === 'suspended') {
         status = 'suspended';
         step = 3;
         stepDescription = 'Tu suscripción ha sido suspendida. Realiza el pago pendiente para reactivarla.';
-      }
-      else {
-        // CASO 7: Otro estado de suscripción
+      } else {
         status = 'provisioned';
         step = 3;
         stepDescription = 'Tu suscripción está en proceso. Contacta a soporte si tienes dudas.';
       }
-    }
-    else if (request.request_status === 'provisioned') {
-      // CASO 8: Ya provisionado, revisar suscripción
+    } else if (request.request_status === 'provisioned') {
       if (!subscriptionData) {
-        // No debería pasar, pero por si acaso
         status = 'approved';
         step = 2;
         stepDescription = 'Tu negocio ha sido aprobado pero no tiene suscripción. Contacta a soporte.';
-      }
-      else if (subscriptionData.subscription_status === 'pending_activation') {
+      } else if (subscriptionData.subscription_status === 'pending_activation') {
         status = 'provisioned';
         step = 3;
         stepDescription = 'Tu suscripción está pendiente de pago. Realiza el pago para activar tu negocio.';
-      }
-      else if (subscriptionData.subscription_status === 'active') {
+      } else if (subscriptionData.subscription_status === 'active') {
         status = 'active';
         step = 4;
         stepDescription = '¡Tu negocio está activo! Disfruta de todas las funcionalidades de IDON.';
-      }
-      else if (subscriptionData.subscription_status === 'suspended') {
+      } else if (subscriptionData.subscription_status === 'suspended') {
         status = 'suspended';
         step = 3;
         stepDescription = 'Tu suscripción ha sido suspendida. Realiza el pago pendiente para reactivarla.';
-      }
-      else {
+      } else {
         status = 'provisioned';
         step = 3;
         stepDescription = 'Tu suscripción está en proceso. Contacta a soporte si tienes dudas.';
       }
-    }
-    else {
-      // Por defecto
+    } else {
       status = request.request_status;
       step = 1;
       stepDescription = 'Estado desconocido. Contacta a soporte.';
     }
 
     // ============================================================
-    // PASO 4: Construir respuesta
+    // CONSTRUIR RESPUESTA PARA OWNER
     // ============================================================
     const responseData = {
-      // Datos de la solicitud
       request_id: request.request_id,
       slug: request.slug,
       business_name: businessData?.name || request.business_name,
@@ -277,21 +353,15 @@ router.get('/my-status', async (req, res, next) => {
       requested_at: request.requested_at,
       reviewed_at: request.reviewed_at || null,
       provisioned_at: request.provisioned_at || null,
-      
-      // Datos del propietario
       owner: {
         email: request.owner_email,
         first_name: request.owner_first_name,
         last_name: request.owner_last_name,
         phone: request.owner_phone
       },
-
-      // Datos del negocio
       business_id: businessData?.id || null,
       business_active: businessData?.is_active || false,
       is_verified: businessData?.is_verified || false,
-
-      // Datos de la suscripción
       subscription_id: subscriptionData?.subscription_id || null,
       subscription_status: subscriptionData?.subscription_status || null,
       billing_period: subscriptionData?.billing_period || null,
@@ -304,8 +374,6 @@ router.get('/my-status', async (req, res, next) => {
       activated_at: subscriptionData?.activated_at || null,
       suspended_at: subscriptionData?.suspended_at || null,
       subscription_created_at: subscriptionData?.subscription_created_at || null,
-
-      // Estado final
       status: status,
       step: step,
       message: stepDescription,
