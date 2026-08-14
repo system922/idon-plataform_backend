@@ -374,6 +374,7 @@ router.get('/my-status', async (req, res, next) => {
     }
 
     // ✅ Buscar usuario en el esquema
+    // IMPORTANTE: NO usar r.code porque no existe en la tabla roles del esquema
     const { rows: schemaUserRows } = await query(`
       SELECT 
         u.id,
@@ -382,8 +383,7 @@ router.get('/my-status', async (req, res, next) => {
         u.last_name,
         u.is_active,
         u.role_id,
-        r.name AS role_name,
-        r.code AS role_code
+        r.name AS role_name
       FROM "${schemaName}".users u
       LEFT JOIN "${schemaName}".roles r ON u.role_id = r.id
       WHERE u.id = $1 OR u.email = $2
@@ -419,7 +419,7 @@ router.get('/my-status', async (req, res, next) => {
       id: schemaUser.id,
       email: schemaUser.email,
       is_active: schemaUser.is_active,
-      role: schemaUser.role_code
+      role: schemaUser.role_name
     });
 
     // ✅ VALIDAR: Verificar si el usuario colaborador está activo
@@ -442,8 +442,7 @@ router.get('/my-status', async (req, res, next) => {
           schema_name: schemaName,
           role: {
             id: schemaUser.role_id,
-            code: schemaUser.role_code,
-            name: schemaUser.role_name
+            name: schemaUser.role_name || 'Sin rol'
           }
         }
       });
@@ -490,8 +489,7 @@ router.get('/my-status', async (req, res, next) => {
           schema_name: schemaName,
           role: {
             id: schemaUser.role_id,
-            code: schemaUser.role_code,
-            name: schemaUser.role_name
+            name: schemaUser.role_name || 'Sin rol'
           }
         }
       });
@@ -554,8 +552,7 @@ router.get('/my-status', async (req, res, next) => {
         schema_name: business.schema_name,
         role: {
           id: schemaUser.role_id,
-          code: schemaUser.role_code,
-          name: schemaUser.role_name
+          name: schemaUser.role_name || 'Sin rol'
         },
         subscription_status: business.subscription_status,
         next_billing_at: business.next_billing_at,
