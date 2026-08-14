@@ -64,37 +64,170 @@ router.patch('/subscriptions/:subId/discount', async (req, res, next) => {
 router.post('/subscriptions/:subId/mark-paid', async (req, res, next) => {
   try {
     const { subId } = req.params;
-    const { notes } = req.body;
-    const { rows: subRows } = await query('SELECT * FROM public.subscriptions WHERE id=$1', [subId]);
-    if (!subRows.length) return res.status(404).json({ ok: false, message: 'Suscripción no encontrada' });
+    const { notes, payment_method, reference } = req.body;
+
+    // Obtener suscripción con datos del negocio y propietario
+    const { rows: subRows } = await query(`
+      SELECT 
+        s.*,
+        b.name AS business_name,
+        b.owner_user_id,
+        bo.first_name || ' ' || bo.last_name AS owner_name,
+        bo.email AS owner_email
+      FROM public.subscriptions s
+      JOIN public.businesses b ON s.business_id = b.id
+      JOIN public.business_owners bo ON bo.user_id = b.owner_user_id
+      WHERE s.id = $1
+    `, [subId]);
+
+    if (subRows.length === 0) {
+      return res.status(404).json({ ok: false, message: 'Suscripción no encontrada' });
+    }
+
     const sub = subRows[0];
 
+    // Verificar que no esté ya activa
+    if (sub.status === 'active') {
+      return res.status(400).json({ 
+        ok: false, 
+        message: 'Esta suscripción ya está activa' 
+      });
+    }
+
+    // Calcular próxima fecha de cobro
     const nextBilling = new Date(sub.next_billing_at || new Date());
-    if (sub.billing_period === 'monthly') nextBilling.setMonth(nextBilling.getMonth() + 1);
-    else nextBilling.setFullYear(nextBilling.getFullYear() + 1);
+    if (sub.billing_period === 'monthly') {
+      nextBilling.setMonth(nextBilling.getMonth() + 1);
+    } else {
+      nextBilling.setFullYear(nextBilling.getFullYear() + 1);
+    }
 
     const invoiceNumber = `INV-${Date.now()}`;
 
+    // Registrar en billing_history
     await query(
       `INSERT INTO public.billing_history
-         (subscription_id, billing_date, due_date, amount, status, invoice_number, notes)
-       VALUES ($1, NOW(), $2, $3, 'paid', $4, $5)`,
-      [subId, sub.next_billing_at, sub.total_amount, invoiceNumber, notes||null]
+         (subscription_id, billing_date, due_date, amount, status, invoice_number, notes, payment_method, reference)
+       VALUES ($1, NOW(), $2, $3, 'paid', $4, $5, $6, $7)`,
+      [subId, sub.next_billing_at, sub.total_amount, invoiceNumber, notes || null, payment_method || null, reference || null]
     );
 
+    // Actualizar suscripción a ACTIVE
     await query(
-      `UPDATE public.subscriptions SET status='active', next_billing_at=$1, updated_at=NOW() WHERE id=$2`,
+      `UPDATE public.subscriptions 
+       SET status = 'active', 
+           activated_at = NOW(),
+           next_billing_at = $1, 
+           updated_at = NOW() 
+       WHERE id = $2`,
       [nextBilling.toISOString(), subId]
     );
 
+    // Activar el negocio
     await query(
-      'UPDATE public.businesses SET is_active=TRUE, updated_at=NOW() WHERE id=(SELECT business_id FROM public.subscriptions WHERE id=$1)',
+      'UPDATE public.businesses SET is_active = TRUE, updated_at = NOW() WHERE id = (SELECT business_id FROM public.subscriptions WHERE id = $1)',
       [subId]
     );
 
-    res.json({ ok: true, message: 'Pago registrado', invoice_number: invoiceNumber, next_billing_at: nextBilling });
-  } catch (e) { next(e); }
+    // 🔥 ENVIAR EMAIL DE PAGO CONFIRMADO
+    try {
+      await sendPaymentConfirmedEmail(subId);
+    } catch (emailError) {
+      logger.error('Error enviando email de pago confirmado:', emailError);
+      // No bloqueamos el registro del pago
+    }
+
+    logger.info(`[PAYMENT] Pago registrado para suscripción ${subId}, invoice ${invoiceNumber}`);
+
+    res.json({
+      ok: true,
+      message: 'Pago registrado correctamente. Suscripción activada y email enviado al cliente.',
+      data: {
+        invoice_number: invoiceNumber,
+        next_billing_at: nextBilling,
+        status: 'active'
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error registrando pago:', error);
+    next(error);
+  }
 });
+
+// 🔥 Función para enviar email de pago confirmado
+async function sendPaymentConfirmedEmail(subscriptionId) {
+  try {
+    // Obtener datos de la suscripción
+    const { rows } = await query(`
+      SELECT 
+        s.*,
+        b.name AS business_name,
+        bo.first_name || ' ' || bo.last_name AS owner_name,
+        bo.email AS owner_email
+      FROM public.subscriptions s
+      JOIN public.businesses b ON s.business_id = b.id
+      JOIN public.business_owners bo ON bo.user_id = b.owner_user_id
+      WHERE s.id = $1
+    `, [subscriptionId]);
+
+    if (rows.length === 0) {
+      throw new Error('Suscripción no encontrada');
+    }
+
+    const sub = rows[0];
+
+    // Buscar plantilla de pago confirmado
+    const { rows: tplRows } = await query(
+      `SELECT subject, body, is_active FROM public.email_templates WHERE type = $1 AND is_active = true`,
+      ['pago_confirmado']
+    );
+
+    if (tplRows.length === 0) {
+      logger.warn('Plantilla de pago confirmado no encontrada');
+      return;
+    }
+
+    const template = tplRows[0];
+
+    // Formatear fecha
+    const fmtDate = (d) => {
+      if (!d) return '—';
+      return new Date(d).toLocaleDateString('es-EC', {
+        day: '2-digit',
+        month: 'long',
+        year: 'numeric'
+      });
+    };
+
+    const vars = {
+      owner_name: sub.owner_name || 'usuario',
+      business_name: sub.business_name || '—',
+      amount: `$${parseFloat(sub.total_amount || 0).toFixed(2)}`,
+      due_date: fmtDate(sub.next_billing_at),
+    };
+
+    const interpolate = (str) =>
+      str.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? `{{${k}}}`);
+
+    const subject = interpolate(template.subject);
+    const html = interpolate(template.body);
+
+    // Enviar email
+    await sendGenericEmail({
+      to: sub.owner_email,
+      subject,
+      html,
+      businessName: 'IDON PLATAFORM'
+    });
+
+    logger.info(`Email de pago confirmado enviado a ${sub.owner_email}`);
+
+  } catch (error) {
+    logger.error('Error en sendPaymentConfirmedEmail:', error);
+    throw error;
+  }
+}
 
 // POST /api/admin/subscriptions/:subId/suspend
 router.post('/subscriptions/:subId/suspend', async (req, res, next) => {

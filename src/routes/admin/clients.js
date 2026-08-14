@@ -1,6 +1,8 @@
 import express from 'express';
 import { query, getClient } from '../../config/database.js';
 import logger from '../../utils/logger.js';
+import { sendGenericEmail } from '../../services/crmEmailService.js'; // ✅ Importación directa
+
 
 const router = express.Router();
 
@@ -122,16 +124,38 @@ router.post('/businesses/:businessId/subscribe', async (req, res, next) => {
     const { businessId } = req.params;
     const { billing_period = 'monthly', billing_day = 1, discount_percentage = 0 } = req.body;
 
-    const { rows: bizRows } = await query('SELECT id FROM public.businesses WHERE id=$1', [businessId]);
-    if (!bizRows.length) return res.status(404).json({ ok: false, message: 'Negocio no encontrado' });
+    const { rows: bizRows } = await query(`
+      SELECT b.id, b.name, b.owner_user_id, bo.email, bo.first_name, bo.last_name
+      FROM public.businesses b
+      JOIN public.business_owners bo ON bo.user_id = b.owner_user_id
+      WHERE b.id = $1
+    `, [businessId]);
+    
+    if (!bizRows.length) {
+      return res.status(404).json({ ok: false, message: 'Negocio no encontrado' });
+    }
 
+    const business = bizRows[0];
+
+    // Verificar si ya tiene suscripción
     const { rows: existingSub } = await query(
-      'SELECT id FROM public.subscriptions WHERE business_id=$1', [businessId]
+      'SELECT id, status FROM public.subscriptions WHERE business_id = $1',
+      [businessId]
     );
-    if (existingSub.length > 0)
-      return res.status(409).json({ ok: false, message: 'Este negocio ya tiene una suscripción' });
+    
+    if (existingSub.length > 0) {
+      // Si está pending_activation, podemos actualizar
+      if (existingSub[0].status === 'pending_activation') {
+        // Permitir recrear o actualizar
+      } else {
+        return res.status(409).json({ 
+          ok: false, 
+          message: 'Este negocio ya tiene una suscripción activa' 
+        });
+      }
+    }
 
-    // ✅ OBTENER MÓDULOS CON PRECIOS CORRECTOS
+    // Obtener módulos con precios
     const { rows: modRows } = await query(`
       SELECT 
         m.id,
@@ -139,35 +163,38 @@ router.post('/businesses/:businessId/subscribe', async (req, res, next) => {
         COALESCE(m.price_annual, 0) as price_annual
       FROM public.business_modules bm
       JOIN public.modules m ON bm.module_id = m.id
-      WHERE bm.business_id=$1 AND bm.is_active=TRUE
+      WHERE bm.business_id = $1 AND bm.is_active = TRUE
     `, [businessId]);
 
-    // ✅ Calcular subtotales base (SIN descuento)
+    // Calcular subtotales
     const amount_monthly_base = modRows.reduce((s, m) => s + parseFloat(m.price_monthly || 0), 0);
     const amount_annual_base  = modRows.reduce((s, m) => s + parseFloat(m.price_annual || 0), 0);
 
-    // ✅ Asegurar que el descuento sea un número válido (0-100)
     const disc = Math.min(Math.max(parseFloat(discount_percentage) || 0, 0), 100);
-    
-    // ✅ Calcular montos CON descuento
     const amount_monthly = parseFloat((amount_monthly_base * (1 - disc / 100)).toFixed(2));
     const amount_annual  = parseFloat((amount_annual_base  * (1 - disc / 100)).toFixed(2));
     const total_amount   = billing_period === 'monthly' ? amount_monthly : amount_annual;
 
     const next_billing = new Date();
-    if (billing_period === 'monthly') next_billing.setMonth(next_billing.getMonth() + 1);
-    else next_billing.setFullYear(next_billing.getFullYear() + 1);
+    if (billing_period === 'monthly') {
+      next_billing.setMonth(next_billing.getMonth() + 1);
+    } else {
+      next_billing.setFullYear(next_billing.getFullYear() + 1);
+    }
 
+    // 🔥 CAMBIO: status = 'pending_activation' en lugar de 'active'
     const { rows: newSub } = await query(`
       INSERT INTO public.subscriptions
         (business_id, status, billing_period, billing_day,
          amount_monthly, amount_annual, total_amount, discount_percentage,
-         next_billing_at, activated_at, created_at, updated_at)
-      VALUES ($1, 'active', $2, $3, $4, $5, $6, $7, $8, NOW(), NOW(), NOW())
+         next_billing_at, created_at, updated_at)
+      VALUES ($1, 'pending_activation', $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
       RETURNING *
-    `, [businessId, billing_period, billing_day, amount_monthly, amount_annual, total_amount, disc, next_billing.toISOString()]);
+    `, [businessId, billing_period, billing_day || 1, 
+        amount_monthly, amount_annual, total_amount, disc, 
+        next_billing.toISOString()]);
 
-    // ✅ INSERTAR EN subscription_line_items con los precios BASE (sin descuento)
+    // Insertar subscription_line_items
     for (const mod of modRows) {
       const unitPrice = billing_period === 'monthly' ? mod.price_monthly : mod.price_annual;
       await query(`
@@ -181,13 +208,101 @@ router.post('/businesses/:businessId/subscribe', async (req, res, next) => {
       `, [newSub[0].id, mod.id, unitPrice]);
     }
 
-    logger.info(`[SUBSCRIPTION] Creada para business=${businessId} period=${billing_period} total=$${total_amount} descuento=${disc}%`);
-    res.status(201).json({ ok: true, message: 'Suscripción creada correctamente', data: newSub[0] });
+    // 🔥 ENVIAR EMAIL DE SUSCRIPCIÓN PENDIENTE
+    try {
+      await sendSubscriptionPendingEmail(newSub[0].id);
+    } catch (emailError) {
+      logger.error('Error enviando email de suscripción pendiente:', emailError);
+      // No bloqueamos la creación de la suscripción
+    }
+
+    logger.info(`[SUBSCRIPTION] Creada para business=${businessId} period=${billing_period} total=$${total_amount} descuento=${disc}% (PENDIENTE DE PAGO)`);
+    
+    res.status(201).json({ 
+      ok: true, 
+      message: 'Suscripción creada correctamente. Se ha enviado un email al cliente con el monto a pagar.', 
+      data: newSub[0] 
+    });
+    
   } catch (error) {
     logger.error('Error creando suscripción:', error);
     next(error);
   }
 });
+
+// NUEVA FUNCIÓN: Enviar email de suscripción pendiente
+async function sendSubscriptionPendingEmail(subscriptionId) {
+  try {
+    // Obtener datos de la suscripción con negocio y propietario
+    const { rows } = await query(`
+      SELECT 
+        s.*,
+        b.name AS business_name,
+        bo.first_name || ' ' || bo.last_name AS owner_name,
+        bo.email AS owner_email
+      FROM public.subscriptions s
+      JOIN public.businesses b ON s.business_id = b.id
+      JOIN public.business_owners bo ON bo.user_id = b.owner_user_id
+      WHERE s.id = $1
+    `, [subscriptionId]);
+
+    if (rows.length === 0) {
+      throw new Error('Suscripción no encontrada');
+    }
+
+    const sub = rows[0];
+
+    // Buscar plantilla
+    const { rows: tplRows } = await query(
+      `SELECT subject, body, is_active FROM public.email_templates WHERE type = $1 AND is_active = true`,
+      ['suscripcion_pendiente']
+    );
+
+    if (tplRows.length === 0) {
+      logger.warn('Plantilla de suscripción pendiente no encontrada');
+      return;
+    }
+
+    const template = tplRows[0];
+
+    // Formatear fecha
+    const fmtDate = (d) => {
+      if (!d) return '—';
+      return new Date(d).toLocaleDateString('es-EC', {
+        day: '2-digit',
+        month: 'long',
+        year: 'numeric'
+      });
+    };
+
+    const vars = {
+      owner_name: sub.owner_name || 'usuario',
+      business_name: sub.business_name || '—',
+      amount: `$${parseFloat(sub.total_amount || 0).toFixed(2)}`,
+      due_date: fmtDate(sub.next_billing_at),
+    };
+
+    const interpolate = (str) =>
+      str.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? `{{${k}}}`);
+
+    const subject = interpolate(template.subject);
+    const html = interpolate(template.body);
+
+    // Enviar email - importa sendGenericEmail
+    await sendGenericEmail({
+      to: sub.owner_email,
+      subject,
+      html,
+      businessName: 'IDON PLATAFORM'
+    });
+
+    logger.info(`Email de suscripción pendiente enviado a ${sub.owner_email}`);
+
+  } catch (error) {
+    logger.error('Error en sendSubscriptionPendingEmail:', error);
+    throw error;
+  }
+}
 
 // GET /api/admin/subscriptions/:subId/items
 router.get('/subscriptions/:subId/items', async (req, res, next) => {
