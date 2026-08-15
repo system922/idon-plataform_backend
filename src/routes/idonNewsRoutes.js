@@ -1,21 +1,26 @@
-// ========== backend/routes/admin/IdonNews.js ==========
+// ========== src/routes/idonNewsRoutes.js ==========
 import express from 'express';
+import multer from 'multer';
+import { v2 as cloudinary } from 'cloudinary';
 import { query } from '../config/database.js';
 import { successResponse, errorResponse } from '../utils/response.js';
 import { authMiddleware, adminMiddleware } from '../middleware/auth.js';
 
 const router = express.Router();
 
+// Configurar Cloudinary
+cloudinary.config({ 
+  cloudinary_url: process.env.CLOUDINARY_URL 
+});
+
+// Configurar multer para memoria
+const upload = multer({ 
+  storage: multer.memoryStorage(), 
+  limits: { fileSize: 5 * 1024 * 1024 } // 5MB
+});
+
 // Tipos de novedades
 const NEWS_TYPES = ['new_module', 'improvement', 'announcement', 'update', 'feature'];
-
-// Iconos disponibles (nombre -> componente)
-const AVAILABLE_ICONS = [
-  'rocket', 'star', 'zap', 'gift', 'trending-up', 'award', 
-  'bell', 'megaphone', 'info', 'sparkles', 'fire', 'crown',
-  'layers', 'package', 'shopping-cart', 'users', 'settings',
-  'bar-chart', 'calendar', 'clock', 'file-text', 'home'
-];
 
 /**
  * GET /api/admin/IdonNews
@@ -125,7 +130,6 @@ router.post('/', authMiddleware, adminMiddleware, async (req, res, next) => {
       ends_at
     } = req.body;
 
-    // Validaciones
     if (!title || !title.trim()) {
       return res.status(400).json(errorResponse('El título es requerido', 400));
     }
@@ -138,7 +142,6 @@ router.post('/', authMiddleware, adminMiddleware, async (req, res, next) => {
       return res.status(400).json(errorResponse('El tipo es requerido', 400));
     }
 
-    // Validar que el tipo sea válido
     const validTypes = ['new_module', 'improvement', 'announcement', 'update', 'feature'];
     if (!validTypes.includes(type)) {
       return res.status(400).json(errorResponse('Tipo de novedad inválido', 400));
@@ -194,7 +197,6 @@ router.put('/:id', authMiddleware, adminMiddleware, async (req, res, next) => {
       ends_at
     } = req.body;
 
-    // Verificar que existe
     const checkResult = await query(
       'SELECT id FROM public.idon_news WHERE id = $1',
       [id]
@@ -204,17 +206,12 @@ router.put('/:id', authMiddleware, adminMiddleware, async (req, res, next) => {
       return res.status(404).json(errorResponse('Novedad no encontrada', 404));
     }
 
-    // Validaciones
     if (title !== undefined && !title.trim()) {
       return res.status(400).json(errorResponse('El título no puede estar vacío', 400));
     }
     
     if (content !== undefined && !content.trim()) {
       return res.status(400).json(errorResponse('El contenido no puede estar vacío', 400));
-    }
-    
-    if (type && !['new_module', 'improvement', 'announcement', 'update', 'feature'].includes(type)) {
-      return res.status(400).json(errorResponse('Tipo de novedad inválido', 400));
     }
 
     const result = await query(`
@@ -260,7 +257,6 @@ router.patch('/:id/toggle', authMiddleware, adminMiddleware, async (req, res, ne
   try {
     const { id } = req.params;
 
-    // Verificar que existe
     const checkResult = await query(
       'SELECT is_active FROM public.idon_news WHERE id = $1',
       [id]
@@ -310,6 +306,101 @@ router.delete('/:id', authMiddleware, adminMiddleware, async (req, res, next) =>
     res.json(successResponse(null, 'Novedad eliminada exitosamente'));
   } catch (error) {
     console.error('Error al eliminar novedad:', error);
+    next(error);
+  }
+});
+
+/**
+ * POST /api/admin/IdonNews/:id/image
+ * Sube una imagen para una novedad a Cloudinary
+ */
+router.post('/:id/image', authMiddleware, adminMiddleware, upload.single('image'), async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    
+    if (!req.file) {
+      return res.status(400).json(errorResponse('No se envió ninguna imagen', 400));
+    }
+
+    // Verificar que la novedad existe
+    const checkResult = await query(
+      'SELECT id FROM public.idon_news WHERE id = $1',
+      [id]
+    );
+    
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json(errorResponse('Novedad no encontrada', 404));
+    }
+
+    // Subir a Cloudinary
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { 
+          folder: 'idon/news',
+          public_id: `news_${id}_${Date.now()}`,
+          overwrite: true,
+          resource_type: 'image'
+        },
+        (err, result) => {
+          if (err) reject(err);
+          else resolve(result);
+        }
+      );
+      stream.end(req.file.buffer);
+    });
+
+    // Actualizar la URL en la base de datos
+    await query(
+      'UPDATE public.idon_news SET image_url = $1 WHERE id = $2',
+      [result.secure_url, id]
+    );
+
+    res.json(successResponse({ image_url: result.secure_url }, 'Imagen subida correctamente'));
+  } catch (error) {
+    console.error('Error al subir imagen:', error);
+    next(error);
+  }
+});
+
+/**
+ * DELETE /api/admin/IdonNews/:id/image
+ * Elimina la imagen de una novedad
+ */
+router.delete('/:id/image', authMiddleware, adminMiddleware, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    // Verificar que la novedad existe
+    const checkResult = await query(
+      'SELECT image_url FROM public.idon_news WHERE id = $1',
+      [id]
+    );
+    
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json(errorResponse('Novedad no encontrada', 404));
+    }
+
+    const current = checkResult.rows[0];
+    
+    // Si tiene imagen en Cloudinary, eliminarla
+    if (current.image_url) {
+      try {
+        const publicId = current.image_url.split('/').slice(-2).join('/').split('.')[0];
+        await cloudinary.uploader.destroy(`idon/news/${publicId}`);
+      } catch (cloudinaryError) {
+        console.warn('Error al eliminar imagen de Cloudinary:', cloudinaryError);
+      }
+    }
+
+    // Limpiar la URL en la base de datos
+    await query(
+      'UPDATE public.idon_news SET image_url = NULL WHERE id = $1',
+      [id]
+    );
+
+    res.json(successResponse(null, 'Imagen eliminada correctamente'));
+  } catch (error) {
+    console.error('Error al eliminar imagen:', error);
     next(error);
   }
 });
