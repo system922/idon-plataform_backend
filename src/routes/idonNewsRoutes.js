@@ -115,64 +115,61 @@ router.get('/:id', authMiddleware, adminMiddleware, async (req, res, next) => {
  * POST /api/admin/IdonNews
  * Crea una nueva novedad
  */
-router.post('/', authMiddleware, adminMiddleware, async (req, res, next) => {
+router.post('/:id/image', authMiddleware, adminMiddleware, upload.single('image'), async (req, res, next) => {
   try {
-    const {
-      title,
-      content,
-      type,
-      icon,
-      image_url,
-      is_active,
-      is_highlight,
-      priority,
-      starts_at,
-      ends_at
-    } = req.body;
-
-    if (!title || !title.trim()) {
-      return res.status(400).json(errorResponse('El título es requerido', 400));
-    }
+    const { id } = req.params;
     
-    if (!content || !content.trim()) {
-      return res.status(400).json(errorResponse('El contenido es requerido', 400));
-    }
+    console.log('📸 Recibiendo imagen para novedad:', id);
+    console.log('📸 req.file:', req.file);
+    console.log('📸 req.body:', req.body);
     
-    if (!type) {
-      return res.status(400).json(errorResponse('El tipo es requerido', 400));
+    if (!req.file) {
+      console.log('❌ No se recibió archivo');
+      return res.status(400).json(errorResponse('No se envió ninguna imagen. Asegúrate de usar el campo "image" en FormData.', 400));
     }
 
-    const validTypes = ['new_module', 'improvement', 'announcement', 'update', 'feature'];
-    if (!validTypes.includes(type)) {
-      return res.status(400).json(errorResponse('Tipo de novedad inválido', 400));
+    // Verificar que la novedad existe
+    const checkResult = await query(
+      'SELECT id FROM public.idon_news WHERE id = $1',
+      [id]
+    );
+    
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json(errorResponse('Novedad no encontrada', 404));
     }
 
-    const userId = req.user.id;
+    // Subir a Cloudinary
+    console.log('☁️ Subiendo a Cloudinary...');
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { 
+          folder: 'idon/news',
+          public_id: `news_${id}_${Date.now()}`,
+          overwrite: true,
+          resource_type: 'image'
+        },
+        (err, result) => {
+          if (err) {
+            console.error('❌ Error en Cloudinary:', err);
+            reject(err);
+          } else {
+            console.log('✅ Imagen subida a Cloudinary:', result.secure_url);
+            resolve(result);
+          }
+        }
+      );
+      stream.end(req.file.buffer);
+    });
 
-    const result = await query(`
-      INSERT INTO public.idon_news (
-        title, content, type, icon, image_url,
-        is_active, is_highlight, priority,
-        starts_at, ends_at, created_by
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-      RETURNING *
-    `, [
-      title.trim(), 
-      content.trim(), 
-      type, 
-      icon || null, 
-      image_url || null,
-      is_active !== false, 
-      is_highlight || false, 
-      priority || 0,
-      starts_at || new Date(), 
-      ends_at || null,
-      userId
-    ]);
+    // Actualizar la URL en la base de datos
+    await query(
+      'UPDATE public.idon_news SET image_url = $1 WHERE id = $2',
+      [result.secure_url, id]
+    );
 
-    res.json(successResponse(result.rows[0], 'Novedad creada exitosamente'));
+    res.json(successResponse({ image_url: result.secure_url }, 'Imagen subida correctamente'));
   } catch (error) {
-    console.error('Error al crear novedad:', error);
+    console.error('❌ Error al subir imagen:', error);
     next(error);
   }
 });
