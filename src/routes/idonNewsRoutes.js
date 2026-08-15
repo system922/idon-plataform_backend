@@ -6,6 +6,17 @@ import { authMiddleware, adminMiddleware } from '../middleware/auth.js';
 
 const router = express.Router();
 
+// Tipos de novedades
+const NEWS_TYPES = ['new_module', 'improvement', 'announcement', 'update', 'feature'];
+
+// Iconos disponibles (nombre -> componente)
+const AVAILABLE_ICONS = [
+  'rocket', 'star', 'zap', 'gift', 'trending-up', 'award', 
+  'bell', 'megaphone', 'info', 'sparkles', 'fire', 'crown',
+  'layers', 'package', 'shopping-cart', 'users', 'settings',
+  'bar-chart', 'calendar', 'clock', 'file-text', 'home'
+];
+
 /**
  * GET /api/admin/IdonNews
  * Obtiene todas las novedades (solo admin)
@@ -55,13 +66,14 @@ router.get('/active', async (req, res, next) => {
         n.icon,
         n.image_url,
         n.is_highlight,
-        n.created_at
+        n.created_at,
+        n.priority
       FROM public.idon_news n
       WHERE n.is_active = true
         AND (n.ends_at IS NULL OR n.ends_at > NOW())
         AND n.starts_at <= NOW()
       ORDER BY n.priority DESC, n.created_at DESC
-      LIMIT 10
+      LIMIT 20
     `);
     
     res.json(successResponse(result.rows, 'Novedades activas'));
