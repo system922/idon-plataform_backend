@@ -30,21 +30,9 @@ export const validateUserUniqueness = async (email, excludeSchema = null) => {
   );
 
   for (const schema of schemas.rows) {
-    // Saltar el esquema que estamos excluyendo (si es actualización)
     if (excludeSchema && schema.schema_name === excludeSchema) continue;
     
     try {
-      // Verificar si la tabla users existe en el esquema
-      const tableCheck = await query(
-        `SELECT EXISTS (
-          SELECT 1 FROM information_schema.tables 
-          WHERE table_schema = $1 AND table_name = 'users'
-        )`,
-        [schema.schema_name]
-      );
-      
-      if (!tableCheck.rows[0].exists) continue;
-      
       const userInSchema = await query(
         `SELECT id, email, first_name, last_name 
          FROM "${schema.schema_name}".users 
@@ -64,7 +52,6 @@ export const validateUserUniqueness = async (email, excludeSchema = null) => {
       }
     } catch (err) {
       // Si el esquema no existe o hay error, continuar
-      logger.debug(`Error verificando schema ${schema.schema_name}: ${err.message}`);
       continue;
     }
   }
@@ -76,7 +63,7 @@ export const validateUserUniqueness = async (email, excludeSchema = null) => {
  * Middleware para validar unicidad de email en creación de usuarios
  */
 export const validateUniqueEmail = async (req, res, next) => {
-  const { email, schemaName } = req.body;
+  const { email } = req.body;
   
   if (!email) {
     return res.status(400).json({ 
@@ -86,7 +73,7 @@ export const validateUniqueEmail = async (req, res, next) => {
   }
 
   try {
-    const result = await validateUserUniqueness(email, schemaName);
+    const result = await validateUserUniqueness(email);
     
     if (result.exists) {
       return res.status(409).json({
@@ -96,15 +83,14 @@ export const validateUniqueEmail = async (req, res, next) => {
         details: {
           source: result.source,
           schema: result.schema || null,
-          businessName: result.businessName || null,
-          userId: result.user?.id
+          businessName: result.businessName || null
         }
       });
     }
     
     next();
   } catch (error) {
-    logger.error('Error validando email:', error);
+    console.error('Error validando email:', error);
     return res.status(500).json({ 
       ok: false, 
       error: 'Error validando email' 
