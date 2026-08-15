@@ -79,6 +79,8 @@ import notificationsEmailRoutes   from './routes/notificationsEmailRoutes.js';
 import purchaseOrdersRoutes from './routes/purchaseOrders.js';
 import purchaseReceiptsRoutes from './routes/purchaseReceipts.js';
 
+import idonNewsRoutes         from './routes/IdonNewsRoutes.js';
+
 // ============================================================
 // IMPORTAR RUTAS DE ODONTOLOGÍA - CONFIGURACIÓN
 // ============================================================
@@ -184,6 +186,8 @@ app.use('/api/accounting-payable',    ...authBusiness, accountingPayableRoutes);
 app.use('/api/notifications',         ...authBusiness, notificationsEmailRoutes);
 app.use('/api/purchase-orders',       ...authBusiness, purchaseOrdersRoutes);
 app.use('/api/purchase-receipts',     ...authBusiness, purchaseReceiptsRoutes);
+
+app.use('/IdonNews',                    idonNewsRoutes);
 
 
 app.use('/api/reports',             ...authBusiness, reportsRoutes);
