@@ -79,7 +79,7 @@ import notificationsEmailRoutes   from './routes/notificationsEmailRoutes.js';
 import purchaseOrdersRoutes from './routes/purchaseOrders.js';
 import purchaseReceiptsRoutes from './routes/purchaseReceipts.js';
 
-import idonNewsRoutes         from './routes/IdonNewsRoutes.js';
+import idonNewsRoutes         from './routes/idonNewsRoutes.js';
 
 // ============================================================
 // IMPORTAR RUTAS DE ODONTOLOGÍA - CONFIGURACIÓN
