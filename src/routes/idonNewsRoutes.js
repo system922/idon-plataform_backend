@@ -1,6 +1,6 @@
 // ========== backend/routes/admin/IdonNews.js ==========
 import express from 'express';
-import { query } from '../../config/database.js';
+import { query } from '../config/database.js';
 import { successResponse, errorResponse } from '../utils/response.js';
 import { authMiddleware, adminMiddleware } from '../middleware/auth.js';
 
