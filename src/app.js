@@ -187,8 +187,7 @@ app.use('/api/notifications',         ...authBusiness, notificationsEmailRoutes)
 app.use('/api/purchase-orders',       ...authBusiness, purchaseOrdersRoutes);
 app.use('/api/purchase-receipts',     ...authBusiness, purchaseReceiptsRoutes);
 
-app.use('/IdonNews',                    idonNewsRoutes);
-
+app.use('/api/admin/IdonNews',        idonNewsRoutes);
 
 app.use('/api/reports',             ...authBusiness, reportsRoutes);
 app.use('/api/print',               ...authBusiness, printRoutes);
