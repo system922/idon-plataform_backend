@@ -596,7 +596,7 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       const costResult = await query(
         `
         SELECT 
-          COALESCE(SUM(quantity * unit_cost), 0) as total_cost,
+          COALESCE(SUM(ABS(quantity) * unit_cost), 0) as total_cost,
           COUNT(*) as items_count
         FROM "${schema}".inventory_movements
         WHERE reference_id::text = $1 
@@ -802,7 +802,6 @@ router.get('/profit-detail', authMiddleware, async (req, res) => {
     const orderIds = ordersResult.rows.map(o => o.order_id);
 
     // ─── 2. OBTENER ITEMS DE LAS ÓRDENES ──────────────────────────────────
-    // ✅ CORREGIDO: Usar ::text para comparar UUID con UUID
     const itemsResult = await query(
       `
       SELECT 
@@ -945,12 +944,13 @@ router.get('/profit-detail', authMiddleware, async (req, res) => {
         products: products,
         orders: ordersResult.rows.map(o => ({
           ...o,
-          order_total: parseFloat(o.order_total.toFixed(2))
+          // ✅ Asegurar que order_total sea número antes de .toFixed()
+          order_total: parseFloat((Number(o.order_total) || 0).toFixed(2))
         })),
         lots_used: lotsUsedResult.rows.map(l => ({
           ...l,
-          unit_cost: parseFloat(l.unit_cost),
-          quantity_used: parseInt(l.quantity_used)
+          unit_cost: parseFloat(l.unit_cost) || 0,
+          quantity_used: parseInt(l.quantity_used) || 0
         }))
       }
     });
