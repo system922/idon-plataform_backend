@@ -542,7 +542,8 @@ router.get('/products-sold', authMiddleware, async (req, res) => {
 });
 
 
-// routes/reports.js - Endpoint /advanced con todas las correcciones
+// routes/reports.js - Endpoint /advanced completo y corregido
+
 router.get('/advanced', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -557,14 +558,47 @@ router.get('/advanced', authMiddleware, async (req, res) => {
     const TZ = 'America/Guayaquil';
     const fifoService = new FIFOService(schema);
 
-    // ─── 1. OBTENER VENTAS DEL PERÍODO (con TO_CHAR para formato consistente) ──
+    // ─── 1. DETERMINAR AGRUPACIÓN Y GENERAR FECHAS ──────────────────────
+    let dateFormatGroup, dateFormatLabel, allDates;
+
+    if (groupBy === 'year') {
+      // Agrupar por mes
+      dateFormatGroup = `DATE_TRUNC('month', created_at)::DATE`;
+      dateFormatLabel = `TO_CHAR(DATE_TRUNC('month', created_at), 'YYYY-MM')`;
+
+      // Generar 12 meses del año seleccionado
+      const year = from.split('-')[0];
+      allDates = [];
+      for (let m = 1; m <= 12; m++) {
+        allDates.push(`${year}-${String(m).padStart(2, '0')}`);
+      }
+    } else {
+      // Agrupar por día
+      dateFormatGroup = `DATE(created_at)`;
+      dateFormatLabel = `TO_CHAR(DATE(created_at), 'YYYY-MM-DD')`;
+
+      // Generar todos los días del rango usando Date.UTC
+      const [startYear, startMonth, startDay] = from.split('-').map(Number);
+      const [endYear, endMonth, endDay] = to.split('-').map(Number);
+
+      const start = new Date(Date.UTC(startYear, startMonth - 1, startDay));
+      const end = new Date(Date.UTC(endYear, endMonth - 1, endDay));
+
+      allDates = [];
+      for (
+        let d = new Date(start);
+        d <= end;
+        d.setUTCDate(d.getUTCDate() + 1)
+      ) {
+        allDates.push(d.toISOString().slice(0, 10));
+      }
+    }
+
+    // ─── 2. OBTENER VENTAS DEL PERÍODO ──────────────────────────────────
     const salesResult = await query(
       `
       SELECT 
-        TO_CHAR(
-          DATE(o.created_at AT TIME ZONE '${TZ}'),
-          'YYYY-MM-DD'
-        ) as sale_date,
+        ${dateFormatLabel} as sale_date,
         o.id as order_id,
         o.total,
         o.subtotal,
@@ -573,14 +607,14 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       WHERE o.status = 'paid'
         AND DATE(o.created_at AT TIME ZONE '${TZ}') >= $1::DATE
         AND DATE(o.created_at AT TIME ZONE '${TZ}') <= $2::DATE
-      ORDER BY o.created_at ASC
+      ORDER BY sale_date ASC
       `,
       [from, to]
     );
 
     console.log(`📊 Ventas encontradas: ${salesResult.rows.length}`);
 
-    // ─── 2. OBTENER COSTO FIFO PARA CADA VENTA ──────────────────────────
+    // ─── 3. OBTENER COSTO FIFO PARA CADA VENTA ──────────────────────────
     let totalVentas = 0;
     let totalCostoFIFO = 0;
     let totalIva = 0;
@@ -591,7 +625,7 @@ router.get('/advanced', authMiddleware, async (req, res) => {
     for (const sale of salesResult.rows) {
       const orderTotal = parseFloat(sale.total) || 0;
       const iva = parseFloat(sale.iva) || 0;
-      const dateKey = sale.sale_date; // Ya es string 'YYYY-MM-DD'
+      const dateKey = sale.sale_date; // 'YYYY-MM' o 'YYYY-MM-DD'
 
       totalVentas += orderTotal;
       totalIva += iva;
@@ -612,7 +646,7 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       const orderCost = parseFloat(costResult.rows[0]?.total_cost) || 0;
       totalCostoFIFO += orderCost;
 
-      // Acumular por día
+      // Acumular por fecha (mes o día)
       if (!dailyData[dateKey]) {
         dailyData[dateKey] = {
           sales: 0,
@@ -629,17 +663,24 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       dailyData[dateKey].iva += iva;
     }
 
-    // ─── 3. OBTENER GASTOS OPERATIVOS ──────────────────────────────────
+    // ─── 4. OBTENER GASTOS OPERATIVOS ──────────────────────────────────
     let expensesResult = { rows: [] };
     try {
+      let expenseDateFormat;
+      if (groupBy === 'year') {
+        expenseDateFormat = `TO_CHAR(DATE_TRUNC('month', date), 'YYYY-MM')`;
+      } else {
+        expenseDateFormat = `TO_CHAR(date, 'YYYY-MM-DD')`;
+      }
+
       expensesResult = await query(
         `
         SELECT
-          TO_CHAR(date, 'YYYY-MM-DD') as date,
+          ${expenseDateFormat} as date,
           COALESCE(SUM(amount), 0) as total_expenses
         FROM "${schema}".expenses
         WHERE date >= $1::DATE AND date <= $2::DATE
-        GROUP BY date
+        GROUP BY ${expenseDateFormat}
         ORDER BY date ASC
         `,
         [from, to]
@@ -648,23 +689,12 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       console.warn('[Advanced] Expenses query failed:', err.message);
     }
 
-    // ─── 4. GENERAR TODOS LOS DÍAS DEL RANGO (UTC para evitar zona horaria) ──
-    const allDates = [];
-    const [startYear, startMonth, startDay] = from.split('-').map(Number);
-    const [endYear, endMonth, endDay] = to.split('-').map(Number);
+    // ─── 5. COMPLETAR DATOS POR FECHA ─────────────────────────────────────
+    const expensesMap = {};
+    expensesResult.rows.forEach(e => {
+      expensesMap[e.date] = Number(e.total_expenses) || 0;
+    });
 
-    const start = new Date(Date.UTC(startYear, startMonth - 1, startDay));
-    const end = new Date(Date.UTC(endYear, endMonth - 1, endDay));
-
-    for (
-      let d = new Date(start);
-      d <= end;
-      d.setUTCDate(d.getUTCDate() + 1)
-    ) {
-      allDates.push(d.toISOString().slice(0, 10));
-    }
-
-    // ─── 5. COMPLETAR DATOS POR DÍA ─────────────────────────────────────
     const completeSales = allDates.map((dateStr) => {
       const day = dailyData[dateStr];
       return {
@@ -677,25 +707,19 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       };
     });
 
-    // ─── 6. COMPLETAR GASTOS POR DÍA ──────────────────────────────────
-    const expensesMap = {};
-    expensesResult.rows.forEach(e => {
-      expensesMap[e.date] = Number(e.total_expenses) || 0;
-    });
-
     const completeExpenses = allDates.map((dateStr) => ({
       date: dateStr,
       total_expenses: expensesMap[dateStr] || 0,
     }));
 
-    // ─── 7. CALCULAR TOTALES ────────────────────────────────────────────
+    // ─── 6. CALCULAR TOTALES ────────────────────────────────────────────
     const gananciaBruta = totalVentas - totalCostoFIFO;
     const totalGastos = completeExpenses.reduce((sum, e) => sum + e.total_expenses, 0);
     const gananciaNeta = gananciaBruta - totalGastos;
     const margen = totalVentas > 0 ? (gananciaNeta / totalVentas) * 100 : 0;
     const margenBruto = totalVentas > 0 ? (gananciaBruta / totalVentas) * 100 : 0;
 
-    // ─── 8. OBTENER DETALLE DE LOTES USADOS ────────────────────────────
+    // ─── 7. OBTENER DETALLE DE LOTES USADOS (opcional) ──────────────────
     const lotsUsed = await query(
       `
       SELECT 
@@ -712,7 +736,7 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       [from, to]
     );
 
-    // ─── 9. RESPONDER ────────────────────────────────────────────────────
+    // ─── 8. RESPONDER ────────────────────────────────────────────────────
     res.json({
       success: true,
       sales: completeSales,
