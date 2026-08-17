@@ -785,7 +785,8 @@ router.get('/profit-detail', authMiddleware, async (req, res) => {
     const schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
 
-    const { from = null, to = null } = req.query;
+    // ✅ Aceptamos category (opcional)
+    const { from = null, to = null, category = null } = req.query;
 
     if (!from || !to) {
       return res.status(400).json({ error: 'from and to dates are required' });
@@ -793,7 +794,7 @@ router.get('/profit-detail', authMiddleware, async (req, res) => {
 
     const TZ = 'America/Guayaquil';
 
-    // ─── 1. OBTENER TODAS LAS ÓRDENES PAGADAS DEL PERÍODO ──────────────
+    // ─── 1. OBTENER ÓRDENES PAGADAS ──────────────────────────────
     const ordersResult = await query(
       `
       SELECT 
@@ -830,7 +831,9 @@ router.get('/profit-detail', authMiddleware, async (req, res) => {
 
     const orderIds = ordersResult.rows.map(o => o.order_id);
 
-    // ─── 2. OBTENER ITEMS DE LAS ÓRDENES ──────────────────────────────────
+    // ─── 2. OBTENER ITEMS CON CATEGORÍA Y BARCODE ────────────────
+    // ✅ JOIN con products y categories para obtener barcode y category_name
+    // ✅ Filtro por category (si se envía)
     const itemsResult = await query(
       `
       SELECT 
@@ -840,15 +843,21 @@ router.get('/profit-detail', authMiddleware, async (req, res) => {
         oi.quantity,
         oi.unit_price,
         oi.line_total,
-        o.order_number
+        o.order_number,
+        p.barcode,
+        p.category_id,
+        c.name as category_name
       FROM "${schema}".pos_order_items oi
       INNER JOIN "${schema}".pos_orders o ON o.id = oi.order_id
+      INNER JOIN "${schema}".products p ON p.id = oi.product_id
+      LEFT JOIN "${schema}".categories c ON c.id = p.category_id
       WHERE oi.order_id = ANY($1::uuid[])
+        AND (($2::integer IS NULL) OR p.category_id = $2::integer)
       `,
-      [orderIds]
+      [orderIds, category]
     );
 
-    // ─── 3. OBTENER COSTO FIFO POR PRODUCTO ──────────────────────────────
+    // ─── 3. OBTENER COSTO FIFO ──────────────────────────────────
     const movementsResult = await query(
       `
       SELECT 
@@ -866,7 +875,7 @@ router.get('/profit-detail', authMiddleware, async (req, res) => {
       [orderIds]
     );
 
-    // ─── 4. OBTENER DETALLE DE LOTES USADOS (FIFO) ──────────────────────
+    // ─── 4. OBTENER DETALLE DE LOTES ────────────────────────────
     const lotsUsedResult = await query(
       `
       SELECT 
@@ -890,20 +899,19 @@ router.get('/profit-detail', authMiddleware, async (req, res) => {
       [orderIds]
     );
 
-    // ─── 5. CALCULAR GANANCIA POR PRODUCTO ──────────────────────────────
+    // ─── 5. CALCULAR GANANCIA POR PRODUCTO ──────────────────────
     const productMap = new Map();
-    let totalVentas = 0;
-    let totalCosto = 0;
-    let totalGanancia = 0;
+    let totalVentas = 0, totalCosto = 0, totalGanancia = 0;
 
-    // Agrupar items por producto
     for (const item of itemsResult.rows) {
       const productId = item.product_id;
-      
       if (!productMap.has(productId)) {
         productMap.set(productId, {
           product_id: productId,
           product_name: item.product_name || 'Producto',
+          barcode: item.barcode || '',
+          category_name: item.category_name || 'Sin categoría',
+          category_id: item.category_id,
           total_quantity: 0,
           total_ventas: 0,
           total_costo: 0,
@@ -913,14 +921,13 @@ router.get('/profit-detail', authMiddleware, async (req, res) => {
           orders: []
         });
       }
-
       const product = productMap.get(productId);
       product.total_quantity += parseInt(item.quantity) || 0;
       product.total_ventas += parseFloat(item.line_total) || 0;
       product.orders.push(item.order_id);
     }
 
-    // Calcular costo FIFO por producto
+    // Asignar costos FIFO
     for (const movement of movementsResult.rows) {
       const productId = movement.product_id;
       if (productMap.has(productId)) {
@@ -931,17 +938,15 @@ router.get('/profit-detail', authMiddleware, async (req, res) => {
       }
     }
 
-    // Calcular totales
+    // Construir array de productos
     const products = [];
-    for (const [productId, product] of productMap) {
+    for (const [, product] of productMap) {
       const ventas = product.total_ventas;
       const costo = product.total_costo;
       const ganancia = ventas - costo;
-      
       totalVentas += ventas;
       totalCosto += costo;
       totalGanancia += ganancia;
-
       products.push({
         ...product,
         total_ventas: parseFloat(ventas.toFixed(2)),
@@ -953,13 +958,11 @@ router.get('/profit-detail', authMiddleware, async (req, res) => {
       });
     }
 
-    // Ordenar por ganancia descendente
     products.sort((a, b) => b.total_ganancia - a.total_ganancia);
 
-    // ─── 6. CALCULAR MARGEN TOTAL ────────────────────────────────────────
     const margenTotal = totalVentas > 0 ? (totalGanancia / totalVentas) * 100 : 0;
 
-    // ─── 7. RESPONDER ────────────────────────────────────────────────────
+    // ─── 6. RESPONDER ────────────────────────────────────────────────────
     res.json({
       success: true,
       data: {
@@ -970,10 +973,9 @@ router.get('/profit-detail', authMiddleware, async (req, res) => {
           total_ordenes: ordersResult.rows.length,
           margen_promedio: parseFloat(margenTotal.toFixed(2))
         },
-        products: products,
+        products,
         orders: ordersResult.rows.map(o => ({
           ...o,
-          // ✅ Asegurar que order_total sea número antes de .toFixed()
           order_total: parseFloat((Number(o.order_total) || 0).toFixed(2))
         })),
         lots_used: lotsUsedResult.rows.map(l => ({
