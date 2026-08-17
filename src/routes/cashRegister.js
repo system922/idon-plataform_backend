@@ -170,7 +170,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 });
 
 // ===============================
-// 📦 POST /closing - CIERRE COMPLETO CON INVENTARIO (FIFO) - CORREGIDO
+// 📦 POST /closing - CIERRE COMPLETO CON INVENTARIO (FIFO + ACTUALIZACIÓN DE STOCK)
 // ===============================
 router.post('/closing', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
@@ -333,7 +333,7 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
     console.log('✅ CIERRE GUARDADO - ID:', closingData.id);
     console.log('📅 FECHA CIERRE:', closingDate);
 
-    // 📦 PROCESAR MOVIMIENTOS DE INVENTARIO CON FIFO
+    // 📦 PROCESAR MOVIMIENTOS DE INVENTARIO CON FIFO + ACTUALIZACIÓN DE STOCK
     let inventoryMovements = [];
     let inventoryProcessed = false;
     let inventoryError = null;
@@ -420,7 +420,7 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
 
               for (const item of orderData.items) {
                 try {
-                  // Obtener nombre del producto
+                  // Obtener nombre y stock actual del producto
                   const productResult = await query(
                     `
                     SELECT name, stock 
@@ -432,6 +432,7 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
                   
                   const productName = productResult.rows[0]?.name || item.product_name || 'Producto';
                   const quantityToSell = item.quantity;
+                  const currentStock = productResult.rows[0]?.stock || 0;
 
                   console.log(`  📝 FIFO para ${productName}: ${quantityToSell} unidades`);
 
@@ -440,6 +441,17 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
                     item.product_id,
                     orderId,  // ✅ Usamos el UUID de la orden
                     quantityToSell
+                  );
+
+                  // ✅ ACTUALIZAR STOCK DEL PRODUCTO
+                  await query(
+                    `
+                    UPDATE "${schema}".products
+                    SET stock = stock - $1,
+                        updated_at = NOW()
+                    WHERE id = $2
+                    `,
+                    [quantityToSell, item.product_id]
                   );
 
                   // Buscar el movimiento creado por FIFO
@@ -459,7 +471,7 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
                     inventoryMovements.push(movementResult.rows[0]);
                   }
 
-                  console.log(`  ✅ FIFO procesado para ${productName}: ${quantityToSell} unidades - Costo: $${fifoResult.totalCost.toFixed(2)}`);
+                  console.log(`  ✅ FIFO procesado para ${productName}: ${quantityToSell} unidades - Costo: $${fifoResult.totalCost.toFixed(2)} - Stock: ${currentStock} → ${currentStock - quantityToSell}`);
 
                 } catch (fifoError) {
                   console.error(`  ❌ Error FIFO para producto ${item.product_id}:`, fifoError.message);
@@ -476,6 +488,7 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
 
                   const unitCost = productResult.rows[0]?.unit_cost || item.unit_price || 0;
                   const productName = productResult.rows[0]?.name || item.product_name || 'Producto';
+                  const currentStock = productResult.rows[0]?.stock || 0;
 
                   const notes = `Cierre de caja de ${formattedDate} (FALLBACK - costo promedio)`;
                   const quantity = -Math.abs(item.quantity);
@@ -502,7 +515,18 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
 
                   inventoryMovements.push(movementResult.rows[0]);
 
-                  console.log(`  ⚠️ FALLBACK usado para ${productName}: ${quantity} unidades`);
+                  // ✅ ACTUALIZAR STOCK EN FALLBACK TAMBIÉN
+                  await query(
+                    `
+                    UPDATE "${schema}".products
+                    SET stock = stock - $1,
+                        updated_at = NOW()
+                    WHERE id = $2
+                    `,
+                    [Math.abs(item.quantity), item.product_id]
+                  );
+
+                  console.log(`  ⚠️ FALLBACK usado para ${productName}: ${quantity} unidades - Stock: ${currentStock} → ${currentStock - Math.abs(item.quantity)}`);
                 }
               }
             }
