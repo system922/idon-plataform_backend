@@ -593,7 +593,6 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       totalVentas += orderTotal;
       totalIva += iva;
 
-      // ✅ CORREGIDO: Usar ::text para comparar UUID con INTEGER
       const costResult = await query(
         `
         SELECT 
@@ -822,7 +821,6 @@ router.get('/profit-detail', authMiddleware, async (req, res) => {
     );
 
     // ─── 3. OBTENER COSTO FIFO POR PRODUCTO ──────────────────────────────
-    // ✅ CORREGIDO: reference_id es INTEGER, usar ::text para comparar
     const movementsResult = await query(
       `
       SELECT 
@@ -841,7 +839,6 @@ router.get('/profit-detail', authMiddleware, async (req, res) => {
     );
 
     // ─── 4. OBTENER DETALLE DE LOTES USADOS (FIFO) ──────────────────────
-    // ✅ CORREGIDO: reference_id es INTEGER, usar ::text para comparar
     const lotsUsedResult = await query(
       `
       SELECT 

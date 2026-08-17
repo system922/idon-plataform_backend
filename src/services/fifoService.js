@@ -61,27 +61,32 @@ class FIFOService {
 
     // 4. Registrar movimiento en inventory_movements
     const averageCost = totalCost / quantity;
-    await query(`
-      INSERT INTO "${this.schema}".inventory_movements (
+    const notes = `Venta #${orderId} - FIFO: ${usedLots.length} lotes - Costo total: $${totalCost.toFixed(2)}`;
+    
+    // ✅ quantity negativo (salida), reference_id = orderId (UUID como texto)
+    const result = await query(`
+        INSERT INTO "${this.schema}".inventory_movements (
         product_id,
         type,
         quantity,
         unit_cost,
         reference_id,
         notes,
-        applied
-      ) VALUES ($1, 'sale', $2, $3, $4, $5, true)
-    `, [productId, quantity, averageCost, orderId, 
-        `Venta #${orderId} - FIFO: ${usedLots.length} lotes - Costo total: $${totalCost.toFixed(2)}`]);
+        applied,
+        created_at
+        ) VALUES ($1, 'venta', $2, $3, $4, $5, true, NOW())
+        RETURNING *
+    `, [productId, -quantity, averageCost, orderId, notes]);
 
     return {
-      totalCost,
-      averageCost,
-      usedLots,
-      quantity
+        totalCost,
+        averageCost,
+        usedLots,
+        quantity,
+        movement: result.rows[0]
     };
-  }
-
+    }
+    
   /**
    * Calcular ganancia de una orden específica
    */
