@@ -4,6 +4,7 @@ import { getSchemaName } from '../utils/tenantHelper.js';
 import { authMiddleware, businessContextMiddleware } from '../middleware/auth.js';
 import { ecuadorToday } from '../utils/dateHelper.js';
 import { sendGenericEmail } from '../services/crmEmailService.js';
+import FIFOService from '../services/fifoService.js';
 
 // ===============================
 // 🔥 HELPERS PRO
@@ -169,7 +170,7 @@ router.get('/summary', authMiddleware, businessContextMiddleware, async (req, re
 });
 
 // ===============================
-// 📦 POST /closing - CIERRE COMPLETO CON INVENTARIO
+// 📦 POST /closing - CIERRE COMPLETO CON INVENTARIO (FIFO)
 // ===============================
 router.post('/closing', authMiddleware, businessContextMiddleware, async (req, res) => {
   try {
@@ -332,7 +333,7 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
     console.log('✅ CIERRE GUARDADO - ID:', closingData.id);
     console.log('📅 FECHA CIERRE:', closingDate);
 
-    // 📦 PROCESAR MOVIMIENTOS DE INVENTARIO
+    // 📦 PROCESAR MOVIMIENTOS DE INVENTARIO CON FIFO
     let inventoryMovements = [];
     let inventoryProcessed = false;
     let inventoryError = null;
@@ -340,7 +341,7 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
 
     if (process_inventory) {
       try {
-        console.log('📦 INICIANDO PROCESAMIENTO DE INVENTARIO...');
+        console.log('📦 INICIANDO PROCESAMIENTO DE INVENTARIO CON FIFO...');
 
         // Verificar si ya existen movimientos para esta fecha
         const movementsCheck = await query(
@@ -356,52 +357,25 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
         console.log(`📊 Movimientos existentes: ${movementsCheck.rows[0].count}`);
 
         if (parseInt(movementsCheck.rows[0].count) === 0) {
-          // 🔍 BUSCAR EN FACTURAS
+          // 🔍 BUSCAR ÓRDENES DEL DÍA
           let orderIds = [];
 
-          const invoicesResult = await query(
+          const ordersResult = await query(
             `
             SELECT 
-              ei.id AS invoice_id,
-              ei.invoice_number,
-              ei.order_id
-            FROM "${schema}".einvoices ei
+              id AS order_id,
+              order_number
+            FROM "${schema}".pos_orders
             WHERE 
-              DATE(ei.emission_date AT TIME ZONE '${TZ}') = $1
+              DATE(created_at AT TIME ZONE '${TZ}') = $1
+              AND status = 'paid'
             `,
             [closingDate]
           );
-
-          console.log(`📊 Facturas encontradas: ${invoicesResult.rows.length}`);
-
-          // Extraer order_ids de facturas
-          const orderIdsFromInvoices = invoicesResult.rows
-            .map(row => row.order_id)
-            .filter(id => id !== null);
-
-          if (orderIdsFromInvoices.length > 0) {
-            orderIds = orderIdsFromInvoices;
-            sourceType = 'facturas';
-            console.log(`📊 Usando ${orderIds.length} órdenes de facturas`);
-          } else {
-            // Buscar órdenes paid directamente
-            const ordersResult = await query(
-              `
-              SELECT 
-                id AS order_id,
-                order_number
-              FROM "${schema}".pos_orders
-              WHERE 
-                DATE(created_at AT TIME ZONE '${TZ}') = $1
-                AND status = 'paid'
-              `,
-              [closingDate]
-            );
-            
-            orderIds = ordersResult.rows.map(row => row.order_id);
-            sourceType = 'ordenes_paid';
-            console.log(`📊 Usando ${orderIds.length} órdenes paid directas`);
-          }
+          
+          orderIds = ordersResult.rows.map(row => row.order_id);
+          sourceType = 'ordenes_paid';
+          console.log(`📊 Usando ${orderIds.length} órdenes paid`);
 
           // Obtener items de las órdenes
           if (orderIds.length > 0) {
@@ -447,8 +421,7 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
 
               console.log(`📊 Productos agrupados: ${productMovements.size}`);
 
-              // 🔥 FORMATO DE FECHA CORREGIDO
-              // La fecha viene como '2026-08-08', formatear a '08/08/2026'
+              // 🔥 FORMATO DE FECHA
               const dateParts = closingDate.split('-');
               const year = dateParts[0];
               const month = dateParts[1];
@@ -457,79 +430,123 @@ router.post('/closing', authMiddleware, businessContextMiddleware, async (req, r
               
               console.log(`📅 Fecha formateada para notes: ${formattedDate}`);
 
-              // Crear movimientos
+              // 🔥 CREAR MOVIMIENTOS CON FIFO
+              const FIFOService = (await import('../services/fifoService.js')).default;
+              const fifoService = new FIFOService(schema);
+
               for (const [productId, data] of productMovements) {
-                const productResult = await query(
-                  `
-                  SELECT unit_cost, stock, name 
-                  FROM "${schema}".products 
-                  WHERE id = $1
-                  `,
-                  [productId]
-                );
+                try {
+                  // Obtener nombre del producto
+                  const productResult = await query(
+                    `
+                    SELECT name, stock 
+                    FROM "${schema}".products 
+                    WHERE id = $1
+                    `,
+                    [productId]
+                  );
+                  
+                  const productName = productResult.rows[0]?.name || data.product_name || 'Producto';
+                  const currentStock = productResult.rows[0]?.stock || 0;
+                  const quantityToSell = Math.abs(data.total_quantity);
 
-                const unitCost = productResult.rows[0]?.unit_cost || data.unit_price || 0;
-                const productName = productResult.rows[0]?.name || data.product_name || 'Producto';
-                const currentStock = productResult.rows[0]?.stock || 0;
+                  console.log(`📝 Procesando FIFO para ${productName}: ${quantityToSell} unidades`);
 
-                // 📝 NOTA: "Cierre de caja de 08/08/2026"
-                const notes = `Cierre de caja de ${formattedDate}`;
-                
-                // Cantidad NEGATIVA para venta (salida de inventario)
-                const quantity = -Math.abs(data.total_quantity);
-
-                console.log(`📝 Creando movimiento para ${productName}:`, {
-                  quantity,
-                  unitCost,
-                  notes,
-                  currentStock
-                });
-
-                // Insertar movimiento de inventario (sin reference_id)
-                const movementResult = await query(
-                  `
-                  INSERT INTO "${schema}".inventory_movements (
-                    product_id,
-                    type,
-                    quantity,
-                    unit_cost,
-                    notes,
-                    applied,
-                    created_at
-                  )
-                  VALUES (
-                    $1, $2, $3, $4, $5, $6, NOW()
-                  )
-                  RETURNING *
-                  `,
-                  [
+                  // 🔥 Registrar venta con FIFO
+                  const fifoResult = await fifoService.registerSale(
                     productId,
-                    'venta',
-                    quantity,
-                    unitCost,
-                    notes,
-                    true
-                  ]
-                );
+                    closingData.id,
+                    quantityToSell
+                  );
 
-                inventoryMovements.push(movementResult.rows[0]);
+                  // Actualizar stock del producto
+                  await query(
+                    `
+                    UPDATE "${schema}".products
+                    SET stock = stock - $1,
+                        updated_at = NOW()
+                    WHERE id = $2
+                    `,
+                    [quantityToSell, productId]
+                  );
 
-                // Actualizar stock del producto
-                await query(
-                  `
-                  UPDATE "${schema}".products
-                  SET stock = stock - $1,
-                      updated_at = NOW()
-                  WHERE id = $2
-                  `,
-                  [Math.abs(data.total_quantity), productId]
-                );
+                  // Buscar el movimiento creado por FIFO
+                  const movementResult = await query(
+                    `
+                    SELECT * FROM "${schema}".inventory_movements 
+                    WHERE reference_id = $1 
+                      AND product_id = $2 
+                      AND type = 'venta'
+                    ORDER BY created_at DESC 
+                    LIMIT 1
+                    `,
+                    [closingData.id, productId]
+                  );
 
-                console.log(`✅ Movimiento creado para ${productName}: ${quantity} unidades (Stock: ${currentStock} → ${currentStock - Math.abs(data.total_quantity)})`);
+                  if (movementResult.rows.length > 0) {
+                    inventoryMovements.push(movementResult.rows[0]);
+                  }
+
+                  console.log(`✅ FIFO procesado para ${productName}: ${quantityToSell} unidades - Costo: $${fifoResult.totalCost.toFixed(2)} - Stock: ${currentStock} → ${currentStock - quantityToSell}`);
+
+                } catch (fifoError) {
+                  console.error(`❌ Error FIFO para producto ${productId}:`, fifoError.message);
+                  
+                  // 🔥 FALLBACK: Usar costo promedio
+                  const productResult = await query(
+                    `
+                    SELECT unit_cost, stock, name 
+                    FROM "${schema}".products 
+                    WHERE id = $1
+                    `,
+                    [productId]
+                  );
+
+                  const unitCost = productResult.rows[0]?.unit_cost || data.unit_price || 0;
+                  const productName = productResult.rows[0]?.name || data.product_name || 'Producto';
+                  const currentStock = productResult.rows[0]?.stock || 0;
+
+                  const notes = `Cierre de caja de ${formattedDate} (FALLBACK - costo promedio)`;
+                  const quantity = -Math.abs(data.total_quantity);
+
+                  const movementResult = await query(
+                    `
+                    INSERT INTO "${schema}".inventory_movements (
+                      product_id,
+                      type,
+                      quantity,
+                      unit_cost,
+                      reference_id,
+                      notes,
+                      applied,
+                      created_at
+                    )
+                    VALUES (
+                      $1, 'venta', $2, $3, $4, $5, true, NOW()
+                    )
+                    RETURNING *
+                    `,
+                    [productId, quantity, unitCost, closingData.id, notes]
+                  );
+
+                  inventoryMovements.push(movementResult.rows[0]);
+
+                  await query(
+                    `
+                    UPDATE "${schema}".products
+                    SET stock = stock - $1,
+                        updated_at = NOW()
+                    WHERE id = $2
+                    `,
+                    [Math.abs(data.total_quantity), productId]
+                  );
+
+                  console.log(`⚠️ FALLBACK usado para ${productName}: ${quantity} unidades (Stock: ${currentStock} → ${currentStock - Math.abs(data.total_quantity)})`);
+                }
               }
 
               inventoryProcessed = true;
-              console.log(`✅ ${inventoryMovements.length} movimientos creados desde ${sourceType}`);
+              console.log(`✅ ${inventoryMovements.length} movimientos creados con FIFO desde ${sourceType}`);
             } else {
               console.log('ℹ️ No hay items para procesar');
             }

@@ -2,6 +2,8 @@ import express from 'express';
 import { query } from '../config/database.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 import { authMiddleware } from '../middleware/auth.js';
+import FIFOService from '../services/fifoService.js';
+
 
 const router = express.Router();
 
@@ -61,12 +63,6 @@ async function getSalesTotals(schema, periodo, startDate, endDate) {
   const result = await query(sql, params);
   return result.rows[0] || { total_ordenes: 0, total_ingresos: 0, total_subtotal: 0, total_iva: 0, clientes_unicos: 0, ticket_promedio: 0 };
 }
-
-/**
- * GET /api/reports/sales/detail/:id
- * Obtiene el detalle completo de una factura con sus items y datos de orden
- */
-// routes/reports.js - Corregir el endpoint de detalle
 
 /**
  * GET /api/reports/sales/detail/:id
@@ -546,7 +542,7 @@ router.get('/products-sold', authMiddleware, async (req, res) => {
 });
 
 /**
- * GET /api/reports/advanced
+ * GET /api/reports/advanced - CON GANANCIA REAL FIFO
  */
 router.get('/advanced', authMiddleware, async (req, res) => {
   try {
@@ -559,53 +555,100 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'from and to dates are required' });
     }
 
-    const totals = await getSalesTotals(schema, 'custom', from, to);
+    const TZ = 'America/Guayaquil';
+    const fifoService = new FIFOService(schema);
 
-    let dateFormatGroup, dateFormatLabel;
-    switch (groupBy) {
-      case 'week':
-        dateFormatGroup = `DATE_TRUNC('week', created_at)::DATE`;
-        dateFormatLabel = `DATE_TRUNC('week', created_at)::DATE`;
-        break;
-      case 'month':
-        dateFormatGroup = `DATE_TRUNC('month', created_at)::DATE`;
-        dateFormatLabel = `DATE_TRUNC('month', created_at)::DATE`;
-        break;
-      default:
-        dateFormatGroup = `DATE(created_at)`;
-        dateFormatLabel = `DATE(created_at)`;
-    }
-
+    // ─── 1. OBTENER VENTAS DEL PERÍODO ──────────────────────────────────
     const salesResult = await query(
-      `SELECT
-         ${dateFormatLabel} as date,
-         COALESCE(SUM(total), 0) as total_sales,
-         COUNT(DISTINCT id) as numero_transacciones
-       FROM "${schema}".pos_orders
-       WHERE status = 'paid'
-         AND DATE(created_at) >= $1::DATE
-         AND DATE(created_at) <= $2::DATE
-       GROUP BY ${dateFormatGroup}
-       ORDER BY date ASC`,
+      `
+      SELECT 
+        DATE(o.created_at AT TIME ZONE '${TZ}') as sale_date,
+        o.id as order_id,
+        o.total,
+        o.subtotal,
+        o.tax_amount as iva
+      FROM "${schema}".pos_orders o
+      WHERE o.status = 'paid'
+        AND DATE(o.created_at AT TIME ZONE '${TZ}') >= $1::DATE
+        AND DATE(o.created_at AT TIME ZONE '${TZ}') <= $2::DATE
+      ORDER BY o.created_at ASC
+      `,
       [from, to]
     );
 
+    console.log(`📊 Ventas encontradas: ${salesResult.rows.length}`);
+
+    // ─── 2. OBTENER COSTO FIFO PARA CADA VENTA ──────────────────────────
+    let totalVentas = 0;
+    let totalCostoFIFO = 0;
+    let totalIva = 0;
+    let totalOrdenes = salesResult.rows.length;
+
+    // Agrupar ventas por día para el gráfico
+    const dailyData = {};
+
+    for (const sale of salesResult.rows) {
+      const orderTotal = parseFloat(sale.total) || 0;
+      const iva = parseFloat(sale.iva) || 0;
+      const dateKey = sale.sale_date;
+
+      totalVentas += orderTotal;
+      totalIva += iva;
+
+      // Obtener costo FIFO de esta orden
+      const costResult = await query(
+        `
+        SELECT 
+          COALESCE(SUM(quantity * unit_cost), 0) as total_cost,
+          COUNT(*) as items_count
+        FROM "${schema}".inventory_movements
+        WHERE reference_id = $1 
+          AND type = 'venta'
+          AND applied = true
+        `,
+        [sale.order_id]
+      );
+
+      const orderCost = parseFloat(costResult.rows[0]?.total_cost) || 0;
+      totalCostoFIFO += orderCost;
+
+      // Acumular por día
+      if (!dailyData[dateKey]) {
+        dailyData[dateKey] = {
+          sales: 0,
+          cost: 0,
+          profit: 0,
+          orders: 0,
+          iva: 0
+        };
+      }
+      dailyData[dateKey].sales += orderTotal;
+      dailyData[dateKey].cost += orderCost;
+      dailyData[dateKey].profit += (orderTotal - orderCost);
+      dailyData[dateKey].orders += 1;
+      dailyData[dateKey].iva += iva;
+    }
+
+    // ─── 3. OBTENER GASTOS OPERATIVOS ──────────────────────────────────
     let expensesResult = { rows: [] };
     try {
       expensesResult = await query(
-        `SELECT
-           DATE(date) as date,
-           COALESCE(SUM(amount), 0) as total_expenses
-         FROM "${schema}".expenses
-         WHERE date >= $1::DATE AND date <= $2::DATE
-         GROUP BY DATE(date)
-         ORDER BY date ASC`,
+        `
+        SELECT
+          DATE(date) as date,
+          COALESCE(SUM(amount), 0) as total_expenses
+        FROM "${schema}".expenses
+        WHERE date >= $1::DATE AND date <= $2::DATE
+        GROUP BY DATE(date)
+        ORDER BY date ASC
+        `,
         [from, to]
       );
     } catch (err) {
       console.warn('[Advanced] Expenses query failed:', err.message);
     }
 
+    // ─── 4. GENERAR FECHAS COMPLETAS ────────────────────────────────────
     const allDates = [];
     const start = new Date(from + 'T12:00:00');
     const end = new Date(to + 'T12:00:00');
@@ -613,12 +656,27 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       allDates.push(d.toISOString().split('T')[0]);
     }
 
+    // ─── 5. COMPLETAR DATOS POR DÍA ─────────────────────────────────────
     const completeSales = allDates.map(dateStr => {
-      const sale = salesResult.rows.find(s => {
-        const sd = s.date instanceof Date ? s.date.toISOString().split('T')[0] : String(s.date).split('T')[0];
-        return sd === dateStr;
-      });
-      return sale || { date: dateStr, total_sales: 0, numero_transacciones: 0 };
+      const day = dailyData[dateStr];
+      if (day) {
+        return {
+          date: dateStr,
+          total_sales: day.sales,
+          total_cost: day.cost,
+          profit: day.profit,
+          orders: day.orders,
+          iva: day.iva
+        };
+      }
+      return {
+        date: dateStr,
+        total_sales: 0,
+        total_cost: 0,
+        profit: 0,
+        orders: 0,
+        iva: 0
+      };
     });
 
     const completeExpenses = allDates.map(dateStr => {
@@ -629,32 +687,70 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       return exp || { date: dateStr, total_expenses: 0 };
     });
 
-    const totalVentas = parseFloat(totals.total_ingresos) || 0;
+    // ─── 6. CALCULAR TOTALES ────────────────────────────────────────────
+    const gananciaBruta = totalVentas - totalCostoFIFO;
     const totalGastos = completeExpenses.reduce((sum, e) => sum + (Number(e.total_expenses) || 0), 0);
-    const gananciaNeta = totalVentas - totalGastos;
+    const gananciaNeta = gananciaBruta - totalGastos;
     const margen = totalVentas > 0 ? (gananciaNeta / totalVentas) * 100 : 0;
+    const margenBruto = totalVentas > 0 ? (gananciaBruta / totalVentas) * 100 : 0;
 
+    // ─── 7. OBTENER DETALLE DE LOTES USADOS (opcional) ──────────────────
+    // Para mostrar cuántos lotes se usaron en el período
+    const lotsUsed = await query(
+      `
+      SELECT 
+        COUNT(DISTINCT im.reference_id) as orders_with_fifo,
+        COUNT(DISTINCT fl.id) as lots_used,
+        SUM(fl.quantity) as total_lots_quantity
+      FROM "${schema}".inventory_movements im
+      INNER JOIN "${schema}".fifo_lots fl ON fl.product_id = im.product_id
+      WHERE im.type = 'venta'
+        AND im.applied = true
+        AND DATE(im.created_at AT TIME ZONE '${TZ}') >= $1::DATE
+        AND DATE(im.created_at AT TIME ZONE '${TZ}') <= $2::DATE
+      `,
+      [from, to]
+    );
+
+    // ─── 8. RESPONDER ────────────────────────────────────────────────────
     res.json({
       success: true,
       sales: completeSales,
       expenses: completeExpenses,
       totals: {
-        total_ventas: totalVentas,
-        total_gastos: totalGastos,
-        ganancia_neta: gananciaNeta,
-        margen
+        total_ventas: parseFloat(totalVentas.toFixed(2)),
+        total_costo_fifo: parseFloat(totalCostoFIFO.toFixed(2)),
+        ganancia_bruta: parseFloat(gananciaBruta.toFixed(2)),
+        total_gastos: parseFloat(totalGastos.toFixed(2)),
+        ganancia_neta: parseFloat(gananciaNeta.toFixed(2)),
+        margen: parseFloat(margen.toFixed(2)),
+        margen_bruto: parseFloat(margenBruto.toFixed(2)),
+        total_iva: parseFloat(totalIva.toFixed(2)),
+        total_ordenes: totalOrdenes
+      },
+      fifo_metrics: {
+        orders_with_fifo: parseInt(lotsUsed.rows[0]?.orders_with_fifo || 0),
+        lots_used: parseInt(lotsUsed.rows[0]?.lots_used || 0),
+        total_lots_quantity: parseInt(lotsUsed.rows[0]?.total_lots_quantity || 0)
       },
       metadata: {
         invoiceSource: 'pos',
         dateRange: { from, to },
-        groupBy,
-        totalDays: allDates.length
+        groupBy: groupBy || 'day',
+        totalDays: allDates.length,
+        totalOrders: totalOrdenes
       }
     });
+
   } catch (err) {
     console.error('[Advanced] Error:', err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ 
+      success: false, 
+      error: err.message,
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
   }
 });
+
 
 export default router;

@@ -1073,6 +1073,27 @@ router.post('/', authMiddleware, async (req, res) => {
             finalReceiptNumber,
             productName || 'Producto sin nombre'
           );
+
+          // 🔥 2. CREAR LOTE FIFO
+          await query(`
+            INSERT INTO "${schema}".fifo_lots (
+              product_id,
+              purchase_receipt_id,
+              purchase_order_item_comm_id,
+              quantity,
+              remaining_quantity,
+              unit_cost,
+              purchase_date,
+              is_active
+            ) VALUES ($1, $2, $3, $4, $4, $5, CURRENT_DATE, true)
+          `, [
+            productId,
+            receipt.id,
+            itemCommId,
+            quantity,
+            unitCost
+          ]);
+      
         } else {
           await createRawMaterialInventoryMovement(
             schema,
