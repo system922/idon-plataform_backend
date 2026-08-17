@@ -541,9 +541,8 @@ router.get('/products-sold', authMiddleware, async (req, res) => {
   }
 });
 
-/**
- * GET /api/reports/advanced - CON GANANCIA REAL FIFO
- */
+// routes/reports.js - Endpoint /advanced corregido
+
 router.get('/advanced', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -584,7 +583,6 @@ router.get('/advanced', authMiddleware, async (req, res) => {
     let totalIva = 0;
     let totalOrdenes = salesResult.rows.length;
 
-    // Agrupar ventas por día para el gráfico
     const dailyData = {};
 
     for (const sale of salesResult.rows) {
@@ -595,14 +593,14 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       totalVentas += orderTotal;
       totalIva += iva;
 
-      // Obtener costo FIFO de esta orden
+      // ✅ CORREGIDO: Usar ::text para comparar UUID con INTEGER
       const costResult = await query(
         `
         SELECT 
           COALESCE(SUM(quantity * unit_cost), 0) as total_cost,
           COUNT(*) as items_count
         FROM "${schema}".inventory_movements
-        WHERE reference_id = $1 
+        WHERE reference_id::text = $1 
           AND type = 'venta'
           AND applied = true
         `,
@@ -612,7 +610,6 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       const orderCost = parseFloat(costResult.rows[0]?.total_cost) || 0;
       totalCostoFIFO += orderCost;
 
-      // Acumular por día
       if (!dailyData[dateKey]) {
         dailyData[dateKey] = {
           sales: 0,
@@ -695,7 +692,6 @@ router.get('/advanced', authMiddleware, async (req, res) => {
     const margenBruto = totalVentas > 0 ? (gananciaBruta / totalVentas) * 100 : 0;
 
     // ─── 7. OBTENER DETALLE DE LOTES USADOS (opcional) ──────────────────
-    // Para mostrar cuántos lotes se usaron en el período
     const lotsUsed = await query(
       `
       SELECT 
@@ -752,8 +748,6 @@ router.get('/advanced', authMiddleware, async (req, res) => {
   }
 });
 
-// routes/reports.js - Agregar este endpoint
-
 /**
  * GET /api/reports/profit-detail
  * Obtiene detalle de ganancias por producto con FIFO
@@ -809,6 +803,7 @@ router.get('/profit-detail', authMiddleware, async (req, res) => {
     const orderIds = ordersResult.rows.map(o => o.order_id);
 
     // ─── 2. OBTENER ITEMS DE LAS ÓRDENES ──────────────────────────────────
+    // ✅ CORREGIDO: Usar ::text para comparar UUID con UUID
     const itemsResult = await query(
       `
       SELECT 
@@ -827,7 +822,7 @@ router.get('/profit-detail', authMiddleware, async (req, res) => {
     );
 
     // ─── 3. OBTENER COSTO FIFO POR PRODUCTO ──────────────────────────────
-    // Obtener los movimientos de inventario (venta) con costo FIFO
+    // ✅ CORREGIDO: reference_id es INTEGER, usar ::text para comparar
     const movementsResult = await query(
       `
       SELECT 
@@ -839,13 +834,14 @@ router.get('/profit-detail', authMiddleware, async (req, res) => {
         im.created_at
       FROM "${schema}".inventory_movements im
       WHERE im.type = 'venta'
-        AND im.reference_id = ANY($1::uuid[])
+        AND im.reference_id::text = ANY($1::text[])
         AND im.applied = true
       `,
       [orderIds]
     );
 
     // ─── 4. OBTENER DETALLE DE LOTES USADOS (FIFO) ──────────────────────
+    // ✅ CORREGIDO: reference_id es INTEGER, usar ::text para comparar
     const lotsUsedResult = await query(
       `
       SELECT 
@@ -861,7 +857,7 @@ router.get('/profit-detail', authMiddleware, async (req, res) => {
       INNER JOIN "${schema}".inventory_movements im 
         ON im.product_id = fl.product_id 
         AND im.type = 'venta'
-        AND im.reference_id = ANY($1::uuid[])
+        AND im.reference_id::text = ANY($1::text[])
       WHERE fl.is_active = false 
         OR fl.remaining_quantity < fl.quantity
       ORDER BY fl.purchase_date ASC
@@ -971,6 +967,5 @@ router.get('/profit-detail', authMiddleware, async (req, res) => {
     });
   }
 });
-
 
 export default router;
