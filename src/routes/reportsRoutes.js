@@ -752,5 +752,225 @@ router.get('/advanced', authMiddleware, async (req, res) => {
   }
 });
 
+// routes/reports.js - Agregar este endpoint
+
+/**
+ * GET /api/reports/profit-detail
+ * Obtiene detalle de ganancias por producto con FIFO
+ */
+router.get('/profit-detail', authMiddleware, async (req, res) => {
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+
+    const { from = null, to = null } = req.query;
+
+    if (!from || !to) {
+      return res.status(400).json({ error: 'from and to dates are required' });
+    }
+
+    const TZ = 'America/Guayaquil';
+
+    // ─── 1. OBTENER TODAS LAS ÓRDENES PAGADAS DEL PERÍODO ──────────────
+    const ordersResult = await query(
+      `
+      SELECT 
+        o.id as order_id,
+        o.order_number,
+        o.total as order_total,
+        o.created_at
+      FROM "${schema}".pos_orders o
+      WHERE o.status = 'paid'
+        AND DATE(o.created_at AT TIME ZONE '${TZ}') >= $1::DATE
+        AND DATE(o.created_at AT TIME ZONE '${TZ}') <= $2::DATE
+      ORDER BY o.created_at ASC
+      `,
+      [from, to]
+    );
+
+    if (ordersResult.rows.length === 0) {
+      return res.json({
+        success: true,
+        data: {
+          summary: {
+            total_ventas: 0,
+            total_costo: 0,
+            total_ganancia: 0,
+            total_ordenes: 0,
+            margen_promedio: 0
+          },
+          products: [],
+          orders: [],
+          lots_used: []
+        }
+      });
+    }
+
+    const orderIds = ordersResult.rows.map(o => o.order_id);
+
+    // ─── 2. OBTENER ITEMS DE LAS ÓRDENES ──────────────────────────────────
+    const itemsResult = await query(
+      `
+      SELECT 
+        oi.order_id,
+        oi.product_id,
+        oi.product_name,
+        oi.quantity,
+        oi.unit_price,
+        oi.line_total,
+        o.order_number
+      FROM "${schema}".pos_order_items oi
+      INNER JOIN "${schema}".pos_orders o ON o.id = oi.order_id
+      WHERE oi.order_id = ANY($1::uuid[])
+      `,
+      [orderIds]
+    );
+
+    // ─── 3. OBTENER COSTO FIFO POR PRODUCTO ──────────────────────────────
+    // Obtener los movimientos de inventario (venta) con costo FIFO
+    const movementsResult = await query(
+      `
+      SELECT 
+        im.product_id,
+        im.quantity,
+        im.unit_cost,
+        im.reference_id,
+        im.notes,
+        im.created_at
+      FROM "${schema}".inventory_movements im
+      WHERE im.type = 'venta'
+        AND im.reference_id = ANY($1::uuid[])
+        AND im.applied = true
+      `,
+      [orderIds]
+    );
+
+    // ─── 4. OBTENER DETALLE DE LOTES USADOS (FIFO) ──────────────────────
+    const lotsUsedResult = await query(
+      `
+      SELECT 
+        fl.id as lot_id,
+        fl.product_id,
+        fl.unit_cost,
+        fl.purchase_date,
+        fl.quantity as lot_quantity,
+        fl.remaining_quantity,
+        im.reference_id as order_id,
+        im.quantity as quantity_used
+      FROM "${schema}".fifo_lots fl
+      INNER JOIN "${schema}".inventory_movements im 
+        ON im.product_id = fl.product_id 
+        AND im.type = 'venta'
+        AND im.reference_id = ANY($1::uuid[])
+      WHERE fl.is_active = false 
+        OR fl.remaining_quantity < fl.quantity
+      ORDER BY fl.purchase_date ASC
+      `,
+      [orderIds]
+    );
+
+    // ─── 5. CALCULAR GANANCIA POR PRODUCTO ──────────────────────────────
+    const productMap = new Map();
+    let totalVentas = 0;
+    let totalCosto = 0;
+    let totalGanancia = 0;
+
+    // Agrupar items por producto
+    for (const item of itemsResult.rows) {
+      const productId = item.product_id;
+      
+      if (!productMap.has(productId)) {
+        productMap.set(productId, {
+          product_id: productId,
+          product_name: item.product_name || 'Producto',
+          total_quantity: 0,
+          total_ventas: 0,
+          total_costo: 0,
+          total_ganancia: 0,
+          precio_promedio: 0,
+          costo_promedio: 0,
+          orders: []
+        });
+      }
+
+      const product = productMap.get(productId);
+      product.total_quantity += parseInt(item.quantity) || 0;
+      product.total_ventas += parseFloat(item.line_total) || 0;
+      product.orders.push(item.order_id);
+    }
+
+    // Calcular costo FIFO por producto
+    for (const movement of movementsResult.rows) {
+      const productId = movement.product_id;
+      if (productMap.has(productId)) {
+        const product = productMap.get(productId);
+        const cost = Math.abs(parseFloat(movement.quantity) * parseFloat(movement.unit_cost));
+        product.total_costo += cost;
+        product.total_ganancia = product.total_ventas - product.total_costo;
+      }
+    }
+
+    // Calcular totales
+    const products = [];
+    for (const [productId, product] of productMap) {
+      const ventas = product.total_ventas;
+      const costo = product.total_costo;
+      const ganancia = ventas - costo;
+      
+      totalVentas += ventas;
+      totalCosto += costo;
+      totalGanancia += ganancia;
+
+      products.push({
+        ...product,
+        total_ventas: parseFloat(ventas.toFixed(2)),
+        total_costo: parseFloat(costo.toFixed(2)),
+        total_ganancia: parseFloat(ganancia.toFixed(2)),
+        precio_promedio: product.total_quantity > 0 ? parseFloat((ventas / product.total_quantity).toFixed(2)) : 0,
+        costo_promedio: product.total_quantity > 0 ? parseFloat((costo / product.total_quantity).toFixed(2)) : 0,
+        margen: ventas > 0 ? parseFloat(((ganancia / ventas) * 100).toFixed(2)) : 0
+      });
+    }
+
+    // Ordenar por ganancia descendente
+    products.sort((a, b) => b.total_ganancia - a.total_ganancia);
+
+    // ─── 6. CALCULAR MARGEN TOTAL ────────────────────────────────────────
+    const margenTotal = totalVentas > 0 ? (totalGanancia / totalVentas) * 100 : 0;
+
+    // ─── 7. RESPONDER ────────────────────────────────────────────────────
+    res.json({
+      success: true,
+      data: {
+        summary: {
+          total_ventas: parseFloat(totalVentas.toFixed(2)),
+          total_costo: parseFloat(totalCosto.toFixed(2)),
+          total_ganancia: parseFloat(totalGanancia.toFixed(2)),
+          total_ordenes: ordersResult.rows.length,
+          margen_promedio: parseFloat(margenTotal.toFixed(2))
+        },
+        products: products,
+        orders: ordersResult.rows.map(o => ({
+          ...o,
+          order_total: parseFloat(o.order_total.toFixed(2))
+        })),
+        lots_used: lotsUsedResult.rows.map(l => ({
+          ...l,
+          unit_cost: parseFloat(l.unit_cost),
+          quantity_used: parseInt(l.quantity_used)
+        }))
+      }
+    });
+
+  } catch (err) {
+    console.error('[ProfitDetail] Error:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message,
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
+  }
+});
+
 
 export default router;
