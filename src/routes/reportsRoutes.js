@@ -541,8 +541,8 @@ router.get('/products-sold', authMiddleware, async (req, res) => {
   }
 });
 
-// routes/reports.js - Endpoint /advanced corregido
 
+// routes/reports.js - Endpoint /advanced con todas las correcciones
 router.get('/advanced', authMiddleware, async (req, res) => {
   try {
     const schema = await getSchemaName(req);
@@ -557,11 +557,14 @@ router.get('/advanced', authMiddleware, async (req, res) => {
     const TZ = 'America/Guayaquil';
     const fifoService = new FIFOService(schema);
 
-    // ─── 1. OBTENER VENTAS DEL PERÍODO ──────────────────────────────────
+    // ─── 1. OBTENER VENTAS DEL PERÍODO (con TO_CHAR para formato consistente) ──
     const salesResult = await query(
       `
       SELECT 
-        DATE(o.created_at AT TIME ZONE '${TZ}') as sale_date,
+        TO_CHAR(
+          DATE(o.created_at AT TIME ZONE '${TZ}'),
+          'YYYY-MM-DD'
+        ) as sale_date,
         o.id as order_id,
         o.total,
         o.subtotal,
@@ -588,7 +591,7 @@ router.get('/advanced', authMiddleware, async (req, res) => {
     for (const sale of salesResult.rows) {
       const orderTotal = parseFloat(sale.total) || 0;
       const iva = parseFloat(sale.iva) || 0;
-      const dateKey = sale.sale_date;
+      const dateKey = sale.sale_date; // Ya es string 'YYYY-MM-DD'
 
       totalVentas += orderTotal;
       totalIva += iva;
@@ -609,6 +612,7 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       const orderCost = parseFloat(costResult.rows[0]?.total_cost) || 0;
       totalCostoFIFO += orderCost;
 
+      // Acumular por día
       if (!dailyData[dateKey]) {
         dailyData[dateKey] = {
           sales: 0,
@@ -631,11 +635,11 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       expensesResult = await query(
         `
         SELECT
-          DATE(date) as date,
+          TO_CHAR(date, 'YYYY-MM-DD') as date,
           COALESCE(SUM(amount), 0) as total_expenses
         FROM "${schema}".expenses
         WHERE date >= $1::DATE AND date <= $2::DATE
-        GROUP BY DATE(date)
+        GROUP BY date
         ORDER BY date ASC
         `,
         [from, to]
@@ -644,59 +648,60 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       console.warn('[Advanced] Expenses query failed:', err.message);
     }
 
-    // ─── 4. GENERAR FECHAS COMPLETAS ────────────────────────────────────
+    // ─── 4. GENERAR TODOS LOS DÍAS DEL RANGO (UTC para evitar zona horaria) ──
     const allDates = [];
-    const start = new Date(from + 'T12:00:00');
-    const end = new Date(to + 'T12:00:00');
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      allDates.push(d.toISOString().split('T')[0]);
+    const [startYear, startMonth, startDay] = from.split('-').map(Number);
+    const [endYear, endMonth, endDay] = to.split('-').map(Number);
+
+    const start = new Date(Date.UTC(startYear, startMonth - 1, startDay));
+    const end = new Date(Date.UTC(endYear, endMonth - 1, endDay));
+
+    for (
+      let d = new Date(start);
+      d <= end;
+      d.setUTCDate(d.getUTCDate() + 1)
+    ) {
+      allDates.push(d.toISOString().slice(0, 10));
     }
 
     // ─── 5. COMPLETAR DATOS POR DÍA ─────────────────────────────────────
-    const completeSales = allDates.map(dateStr => {
+    const completeSales = allDates.map((dateStr) => {
       const day = dailyData[dateStr];
-      if (day) {
-        return {
-          date: dateStr,
-          total_sales: day.sales,
-          total_cost: day.cost,
-          profit: day.profit,
-          orders: day.orders,
-          iva: day.iva
-        };
-      }
       return {
         date: dateStr,
-        total_sales: 0,
-        total_cost: 0,
-        profit: 0,
-        orders: 0,
-        iva: 0
+        total_sales: Number(day?.sales || 0),
+        total_cost: Number(day?.cost || 0),
+        profit: Number(day?.profit || 0),
+        orders: Number(day?.orders || 0),
+        iva: Number(day?.iva || 0),
       };
     });
 
-    const completeExpenses = allDates.map(dateStr => {
-      const exp = expensesResult.rows.find(e => {
-        const ed = e.date instanceof Date ? e.date.toISOString().split('T')[0] : String(e.date).split('T')[0];
-        return ed === dateStr;
-      });
-      return exp || { date: dateStr, total_expenses: 0 };
+    // ─── 6. COMPLETAR GASTOS POR DÍA ──────────────────────────────────
+    const expensesMap = {};
+    expensesResult.rows.forEach(e => {
+      expensesMap[e.date] = Number(e.total_expenses) || 0;
     });
 
-    // ─── 6. CALCULAR TOTALES ────────────────────────────────────────────
+    const completeExpenses = allDates.map((dateStr) => ({
+      date: dateStr,
+      total_expenses: expensesMap[dateStr] || 0,
+    }));
+
+    // ─── 7. CALCULAR TOTALES ────────────────────────────────────────────
     const gananciaBruta = totalVentas - totalCostoFIFO;
-    const totalGastos = completeExpenses.reduce((sum, e) => sum + (Number(e.total_expenses) || 0), 0);
+    const totalGastos = completeExpenses.reduce((sum, e) => sum + e.total_expenses, 0);
     const gananciaNeta = gananciaBruta - totalGastos;
     const margen = totalVentas > 0 ? (gananciaNeta / totalVentas) * 100 : 0;
     const margenBruto = totalVentas > 0 ? (gananciaBruta / totalVentas) * 100 : 0;
 
-    // ─── 7. OBTENER DETALLE DE LOTES USADOS (opcional) ──────────────────
+    // ─── 8. OBTENER DETALLE DE LOTES USADOS ────────────────────────────
     const lotsUsed = await query(
       `
       SELECT 
         COUNT(DISTINCT im.reference_id) as orders_with_fifo,
         COUNT(DISTINCT fl.id) as lots_used,
-        SUM(fl.quantity) as total_lots_quantity
+        SUM(ABS(im.quantity)) as total_lots_quantity
       FROM "${schema}".inventory_movements im
       INNER JOIN "${schema}".fifo_lots fl ON fl.product_id = im.product_id
       WHERE im.type = 'venta'
@@ -707,7 +712,7 @@ router.get('/advanced', authMiddleware, async (req, res) => {
       [from, to]
     );
 
-    // ─── 8. RESPONDER ────────────────────────────────────────────────────
+    // ─── 9. RESPONDER ────────────────────────────────────────────────────
     res.json({
       success: true,
       sales: completeSales,
@@ -721,28 +726,28 @@ router.get('/advanced', authMiddleware, async (req, res) => {
         margen: parseFloat(margen.toFixed(2)),
         margen_bruto: parseFloat(margenBruto.toFixed(2)),
         total_iva: parseFloat(totalIva.toFixed(2)),
-        total_ordenes: totalOrdenes
+        total_ordenes: totalOrdenes,
       },
       fifo_metrics: {
         orders_with_fifo: parseInt(lotsUsed.rows[0]?.orders_with_fifo || 0),
         lots_used: parseInt(lotsUsed.rows[0]?.lots_used || 0),
-        total_lots_quantity: parseInt(lotsUsed.rows[0]?.total_lots_quantity || 0)
+        total_lots_quantity: parseInt(lotsUsed.rows[0]?.total_lots_quantity || 0),
       },
       metadata: {
         invoiceSource: 'pos',
         dateRange: { from, to },
         groupBy: groupBy || 'day',
         totalDays: allDates.length,
-        totalOrders: totalOrdenes
-      }
+        totalOrders: totalOrdenes,
+      },
     });
 
   } catch (err) {
     console.error('[Advanced] Error:', err);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       error: err.message,
-      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined,
     });
   }
 });
