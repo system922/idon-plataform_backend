@@ -49,13 +49,24 @@ async function getSalesTotals(schema, periodo, startDate, endDate) {
       COALESCE(SUM(o.total), 0) as total_ingresos,
       COALESCE(SUM(o.subtotal), 0) as total_subtotal,
       COALESCE(SUM(o.tax_amount), 0) as total_iva,
-      COUNT(DISTINCT o.customer_id) as clientes_unicos,
+      COUNT(DISTINCT 
+        COALESCE(
+          o.customer_id::text,
+          c.document_number,
+          CASE 
+            WHEN o.customer_name IS NOT NULL AND o.customer_name != 'CONSUMIDOR FINAL' 
+            THEN o.customer_name 
+            ELSE 'CONSUMIDOR_FINAL' 
+          END
+        )
+      ) as clientes_unicos,
       CASE
         WHEN COUNT(DISTINCT o.id) > 0
         THEN COALESCE(SUM(o.total), 0) / COUNT(DISTINCT o.id)
         ELSE 0
       END as ticket_promedio
     FROM "${schema}".pos_orders o
+    LEFT JOIN "${schema}".customers c ON o.customer_id = c.id
     WHERE ${dateFilter}
       AND o.status = 'paid'
   `;
