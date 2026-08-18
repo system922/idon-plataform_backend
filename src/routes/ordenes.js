@@ -34,7 +34,7 @@ router.post('/', authMiddleware, async (req, res) => {
 
     await client.query('BEGIN');
 
-    // Crear tabla para control de contador diario (si no existe)
+    // Crear tabla de contador diario (si no existe)
     await client.query(`
       CREATE TABLE IF NOT EXISTS "${schema}".daily_order_counter (
         id SERIAL PRIMARY KEY,
@@ -65,34 +65,23 @@ router.post('/', authMiddleware, async (req, res) => {
       customerName = cRes.rows[0]?.name || null;
     }
 
-    // Calcular totales desde los items enviados (el frontend envía unit_price, tax_rate)
-    // Calcular totales desde los items enviados
+    // ─── CALCULAR TOTALES SUMANDO LOS VALORES DE CADA ÍTEM ───
     let calculatedSubtotal = 0;
     let calculatedTax = 0;
     let calculatedTotal = 0;
 
     for (const item of items) {
       const unitPrice = Number(item.unit_price) || 0;
-      const ivaAmount = Number(item.iva_amount) || 0;  // ✅ MONTO de IVA
       const quantity = Number(item.quantity) || 1;
-      
-      // Subtotal = precio sin IVA * cantidad
+      const ivaAmount = Number(item.iva_amount) || 0;   // ← monto de IVA enviado
+      const lineTotal = Number(item.line_total) || (unitPrice * quantity + ivaAmount);
+
       calculatedSubtotal += unitPrice * quantity;
-      
-      // IVA total = suma de iva_amount de todos los items
       calculatedTax += ivaAmount;
-      
-      // Total = subtotal + IVA
-      calculatedTotal += (unitPrice * quantity) + ivaAmount;
+      calculatedTotal += lineTotal;
     }
 
-    console.log('📊 Totales calculados:', {
-      calculatedSubtotal,  // 13.70
-      calculatedTax,       // 2.05
-      calculatedTotal      // 15.75
-    });
-
-    // Insertar orden con el número diario
+    // ─── INSERTAR ORDEN ───
     const insertRes = await client.query(
       `INSERT INTO "${schema}".pos_orders
          (order_number, order_type, status,
@@ -115,14 +104,14 @@ router.post('/', authMiddleware, async (req, res) => {
 
     const pedido = insertRes.rows[0];
 
-    // Insertar items con todos los campos (unit_price, tax_rate, iva_amount, line_total, product_name)
+    // ─── INSERTAR ÍTEMS CON VALORES EXACTOS ───
     const insertedItems = [];
     for (const item of items) {
       const unitPrice = Number(item.unit_price) || 0;
-      const taxRate = Number(item.tax_rate) || 0;
+      const taxRate = Number(item.tax_rate) || 0;          // porcentaje (ej. 15)
       const quantity = Number(item.quantity) || 1;
-      const ivaAmount = Number(item.iva_amount) || (taxRate * quantity);
-      const lineTotal = Number(item.line_total) || ((unitPrice + taxRate) * quantity);
+      const ivaAmount = Number(item.iva_amount) || 0;      // monto total de IVA
+      const lineTotal = Number(item.line_total) || (unitPrice * quantity + ivaAmount);
       const productName = item.product_name || 'Producto';
       const notes = item.notes || null;
 
@@ -133,7 +122,7 @@ router.post('/', authMiddleware, async (req, res) => {
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING *`,
         [pedido.id, item.product_id, productName, quantity,
-        unitPrice, taxRate, ivaAmount, lineTotal, notes]
+         unitPrice, taxRate, ivaAmount, lineTotal, notes]
       );
       insertedItems.push(itemRes.rows[0]);
     }
