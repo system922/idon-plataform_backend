@@ -384,10 +384,7 @@ export const createReceivableFromOrder = async (req, res) => {
       payment_method,
       reference_number,
       notes,
-      // Datos del usuario para auditoría (igual que apertura/cierre)
-      user_id,
-      user_name,
-      user_email
+      user_id
     } = req.body;
 
     if (!order_id || !order_number || !total_amount || total_amount <= 0) {
@@ -446,15 +443,13 @@ export const createReceivableFromOrder = async (req, res) => {
       ]);
     }
 
-    // Registrar auditoría (igual que en apertura/cierre)
+    // Registrar auditoría en audit_logs
     await client.query(`
       INSERT INTO "${schema}".audit_logs 
-      (user_id, user_name, user_email, table_name, action, record_id, new_values, description, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+      (user_id, table_name, action, record_id, new_values, description, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, NOW())
     `, [
       user_id || null,
-      user_name || 'Usuario',
-      user_email || null,
       'accounts_receivable',
       'INSERT',
       receivable.id.toString(),
@@ -517,8 +512,8 @@ export const deleteReceivable = async (req, res) => {
     await ensureReceivablesTable(schema);
     const { id } = req.params;
 
-    // Obtener usuario del body (igual que en apertura/cierre)
-    const { user_id, user_name, user_email } = req.body;
+    // Obtener user_id del body
+    const { user_id } = req.body;
 
     await client.query('BEGIN');
 
@@ -542,16 +537,14 @@ export const deleteReceivable = async (req, res) => {
       return res.status(404).json({ success: false, error: 'Cuenta no encontrada' });
     }
 
-    // Registrar auditoría (igual que en apertura/cierre)
+    // Registrar auditoría en audit_logs
     const oldValues = oldRecord.rows[0];
     await client.query(`
       INSERT INTO "${schema}".audit_logs 
-      (user_id, user_name, user_email, table_name, action, record_id, old_values, description, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+      (user_id, table_name, action, record_id, old_values, description, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, NOW())
     `, [
       user_id || null,
-      user_name || 'Usuario',
-      user_email || null,
       'accounts_receivable',
       'DELETE',
       id.toString(),
@@ -579,9 +572,10 @@ export const addPaymentToReceivable = async (req, res) => {
   const client = await getClient();
   try {
     const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
     await ensureReceivablesTable(schema);
     const { id } = req.params;
-    const { payment_method, amount, reference_number } = req.body;
+    const { payment_method, amount, reference_number, user_id } = req.body;
 
     if (!payment_method || !amount || amount <= 0) {
       return res.status(400).json({ success: false, error: 'Monto y método de pago requeridos' });
@@ -589,14 +583,25 @@ export const addPaymentToReceivable = async (req, res) => {
 
     await client.query('BEGIN');
     const recRes = await client.query(`SELECT * FROM "${schema}".accounts_receivable WHERE id=$1`, [id]);
-    if (!recRes.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ success: false, error: 'Cuenta no encontrada' }); }
+    if (!recRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, error: 'Cuenta no encontrada' });
+    }
 
     const rec = recRes.rows[0];
-    if (rec.status === 'paid') { await client.query('ROLLBACK'); return res.status(400).json({ success: false, error: 'Esta cuenta ya está pagada' }); }
+    if (rec.status === 'paid') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ success: false, error: 'Esta cuenta ya está pagada' });
+    }
 
-    const newPaid = parseFloat(rec.paid_amount) + parseFloat(amount);
+    const oldPaidAmount = parseFloat(rec.paid_amount);
+    const oldStatus = rec.status;
+    const newPaid = oldPaidAmount + parseFloat(amount);
     const newBalance = parseFloat(rec.amount) - newPaid;
     const newStatus = newBalance <= 0 ? 'paid' : 'pending';
+
+    // Guardar valores antiguos para auditoría
+    const oldValues = { ...rec };
 
     await client.query(`
       UPDATE "${schema}".accounts_receivable
@@ -604,8 +609,34 @@ export const addPaymentToReceivable = async (req, res) => {
       WHERE id=$4
     `, [newPaid, Math.max(0, newBalance), newStatus, id]);
 
+    // Obtener el registro actualizado para auditoría
+    const updatedRecord = await client.query(
+      `SELECT * FROM "${schema}".accounts_receivable WHERE id = $1`,
+      [id]
+    );
+
+    // Registrar auditoría en audit_logs
+    await client.query(`
+      INSERT INTO "${schema}".audit_logs 
+      (user_id, table_name, action, record_id, old_values, new_values, description, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+    `, [
+      user_id || null,
+      'accounts_receivable',
+      'UPDATE',
+      id.toString(),
+      oldValues,
+      updatedRecord.rows[0],
+      `Pago registrado - Cuenta #${rec.order_number || id} - Monto: $${amount.toFixed(2)} - Método: ${payment_method} - Nuevo saldo: $${newBalance.toFixed(2)}`
+    ]);
+
     await client.query('COMMIT');
-    res.json({ success: true, message: 'Pago registrado exitosamente' });
+    res.json({ 
+      success: true, 
+      message: 'Pago registrado exitosamente',
+      data: updatedRecord.rows[0]
+    });
+
   } catch (err) {
     await client.query('ROLLBACK');
     console.error(err);
