@@ -23,7 +23,35 @@ async function ensureReceivablesTable(schema) {
   `);
 }
 
-// Agregar al archivo de cuentas por cobrar
+// Función auxiliar para registrar auditoría
+async function logAudit(schema, userId, tableName, action, recordId, oldValues, description = null) {
+  try {
+    await query(`
+      INSERT INTO "${schema}".audit_logs 
+      (user_id, table_name, action, record_id, old_values, description, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, NOW())
+    `, [userId, tableName, action, recordId, oldValues, description || null]);
+  } catch (err) {
+    console.error('Error al registrar auditoría:', err);
+    // No lanzamos error para no interrumpir la operación principal
+  }
+}
+
+// Función para obtener el usuario actual
+function getCurrentUserId(req) {
+  // Primero intentar obtener desde el token/sesión
+  const userId = req.user?.id || req.user?.userId || req.session?.userId;
+  
+  // Si no hay usuario en el request, intentar obtener de la tabla users pública
+  // Esto es para el dueño del negocio (usuario público)
+  if (!userId && req.user?.email) {
+    // Buscar en la tabla users pública por email
+    // Nota: Esto debería ejecutarse en una consulta separada
+    return null; // Se resolverá en la función que llama
+  }
+  
+  return userId;
+}
 
 export const createReceivableFromOrder = async (req, res) => {
   const client = await getClient();
@@ -518,16 +546,93 @@ export const updateReceivable = async (req, res) => {
 };
 
 export const deleteReceivable = async (req, res) => {
+  const client = await getClient();
   try {
     const schema = await getSchemaName(req);
     await ensureReceivablesTable(schema);
     const { id } = req.params;
-    const result = await query(`DELETE FROM "${schema}".accounts_receivable WHERE id=$1 RETURNING id`, [id]);
-    if (!result.rows.length) return res.status(404).json({ success: false, error: 'Cuenta no encontrada' });
-    res.json({ success: true });
+
+    // Obtener el ID del usuario
+    let userId = req.user?.id || req.user?.userId || req.session?.userId;
+    
+    // Si no hay userId en el request, buscar por email en la tabla pública
+    if (!userId && req.user?.email) {
+      const userRes = await query(
+        `SELECT id FROM public.users WHERE email = $1 AND is_active = true`,
+        [req.user.email]
+      );
+      if (userRes.rows.length > 0) {
+        userId = userRes.rows[0].id;
+      }
+    }
+
+    // Si aún no hay userId, intentar con el email del usuario autenticado
+    if (!userId && req.user?.email) {
+      // Buscar en el esquema del tenant
+      const userRes = await query(
+        `SELECT id FROM "${schema}".users WHERE email = $1 AND is_active = true`,
+        [req.user.email]
+      );
+      if (userRes.rows.length > 0) {
+        userId = userRes.rows[0].id;
+      }
+    }
+
+    await client.query('BEGIN');
+
+    // Obtener los valores antiguos antes de eliminar
+    const oldRecord = await client.query(
+      `SELECT * FROM "${schema}".accounts_receivable WHERE id = $1`,
+      [id]
+    );
+
+    if (oldRecord.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, error: 'Cuenta no encontrada' });
+    }
+
+    // Eliminar la cuenta (incluye pagos por CASCADE)
+    const result = await client.query(
+      `DELETE FROM "${schema}".accounts_receivable WHERE id = $1 RETURNING id`,
+      [id]
+    );
+
+    if (!result.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, error: 'Cuenta no encontrada' });
+    }
+
+    // Registrar auditoría
+    const oldValues = oldRecord.rows[0];
+    const auditDescription = `Cuenta por cobrar eliminada - Orden #${oldValues.order_number || 'N/A'} - Cliente: ${oldValues.customer_name || 'N/A'}`;
+    
+    await logAudit(
+      schema,
+      userId || null,
+      'accounts_receivable',
+      'DELETE',
+      id.toString(),
+      oldValues,
+      auditDescription
+    );
+
+    await client.query('COMMIT');
+
+    res.json({ 
+      success: true, 
+      message: 'Cuenta por cobrar eliminada',
+      audit: {
+        user_id: userId,
+        description: auditDescription
+      }
+    });
+
   } catch (err) {
-    console.error(err);
+    await client.query('ROLLBACK');
+    console.error('Error al eliminar cuenta por cobrar:', err);
     res.status(500).json({ success: false, error: err.message });
+  } finally {
+    client.release();
   }
 };
 
@@ -539,18 +644,47 @@ export const addPaymentToReceivable = async (req, res) => {
     const { id } = req.params;
     const { payment_method, amount, reference_number } = req.body;
 
+    // Obtener userId (mismo método que en deleteReceivable)
+    let userId = req.user?.id || req.user?.userId || req.session?.userId;
+    if (!userId && req.user?.email) {
+      const userRes = await query(
+        `SELECT id FROM public.users WHERE email = $1 AND is_active = true`,
+        [req.user.email]
+      );
+      if (userRes.rows.length > 0) {
+        userId = userRes.rows[0].id;
+      }
+    }
+    if (!userId && req.user?.email) {
+      const userRes = await query(
+        `SELECT id FROM "${schema}".users WHERE email = $1 AND is_active = true`,
+        [req.user.email]
+      );
+      if (userRes.rows.length > 0) {
+        userId = userRes.rows[0].id;
+      }
+    }
+
     if (!payment_method || !amount || amount <= 0) {
       return res.status(400).json({ success: false, error: 'Monto y método de pago requeridos' });
     }
 
     await client.query('BEGIN');
     const recRes = await client.query(`SELECT * FROM "${schema}".accounts_receivable WHERE id=$1`, [id]);
-    if (!recRes.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ success: false, error: 'Cuenta no encontrada' }); }
+    if (!recRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, error: 'Cuenta no encontrada' });
+    }
 
     const rec = recRes.rows[0];
-    if (rec.status === 'paid') { await client.query('ROLLBACK'); return res.status(400).json({ success: false, error: 'Esta cuenta ya está pagada' }); }
+    if (rec.status === 'paid') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ success: false, error: 'Esta cuenta ya está pagada' });
+    }
 
-    const newPaid = parseFloat(rec.paid_amount) + parseFloat(amount);
+    const oldPaidAmount = parseFloat(rec.paid_amount);
+    const oldStatus = rec.status;
+    const newPaid = oldPaidAmount + parseFloat(amount);
     const newBalance = parseFloat(rec.amount) - newPaid;
     const newStatus = newBalance <= 0 ? 'paid' : 'pending';
 
@@ -560,8 +694,21 @@ export const addPaymentToReceivable = async (req, res) => {
       WHERE id=$4
     `, [newPaid, Math.max(0, newBalance), newStatus, id]);
 
+    // Registrar auditoría del pago
+    const auditDescription = `Pago registrado - Cuenta #${rec.order_number || id} - Monto: $${amount.toFixed(2)} - Método: ${payment_method}`;
+    await logAudit(
+      schema,
+      userId || null,
+      'accounts_receivable_payments',
+      'INSERT',
+      id.toString(),
+      null,
+      auditDescription
+    );
+
     await client.query('COMMIT');
     res.json({ success: true, message: 'Pago registrado exitosamente' });
+
   } catch (err) {
     await client.query('ROLLBACK');
     console.error(err);

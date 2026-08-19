@@ -8,7 +8,10 @@ router.get('/receivable', accountingController.getReceivableListLegacy);
 router.get('/receivable/:id', accountingController.getReceivableDetailLegacy);
 router.post('/receivable/:id/register-payment', accountingController.registerPaymentLegacy);
 
-// ─── Nuevas rutas para accounts_receivable (usadas por AccountingReceivablePage) ──
+// ─── Crear cuenta por cobrar desde orden ─────────────
+router.post('/create-from-order', accountingController.createReceivableFromOrder);
+
+// ─── Rutas para accounts_receivable (usadas por AccountingReceivablePage) ──
 router.get('/receivables', accountingController.listReceivables);
 router.get('/receivables/export', accountingController.exportReceivablesCSV);
 router.post('/receivables', accountingController.createReceivable);
