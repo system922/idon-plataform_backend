@@ -23,6 +23,135 @@ async function ensureReceivablesTable(schema) {
   `);
 }
 
+// Agregar al archivo de cuentas por cobrar
+
+export const createReceivableFromOrder = async (req, res) => {
+  const client = await getClient();
+  try {
+    const schema = await getSchemaName(req);
+    if (!schema) return res.status(400).json({ error: 'Business context required' });
+    await ensureReceivablesTable(schema);
+
+    const {
+      order_id,
+      order_number,
+      customer_id,
+      customer_name,
+      customer_document,
+      customer_email,
+      total_amount,      // Total de la orden
+      paid_amount,       // Monto pagado (si es abono)
+      payment_method,    // Método de pago del abono
+      reference_number,  // Referencia del abono
+      notes
+    } = req.body;
+
+    if (!order_id || !order_number || !total_amount || total_amount <= 0) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Datos incompletos: order_id, order_number y total_amount son requeridos' 
+      });
+    }
+
+    // Validar que el cliente no sea CONSUMIDOR FINAL
+    if (!customer_id && (!customer_name || customer_name.trim().toUpperCase() === 'CONSUMIDOR FINAL')) {
+      return res.status(400).json({
+        success: false,
+        error: 'No se puede crear cuenta por cobrar para CONSUMIDOR FINAL. Ingrese datos reales del cliente.'
+      });
+    }
+
+    await client.query('BEGIN');
+
+    // Calcular el saldo restante
+    const abono = parseFloat(paid_amount) || 0;
+    const total = parseFloat(total_amount);
+    const saldo = Math.max(0, total - abono);
+
+    // Si el monto pagado es 0 o no existe → es crédito total
+    // Si el monto pagado es mayor a 0 → es abono parcial
+
+    // Crear la cuenta por cobrar
+    const result = await client.query(`
+      INSERT INTO "${schema}".accounts_receivable
+      (order_number, order_id, customer_id, customer_name, customer_document, customer_email,
+       amount, paid_amount, balance, issue_date, due_date, status, description, notes, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_DATE, CURRENT_DATE + INTERVAL '30 days', 
+              $10, $11, $12, NOW(), NOW())
+      RETURNING *
+    `, [
+      order_number,
+      order_id,
+      customer_id || null,
+      customer_name || 'CLIENTE SIN NOMBRE',
+      customer_document || null,
+      customer_email || null,
+      total,              // Monto TOTAL de la orden
+      abono,              // Monto PAGADO (0 si es crédito total)
+      saldo,              // Saldo restante
+      saldo > 0 ? 'pending' : 'paid',  // Si saldo = 0, ya está pagado
+      `Cuenta por cobrar - Orden #${order_number}`,
+      notes || null
+    ]);
+
+    const receivable = result.rows[0];
+
+    // Si hay un abono (paid_amount > 0), registrar el pago
+    if (abono > 0 && payment_method) {
+      await client.query(`
+        INSERT INTO "${schema}".accounts_receivable_payments
+        (receivable_id, payment_method, amount, reference_number, paid_at, notes)
+        VALUES ($1, $2, $3, $4, NOW(), $5)
+      `, [
+        receivable.id,
+        payment_method,
+        abono,
+        reference_number || null,
+        `Abono inicial - Orden #${order_number}`
+      ]);
+
+      // También registrar el pago en pos_payments
+      await client.query(`
+        INSERT INTO "${schema}".pos_payments
+        (order_id, payment_method, amount, reference_number, status, paid_at, notes)
+        VALUES ($1, $2, $3, $4, 'completed', NOW(), $5)
+      `, [
+        order_id,
+        payment_method,
+        abono,
+        reference_number || null,
+        `Abono parcial - Cuenta por cobrar ID: ${receivable.id}`
+      ]);
+    }
+
+    await client.query('COMMIT');
+
+    // Respuesta con detalles
+    const response = {
+      success: true,
+      data: {
+        ...receivable,
+        abono: abono,
+        saldo: saldo,
+        tipo: abono > 0 ? 'abono_parcial' : 'credito_total',
+        mensaje: abono > 0 
+          ? `Abono de $${abono.toFixed(2)} registrado. Saldo pendiente: $${saldo.toFixed(2)}`
+          : `Cuenta por cobrar registrada por $${total.toFixed(2)}`
+      }
+    };
+
+    res.status(201).json(response);
+
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al crear cuenta por cobrar desde orden:', err);
+    res.status(500).json({ success: false, error: err.message });
+  } finally {
+    client.release();
+  }
+};
+
+
 // ─────────────────────────────────────────────────────────────
 // RECEIVABLES (cuentas por cobrar) desde órdenes (legacy)
 // ─────────────────────────────────────────────────────────────
