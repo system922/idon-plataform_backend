@@ -203,13 +203,19 @@ router.post('/orders', authMiddleware, async (req, res) => {
     // Misma lógica que /orders
     // ============================================================
 
-    const insertedItems = [];
+    const insertedItems = []
 
+    // Usar los valores que envía el frontend
     for (const item of items) {
       const unitPrice = Number(item.unit_price) || 0;
-      const taxRate = Number(item.tax_rate) || 0;
       const quantity = Number(item.quantity) || 1;
-      const ivaAmount = Number(item.iva_amount) || 0;
+      const ivaAmount = Number(item.iva_amount) || 0;  // ← Usar el valor del frontend
+      const lineTotal = Number(item.line_total) || 0;  // ← Usar el valor del frontend
+
+  calculatedSubtotal += unitPrice * quantity;
+  calculatedTax += ivaAmount;        // ← Debe ser 0.13
+  calculatedTotal += lineTotal;      // ← Debe ser 1.00
+}
 
       const lineTotal =
         Number(item.line_total) ||
@@ -376,6 +382,7 @@ router.post('/orders', authMiddleware, async (req, res) => {
     client.release();
   }
 });
+
 
 
 /**
