@@ -1,3 +1,5 @@
+// ========== backend/middleware/validateUserUniqueness.js ==========
+
 import { query } from '../config/database.js';
 
 /**
@@ -60,4 +62,52 @@ export const validateUserUniqueness = async (email, schema, excludeUserId = null
   }
 
   return { exists: false };
+};
+
+/**
+ * Middleware para validar unicidad de email
+ */
+export const validateUniqueEmail = async (req, res, next) => {
+  const { email } = req.body;
+  
+  if (!email) {
+    return res.status(400).json({ 
+      ok: false, 
+      error: 'Email es requerido' 
+    });
+  }
+
+  try {
+    // Usar req.schema del middleware
+    const schema = req.schema;
+    
+    if (!schema) {
+      return res.status(400).json({ 
+        ok: false, 
+        error: 'Business context required' 
+      });
+    }
+    
+    const result = await validateUserUniqueness(email, schema);
+    
+    if (result.exists) {
+      return res.status(409).json({
+        ok: false,
+        error: 'Email ya registrado',
+        message: result.message,
+        details: {
+          source: result.source,
+          businessName: result.businessName || null
+        }
+      });
+    }
+    
+    next();
+  } catch (error) {
+    console.error('Error validando email:', error);
+    return res.status(500).json({ 
+      ok: false, 
+      error: 'Error validando email' 
+    });
+  }
 };
