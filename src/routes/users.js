@@ -13,10 +13,10 @@ router.get('/', authMiddleware, userController.getUsers);
 // GET    /api/core/users/:id
 router.get('/:id', authMiddleware, userController.getUser);
 
-// POST   /api/core/users - ✅ CON VALIDACIÓN DE EMAIL
+// POST   /api/core/users - CON VALIDACIÓN DE EMAIL
 router.post('/', authMiddleware, validateUniqueEmail, userController.createUser);
 
-// PUT    /api/core/users/:id - ✅ CON VALIDACIÓN DE EMAIL
+// PUT    /api/core/users/:id - CON VALIDACIÓN DE EMAIL
 router.put('/:id', authMiddleware, validateUniqueEmail, userController.updateUser);
 
 // DELETE /api/core/users/:id

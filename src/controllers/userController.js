@@ -1,3 +1,5 @@
+// ========== backend/controllers/userController.js ==========
+
 import bcrypt from 'bcrypt';
 import * as userModel from '../models/User.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
@@ -40,7 +42,7 @@ export async function createUser(req, res) {
       return res.status(400).json({ error: 'Email, contraseña y rol son requeridos' });
     }
 
-    // Validar unicidad del email
+    // Validar unicidad del email en el esquema actual
     const uniquenessCheck = await validateUserUniqueness(email, schema);
     if (uniquenessCheck.exists) {
       return res.status(409).json({
@@ -72,7 +74,6 @@ export async function createUser(req, res) {
   }
 }
 
-// excluye el usuario actual
 export async function updateUser(req, res) {
   try {
     const schema = await getSchemaName(req);
@@ -84,7 +85,7 @@ export async function updateUser(req, res) {
     if (email) {
       const existingUser = await userModel.findUserById(schema, id);
       if (existingUser && email !== existingUser.email) {
-        // Validar unicidad pasando el ID actual para EXCLUIRLO
+        // PASAR: email, schema, id (para excluir al usuario actual)
         const uniquenessCheck = await validateUserUniqueness(email, schema, id);
         if (uniquenessCheck.exists) {
           return res.status(409).json({
