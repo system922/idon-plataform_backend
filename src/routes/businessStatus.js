@@ -787,708 +787,200 @@ router.get('/my-businesses', async (req, res, next) => {
 });
 
 // =====================================================
-// ENDPOINT: GET /api/business-status/navigation
+// ENDPOINT ORIGINAL: GET /api/business-status/navigation
 // =====================================================
-
 router.get('/navigation', async (req, res, next) => {
   try {
     const user = getUserFromToken(req);
-
     if (!user) {
-      return res.status(401).json({
-        ok: false,
-        message: 'No autenticado'
-      });
+      return res.status(401).json({ ok: false, message: 'No autenticado' });
     }
 
     const userId = user.userId;
 
-    // =====================================================
-    // IMPORTANTE:
-    // NO EXISTEN MÓDULOS/FUNCIONES POR DEFECTO.
-    //
-    // El módulo solamente se devuelve si:
-    // 1. Está configurado para el negocio.
-    // 2. Está permitido para el rol del usuario.
-    // 3. Tiene al menos una feature permitida.
-    //
-    // No se crea "General".
-    // No se crea "-main".
-    // No se crea "-default".
-    // =====================================================
-
-    // =====================================================
-    // HELPERS
-    // =====================================================
-
-    /**
-     * Convierte permissions almacenados como:
-     *
-     * [
-     *   {
-     *     modulo: "UUID-MODULO",
-     *     features: ["UUID-FEATURE-1", "UUID-FEATURE-2"]
-     *   }
-     * ]
-     *
-     * en:
-     *
-     * {
-     *   "UUID-MODULO": Set(["UUID-FEATURE-1", "UUID-FEATURE-2"])
-     * }
-     */
-    const parseRolePermissions = (rolePermissions) => {
-      if (!rolePermissions) {
-        return null;
-      }
-
-      let parsed = rolePermissions;
-
-      // PostgreSQL puede devolver JSONB como objeto/array
-      // o como string dependiendo de configuración.
-      if (typeof parsed === 'string') {
-        try {
-          parsed = JSON.parse(parsed);
-        } catch (error) {
-          console.error(
-            '[NAV] Error parseando permissions del rol:',
-            error.message
-          );
-
-          return null;
-        }
-      }
-
-      if (!Array.isArray(parsed) || parsed.length === 0) {
-        return null;
-      }
-
-      const permissionsByModule = {};
-
-      for (const permission of parsed) {
-        if (!permission || !permission.modulo) {
-          continue;
-        }
-
-        const moduleId = String(permission.modulo);
-
-        const featureIds = Array.isArray(permission.features)
-          ? permission.features
-              .filter(Boolean)
-              .map(featureId => String(featureId))
-          : [];
-
-        permissionsByModule[moduleId] = new Set(featureIds);
-      }
-
-      return Object.keys(permissionsByModule).length > 0
-        ? permissionsByModule
-        : null;
+    const MODULE_DEFAULTS = {
+      core: '/app/core', pos: '/app/pos', inventory: '/app/inventory',
+      reports: '/app/reports', payments: '/app/payments', accounting: '/app/accounting',
+      orders: '/app/orders', kitchen: '/app/kitchen', delivery: '/app/delivery',
+      tables: '/app/tables', reservations: '/app/reservations', loyalty: '/app/loyalty',
+      suppliers: '/app/suppliers', purchases: '/app/purchases', appointments: '/app/appointments',
+      employees: '/app/employees', crm: '/app/crm', routes: '/app/routes',
+      tracking: '/app/tracking', queue: '/app/queue', ecommerce: '/app/ecommerce',
+      notifications: '/app/notifications', einvoicing: '/app/einvoicing',
     };
 
-    /**
-     * Construye las páginas ÚNICAMENTE a partir de features reales.
-     *
-     * IMPORTANTE:
-     * No agrega "General".
-     * No agrega "-main".
-     * No agrega "-default".
-     */
     const buildModulePages = (mod, featureRows) => {
-      if (!Array.isArray(featureRows) || featureRows.length === 0) {
-        return [];
+      if (featureRows.length > 0) {
+        const basePath = MODULE_DEFAULTS[mod.code] || `/app/${mod.code}`;
+        return [
+          { id: mod.id + '-main', code: mod.code, name: 'General', path: basePath, icon: mod.icon, isMain: true },
+          ...featureRows.map(f => ({ id: f.id, code: f.code, name: f.name, path: `${basePath}/${f.code}`, icon: null, isFeature: true })),
+        ];
       }
-
-      const basePath = `/app/${mod.code}`;
-
-      return featureRows.map(feature => ({
-        id: feature.id,
-        code: feature.code,
-        name: feature.name,
-        description: feature.description || null,
-        path: `${basePath}/${feature.code}`,
-        icon: null,
-        isFeature: true
-      }));
+      if (MODULE_DEFAULTS[mod.code]) {
+        return [{ id: mod.id + '-default', code: mod.code, name: mod.name, path: MODULE_DEFAULTS[mod.code], icon: mod.icon }];
+      }
+      return [];
     };
 
-    // =====================================================
-    // CASO 1:
-    // EMPLEADO DE ESQUEMA / TENANT
-    // =====================================================
-
+    // ── Empleados de esquema (nivel 3) ──────────────────────────────────────
     if (req.user?.userType === 'schema_employee' || user.schemaName) {
       const schemaName = user.schemaName;
 
-      if (!schemaName) {
-        return res.json({
-          ok: true,
-          data: {
-            role: null,
-            modules: []
-          }
-        });
-      }
-
-      // ---------------------------------------------------
-      // Validar nombre del schema antes de interpolarlo
-      // ---------------------------------------------------
-
-      if (!/^[a-zA-Z0-9_]+$/.test(schemaName)) {
-        console.error(
-          '[NAV] schemaName inválido:',
-          schemaName
-        );
-
-        return res.status(400).json({
-          ok: false,
-          message: 'Esquema de negocio inválido'
-        });
-      }
-
-      // ---------------------------------------------------
-      // Obtener usuario, rol y permisos
-      // ---------------------------------------------------
-
-      let roleId = null;
-      let roleName = 'employee';
-      let rolePermissions = null;
-
+      let roleId = null, roleName = 'employee', rolePermissions = null;
       try {
-        const { rows: tenantUser } = await query(
-          `
-            SELECT
-              u.role_id,
-              r.name AS role_name,
-              r.permissions
-            FROM "${schemaName}".users u
-            LEFT JOIN "${schemaName}".roles r
-              ON u.role_id = r.id
-            WHERE u.id = $1
-            LIMIT 1
-          `,
-          [userId]
-        );
-
+        const { rows: tenantUser } = await query(`
+          SELECT u.role_id, r.name AS role_name, r.permissions
+          FROM "${schemaName}".users u
+          LEFT JOIN "${schemaName}".roles r ON u.role_id = r.id
+          WHERE u.id = $1
+          LIMIT 1
+        `, [userId]);
         if (tenantUser.length > 0) {
-          roleId = tenantUser[0].role_id;
+          roleId   = tenantUser[0].role_id;
           roleName = tenantUser[0].role_name || 'employee';
           rolePermissions = tenantUser[0].permissions;
         }
-      } catch (error) {
-        console.error(
-          '[NAV] Error obteniendo rol del empleado:',
-          error
-        );
+      } catch (e) {}
 
-        return next(error);
-      }
-
-      const permsByModule = parseRolePermissions(rolePermissions);
-
-      console.log('[NAV] Usuario schema:', userId);
-      console.log('[NAV] Schema:', schemaName);
-      console.log('[NAV] Role ID:', roleId);
-      console.log('[NAV] Role:', roleName);
-      console.log(
-        '[NAV] Tiene permisos configurados:',
-        !!permsByModule
-      );
-
-      // ---------------------------------------------------
-      // Si el rol NO tiene permisos configurados,
-      // NO mostrar absolutamente ningún módulo.
-      // ---------------------------------------------------
-
-      if (!permsByModule) {
-        console.log(
-          '[NAV] El rol no tiene permisos configurados. modules=[]'
-        );
-
-        return res.json({
-          ok: true,
-          data: {
-            role: {
-              id: roleId,
-              code: 'employee',
-              name: roleName
-            },
-            modules: []
+      let permsByModule = null;
+      if (Array.isArray(rolePermissions) && rolePermissions.length > 0) {
+        permsByModule = {};
+        for (const p of rolePermissions) {
+          permsByModule[p.modulo] = new Set(Array.isArray(p.features) ? p.features : []);
+        }
+      } else if (typeof rolePermissions === 'string') {
+        try {
+          const parsed = JSON.parse(rolePermissions);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            permsByModule = {};
+            for (const p of parsed) {
+              permsByModule[p.modulo] = new Set(Array.isArray(p.features) ? p.features : []);
+            }
           }
-        });
+        } catch {}
       }
 
-      // ---------------------------------------------------
-      // Obtener módulos realmente contratados/configurados
-      // para el negocio.
-      // ---------------------------------------------------
+      const { rows: allModules } = await query(`
+        SELECT m.id, m.code, m.name, m.icon, m.sort_order
+        FROM public.business_modules bm
+        JOIN public.modules m ON bm.module_id = m.id
+        WHERE bm.business_id = (SELECT id FROM public.businesses WHERE schema_name = $1) 
+        AND bm.is_active = true
+        ORDER BY m.sort_order ASC
+      `, [schemaName]);
 
-      const { rows: allModules } = await query(
-        `
-          SELECT
-            m.id,
-            m.code,
-            m.name,
-            m.icon,
-            m.sort_order
-          FROM public.business_modules bm
-          JOIN public.modules m
-            ON bm.module_id = m.id
-          WHERE bm.business_id = (
-            SELECT id
-            FROM public.businesses
-            WHERE schema_name = $1
-            LIMIT 1
-          )
-          AND bm.is_active = true
-          ORDER BY m.sort_order ASC
-        `,
-        [schemaName]
-      );
-
-      console.log(
-        '[NAV] Módulos configurados para negocio:',
-        allModules.map(m => m.code)
-      );
+      const allowedModules = permsByModule
+        ? allModules.filter(m => permsByModule.hasOwnProperty(m.id))
+        : allModules;
 
       const menuModules = [];
+      for (const mod of allowedModules) {
+        const { rows: bizFeatures } = await query(`
+          SELECT f.id, f.code, f.name
+          FROM public.business_features bf
+          JOIN public.features f ON bf.feature_id = f.id
+          WHERE bf.business_id = (SELECT id FROM public.businesses WHERE schema_name = $1) 
+          AND f.module_id = $2 AND bf.is_active = true
+          ORDER BY f.name ASC
+        `, [schemaName, mod.id]);
 
-      // ---------------------------------------------------
-      // Recorrer únicamente módulos configurados
-      // ---------------------------------------------------
+        const allowedFeatures = (permsByModule && permsByModule[mod.id])
+          ? bizFeatures.filter(f => permsByModule[mod.id].has(f.id))
+          : bizFeatures;
 
-      for (const mod of allModules) {
-        const moduleId = String(mod.id);
-
-        // El rol NO tiene este módulo.
-        if (!Object.prototype.hasOwnProperty.call(permsByModule, moduleId)) {
-          console.log(
-            `[NAV] Módulo ${mod.code} descartado: no está en el rol`
-          );
-
-          continue;
+        const pages = buildModulePages(mod, allowedFeatures);
+        if (pages.length > 0) {
+          menuModules.push({
+            id: mod.id, code: mod.code, name: mod.name, icon: mod.icon,
+            features: allowedFeatures.map(f => f.code),
+            pages,
+          });
         }
-
-        const allowedFeatureIds = permsByModule[moduleId];
-
-        // -------------------------------------------------
-        // Obtener features reales del negocio
-        // -------------------------------------------------
-
-        const { rows: bizFeatures } = await query(
-          `
-            SELECT
-              f.id,
-              f.code,
-              f.name,
-              f.description
-            FROM public.business_features bf
-            JOIN public.features f
-              ON bf.feature_id = f.id
-            WHERE bf.business_id = (
-              SELECT id
-              FROM public.businesses
-              WHERE schema_name = $1
-              LIMIT 1
-            )
-            AND f.module_id = $2
-            AND bf.is_active = true
-            ORDER BY f.name ASC
-          `,
-          [schemaName, mod.id]
-        );
-
-        // -------------------------------------------------
-        // Intersección:
-        //
-        // FEATURES DEL NEGOCIO
-        //          ∩
-        // FEATURES DEL ROL
-        //
-        // Solo pueden salir las dos.
-        // -------------------------------------------------
-
-        const allowedFeatures = bizFeatures.filter(feature =>
-          allowedFeatureIds.has(String(feature.id))
-        );
-
-        console.log(
-          `[NAV] Módulo ${mod.code} → ` +
-          `features negocio: [${bizFeatures.map(f => f.code).join(', ')}] → ` +
-          `features rol: [${allowedFeatures.map(f => f.code).join(', ')}]`
-        );
-
-        // -------------------------------------------------
-        // Si el rol tiene el módulo pero ninguna feature,
-        // NO mostrar el módulo.
-        // -------------------------------------------------
-
-        if (allowedFeatures.length === 0) {
-          console.log(
-            `[NAV] Módulo ${mod.code} descartado: ` +
-            'el rol no tiene features permitidas'
-          );
-
-          continue;
-        }
-
-        // -------------------------------------------------
-        // Construir páginas SOLO con features reales
-        // -------------------------------------------------
-
-        const pages = buildModulePages(
-          mod,
-          allowedFeatures
-        );
-
-        if (pages.length === 0) {
-          continue;
-        }
-
-        menuModules.push({
-          id: mod.id,
-          code: mod.code,
-          name: mod.name,
-          icon: mod.icon,
-
-          // Códigos de las features permitidas
-          features: allowedFeatures.map(
-            feature => feature.code
-          ),
-
-          // Features completas para navegación/permisos
-          pages
-        });
       }
-
-      console.log(
-        '[NAV] Módulos finales para empleado:',
-        menuModules.map(m => ({
-          code: m.code,
-          features: m.features
-        }))
-      );
 
       return res.json({
         ok: true,
         data: {
-          role: {
-            id: roleId,
-            code: 'employee',
-            name: roleName
-          },
-          modules: menuModules
-        }
+          role: { id: roleId, code: 'employee', name: roleName },
+          modules: menuModules,
+        },
       });
     }
 
-    // =====================================================
-    // CASO 2:
-    // DUEÑO / USUARIO PÚBLICO / EMPLEADO PÚBLICO
-    // =====================================================
-
-    const headerBusinessId =
-      req.headers['x-business-id'] || null;
-
-    console.log(
-      '[NAV] userId:',
-      userId,
-      '| x-business-id:',
-      headerBusinessId
-    );
-
-    // ---------------------------------------------------
-    // Obtener negocio + rol del usuario
-    // ---------------------------------------------------
+    // ── Dueño / empleado público (nivel 1 y 2) ──────────────────────────────
+    const headerBusinessId = req.headers['x-business-id'] || null;
+    console.log('[NAV] userId:', userId, '| x-business-id header:', headerBusinessId);
 
     let userBiz;
-
     if (headerBusinessId) {
-      const { rows } = await query(
-        `
-          SELECT
-            bu.business_id,
-            r.id AS role_id,
-            r.code AS role_code,
-            r.name AS role_name,
-            r.permissions
-          FROM public.business_users bu
-          JOIN public.roles r
-            ON bu.role_id = r.id
-          WHERE bu.user_id = $1
-            AND bu.business_id = $2
-          LIMIT 1
-        `,
-        [userId, headerBusinessId]
-      );
-
+      const { rows } = await query(`
+        SELECT bu.business_id, r.id AS role_id, r.code AS role_code, r.name AS role_name
+        FROM public.business_users bu
+        JOIN public.roles r ON bu.role_id = r.id
+        WHERE bu.user_id = $1 AND bu.business_id = $2
+        LIMIT 1
+      `, [userId, headerBusinessId]);
       userBiz = rows;
     } else {
-      const { rows } = await query(
-        `
-          SELECT
-            bu.business_id,
-            r.id AS role_id,
-            r.code AS role_code,
-            r.name AS role_name,
-            r.permissions
-          FROM public.business_users bu
-          JOIN public.roles r
-            ON bu.role_id = r.id
-          WHERE bu.user_id = $1
-          LIMIT 1
-        `,
-        [userId]
-      );
-
+      const { rows } = await query(`
+        SELECT bu.business_id, r.id AS role_id, r.code AS role_code, r.name AS role_name
+        FROM public.business_users bu
+        JOIN public.roles r ON bu.role_id = r.id
+        WHERE bu.user_id = $1
+        LIMIT 1
+      `, [userId]);
       userBiz = rows;
     }
 
-    console.log(
-      '[NAV] business_id usado:',
-      userBiz[0]?.business_id
-    );
-
-    // ---------------------------------------------------
-    // Usuario no tiene relación con ningún negocio
-    // ---------------------------------------------------
+    console.log('[NAV] business_id usado:', userBiz[0]?.business_id);
 
     if (userBiz.length === 0) {
-      return res.json({
-        ok: true,
-        data: {
-          role: null,
-          modules: []
-        }
-      });
+      return res.json({ ok: true, data: { role: null, modules: [] } });
     }
 
-    const {
-      business_id,
-      role_id,
-      role_code,
-      role_name,
-      permissions: rolePermissions
-    } = userBiz[0];
+    const { business_id, role_id, role_code, role_name } = userBiz[0];
 
-    // ---------------------------------------------------
-    // Parsear permisos del rol
-    // ---------------------------------------------------
+    const { rows: modules } = await query(`
+      SELECT m.id, m.code, m.name, m.icon, m.sort_order
+      FROM public.business_modules bm
+      JOIN public.modules m ON bm.module_id = m.id
+      WHERE bm.business_id = $1 AND bm.is_active = true
+      ORDER BY m.sort_order ASC
+    `, [business_id]);
 
-    const permsByModule =
-      parseRolePermissions(rolePermissions);
-
-    console.log(
-      '[NAV] Role:',
-      role_name,
-      '| role_id:',
-      role_id
-    );
-
-    console.log(
-      '[NAV] Permisos configurados:',
-      !!permsByModule
-    );
-
-    // ---------------------------------------------------
-    // SIN PERMISOS CONFIGURADOS = SIN MÓDULOS
-    // ---------------------------------------------------
-
-    if (!permsByModule) {
-      console.log(
-        '[NAV] El usuario/rol no tiene permisos configurados. modules=[]'
-      );
-
-      return res.json({
-        ok: true,
-        data: {
-          role: {
-            id: role_id,
-            code: role_code,
-            name: role_name
-          },
-          modules: []
-        }
-      });
-    }
-
-    // =====================================================
-    // OBTENER ÚNICAMENTE LOS MÓDULOS ACTIVOS DEL NEGOCIO
-    // =====================================================
-
-    const { rows: modules } = await query(
-      `
-        SELECT
-          m.id,
-          m.code,
-          m.name,
-          m.icon,
-          m.sort_order
-        FROM public.business_modules bm
-        JOIN public.modules m
-          ON bm.module_id = m.id
-        WHERE bm.business_id = $1
-          AND bm.is_active = true
-        ORDER BY m.sort_order ASC
-      `,
-      [business_id]
-    );
-
-    console.log(
-      '[NAV] Módulos activos del negocio:',
-      modules.map(m => m.code)
-    );
+    console.log('[NAV] Módulos activos:', modules.map(m => m.code));
 
     const menuModules = [];
-
-    // =====================================================
-    // PROCESAR MÓDULOS
-    // =====================================================
-
     for (const mod of modules) {
-      const moduleId = String(mod.id);
+      const { rows: featureRows } = await query(`
+        SELECT f.id, f.code, f.name, f.description
+        FROM public.business_features bf
+        JOIN public.features f ON bf.feature_id = f.id
+        WHERE bf.business_id = $1 AND f.module_id = $2 AND bf.is_active = true
+        ORDER BY f.name ASC
+      `, [business_id, mod.id]);
 
-      // ---------------------------------------------------
-      // El rol no tiene este módulo
-      // ---------------------------------------------------
+      console.log(`[NAV] Módulo ${mod.code} → features: [${featureRows.map(f => f.code).join(', ')}]`);
 
-      if (
-        !Object.prototype.hasOwnProperty.call(
-          permsByModule,
-          moduleId
-        )
-      ) {
-        console.log(
-          `[NAV] Módulo ${mod.code} descartado: no está en permisos del rol`
-        );
-
-        continue;
+      const pages = buildModulePages(mod, featureRows);
+      if (pages.length > 0) {
+        menuModules.push({
+          id: mod.id, code: mod.code, name: mod.name,
+          icon: mod.icon, features: featureRows.map(f => f.code), pages,
+        });
       }
-
-      const allowedFeatureIds =
-        permsByModule[moduleId];
-
-      // ---------------------------------------------------
-      // Obtener SOLO features reales del negocio
-      // ---------------------------------------------------
-
-      const { rows: featureRows } = await query(
-        `
-          SELECT
-            f.id,
-            f.code,
-            f.name,
-            f.description
-          FROM public.business_features bf
-          JOIN public.features f
-            ON bf.feature_id = f.id
-          WHERE bf.business_id = $1
-            AND f.module_id = $2
-            AND bf.is_active = true
-          ORDER BY f.name ASC
-        `,
-        [business_id, mod.id]
-      );
-
-      console.log(
-        `[NAV] Módulo ${mod.code} → features del negocio:`,
-        featureRows.map(f => ({
-          id: f.id,
-          code: f.code,
-          name: f.name
-        }))
-      );
-
-      // ---------------------------------------------------
-      // INTERSECCIÓN:
-      //
-      // business_features
-      //          ∩
-      // role.permissions.features
-      //
-      // ---------------------------------------------------
-
-      const allowedFeatures = featureRows.filter(feature =>
-        allowedFeatureIds.has(String(feature.id))
-      );
-
-      console.log(
-        `[NAV] Módulo ${mod.code} → features permitidas:`,
-        allowedFeatures.map(f => f.code)
-      );
-
-      // ---------------------------------------------------
-      // Si no hay features permitidas, NO mostrar módulo
-      // ---------------------------------------------------
-
-      if (allowedFeatures.length === 0) {
-        console.log(
-          `[NAV] Módulo ${mod.code} descartado: ` +
-          'no tiene features permitidas'
-        );
-
-        continue;
-      }
-
-      // ---------------------------------------------------
-      // Crear páginas SOLO de features reales
-      // ---------------------------------------------------
-
-      const pages = buildModulePages(
-        mod,
-        allowedFeatures
-      );
-
-      if (pages.length === 0) {
-        continue;
-      }
-
-      menuModules.push({
-        id: mod.id,
-        code: mod.code,
-        name: mod.name,
-        icon: mod.icon,
-
-        // Códigos reales
-        features: allowedFeatures.map(
-          feature => feature.code
-        ),
-
-        // Features reales
-        pages
-      });
     }
 
-    // =====================================================
-    // RESPUESTA FINAL
-    // =====================================================
-
-    console.log(
-      '[NAV] Menú final:',
-      menuModules.map(module => ({
-        module: module.code,
-        features: module.features
-      }))
-    );
-
-    return res.json({
+    res.json({
       ok: true,
       data: {
-        role: {
-          id: role_id,
-          code: role_code,
-          name: role_name
-        },
-        modules: menuModules
-      }
+        role: { id: role_id, code: role_code, name: role_name },
+        modules: menuModules,
+      },
     });
-
   } catch (e) {
-    console.error(
-      'Error en /navigation:',
-      e
-    );
-
+    console.error('Error en /navigation:', e);
     next(e);
   }
 });
