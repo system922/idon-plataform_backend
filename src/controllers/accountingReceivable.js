@@ -428,22 +428,21 @@ export const createReceivableFromOrder = async (req, res) => {
 
     const receivable = result.rows[0];
 
-    // Si hay un abono, registrar el pago
+    // Si hay un abono, registrar el pago - SIN la columna notes
     if (abono > 0 && payment_method) {
       await client.query(`
         INSERT INTO "${schema}".pos_payments
-        (order_id, payment_method, amount, reference_number, status, paid_at, notes)
-        VALUES ($1, $2, $3, $4, 'completed', NOW(), $5)
+        (order_id, payment_method, amount, reference_number, status, paid_at)
+        VALUES ($1, $2, $3, $4, 'completed', NOW())
       `, [
         order_id,
         payment_method,
         abono,
-        reference_number || null,
-        `Abono parcial - Cuenta por cobrar ID: ${receivable.id}`
+        reference_number || null
       ]);
     }
 
-    // Registrar auditoría - record_id = null
+    // Registrar auditoría
     await client.query(`
       INSERT INTO "${schema}".audit_logs 
       (user_id, table_name, action, record_id, new_values, description, created_at)
@@ -452,7 +451,7 @@ export const createReceivableFromOrder = async (req, res) => {
       user_id || null,
       'accounts_receivable',
       'INSERT',
-      null,  // ← record_id como NULL
+      null,
       receivable,
       `Cuenta por cobrar creada - Orden #${order_number} - Total: $${total} - Abono: $${abono} - Saldo: $${saldo}`
     ]);
