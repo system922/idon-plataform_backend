@@ -1,14 +1,11 @@
-// ========== backend/controllers/userController.js ==========
-
 import bcrypt from 'bcrypt';
 import * as userModel from '../models/User.js';
-import { getSchemaName } from '../utils/tenantHelper.js';
 import { validateUserUniqueness } from '../middleware/validateUserUniqueness.js';
 
 // LISTAR USUARIOS
 export async function getUsers(req, res) {
   try {
-    const schema = await getSchemaName(req);
+    const schema = req.schema;
     if (!schema) return res.status(400).json({ error: 'Business context required' });
     const users = await userModel.findAllUsers(schema);
     res.json({ users });
@@ -20,7 +17,7 @@ export async function getUsers(req, res) {
 // UNO
 export async function getUser(req, res) {
   try {
-    const schema = await getSchemaName(req);
+    const schema = req.schema;
     if (!schema) return res.status(400).json({ error: 'Business context required' });
     const { id } = req.params;
     const user = await userModel.findUserById(schema, id);
@@ -34,7 +31,7 @@ export async function getUser(req, res) {
 // CREAR
 export async function createUser(req, res) {
   try {
-    const schema = await getSchemaName(req);
+    const schema = req.schema;
     if (!schema) return res.status(400).json({ error: 'Business context required' });
     const { email, password, first_name, last_name, role_id, is_active } = req.body;
     
@@ -42,7 +39,7 @@ export async function createUser(req, res) {
       return res.status(400).json({ error: 'Email, contraseña y rol son requeridos' });
     }
 
-    // Validar unicidad del email en el esquema actual
+    // Validar unicidad del email
     const uniquenessCheck = await validateUserUniqueness(email, schema);
     if (uniquenessCheck.exists) {
       return res.status(409).json({
@@ -50,7 +47,6 @@ export async function createUser(req, res) {
         message: uniquenessCheck.message,
         details: {
           source: uniquenessCheck.source,
-          schema: uniquenessCheck.schema || null,
           businessName: uniquenessCheck.businessName || null
         }
       });
@@ -74,9 +70,10 @@ export async function createUser(req, res) {
   }
 }
 
+// ACTUALIZAR
 export async function updateUser(req, res) {
   try {
-    const schema = await getSchemaName(req);
+    const schema = req.schema;
     if (!schema) return res.status(400).json({ error: 'Business context required' });
     const { id } = req.params;
     const { first_name, last_name, password, role_id, is_active, email } = req.body;
@@ -85,7 +82,6 @@ export async function updateUser(req, res) {
     if (email) {
       const existingUser = await userModel.findUserById(schema, id);
       if (existingUser && email !== existingUser.email) {
-        // PASAR: email, schema, id (para excluir al usuario actual)
         const uniquenessCheck = await validateUserUniqueness(email, schema, id);
         if (uniquenessCheck.exists) {
           return res.status(409).json({
@@ -93,7 +89,6 @@ export async function updateUser(req, res) {
             message: uniquenessCheck.message,
             details: {
               source: uniquenessCheck.source,
-              schema: uniquenessCheck.schema || null,
               businessName: uniquenessCheck.businessName || null
             }
           });
@@ -119,6 +114,7 @@ export async function updateUser(req, res) {
     if (!user) return res.status(404).json({ error: 'No encontrado' });
     res.json({ user });
   } catch (err) {
+    console.error('Error en updateUser:', err);
     res.status(500).json({ error: err.message });
   }
 }
@@ -126,7 +122,7 @@ export async function updateUser(req, res) {
 // ELIMINAR
 export async function deleteUser(req, res) {
   try {
-    const schema = await getSchemaName(req);
+    const schema = req.schema;
     if (!schema) return res.status(400).json({ error: 'Business context required' });
     const { id } = req.params;
     const result = await userModel.deleteUser(schema, id);
