@@ -787,7 +787,7 @@ router.get('/my-businesses', async (req, res, next) => {
 });
 
 // =====================================================
-// ENDPOINT ORIGINAL: GET /api/business-status/navigation
+// ENDPOINT: GET /api/business-status/navigation
 // =====================================================
 router.get('/navigation', async (req, res, next) => {
   try {
@@ -798,28 +798,23 @@ router.get('/navigation', async (req, res, next) => {
 
     const userId = user.userId;
 
-    const MODULE_DEFAULTS = {
-      core: '/app/core', pos: '/app/pos', inventory: '/app/inventory',
-      reports: '/app/reports', payments: '/app/payments', accounting: '/app/accounting',
-      orders: '/app/orders', kitchen: '/app/kitchen', delivery: '/app/delivery',
-      tables: '/app/tables', reservations: '/app/reservations', loyalty: '/app/loyalty',
-      suppliers: '/app/suppliers', purchases: '/app/purchases', appointments: '/app/appointments',
-      employees: '/app/employees', crm: '/app/crm', routes: '/app/routes',
-      tracking: '/app/tracking', queue: '/app/queue', ecommerce: '/app/ecommerce',
-      notifications: '/app/notifications', einvoicing: '/app/einvoicing',
-    };
-
+    // ─── FUNCIÓN PARA CONSTRUIR PÁGINAS (SOLO FEATURES) ───
     const buildModulePages = (mod, featureRows) => {
+      const basePath = `/app/${mod.code}`;
+      
+      // Si tiene features, mostrar SOLO las features
       if (featureRows.length > 0) {
-        const basePath = MODULE_DEFAULTS[mod.code] || `/app/${mod.code}`;
-        return [
-          { id: mod.id + '-main', code: mod.code, name: 'General', path: basePath, icon: mod.icon, isMain: true },
-          ...featureRows.map(f => ({ id: f.id, code: f.code, name: f.name, path: `${basePath}/${f.code}`, icon: null, isFeature: true })),
-        ];
+        return featureRows.map(f => ({ 
+          id: f.id, 
+          code: f.code, 
+          name: f.name, 
+          path: `${basePath}/${f.code}`, 
+          icon: null, 
+          isFeature: true 
+        }));
       }
-      if (MODULE_DEFAULTS[mod.code]) {
-        return [{ id: mod.id + '-default', code: mod.code, name: mod.name, path: MODULE_DEFAULTS[mod.code], icon: mod.icon }];
-      }
+      
+      // ❌ SI NO TIENE FEATURES, NO DEVOLVER NADA
       return [];
     };
 
@@ -890,9 +885,13 @@ router.get('/navigation', async (req, res, next) => {
           : bizFeatures;
 
         const pages = buildModulePages(mod, allowedFeatures);
+        // ✅ SOLO agregar módulo si tiene páginas (features)
         if (pages.length > 0) {
           menuModules.push({
-            id: mod.id, code: mod.code, name: mod.name, icon: mod.icon,
+            id: mod.id, 
+            code: mod.code, 
+            name: mod.name, 
+            icon: mod.icon,
             features: allowedFeatures.map(f => f.code),
             pages,
           });
@@ -913,24 +912,32 @@ router.get('/navigation', async (req, res, next) => {
     console.log('[NAV] userId:', userId, '| x-business-id header:', headerBusinessId);
 
     let userBiz;
+    let userRolePermissions = null;
+
     if (headerBusinessId) {
       const { rows } = await query(`
-        SELECT bu.business_id, r.id AS role_id, r.code AS role_code, r.name AS role_name
+        SELECT bu.business_id, r.id AS role_id, r.code AS role_code, r.name AS role_name, r.permissions
         FROM public.business_users bu
         JOIN public.roles r ON bu.role_id = r.id
         WHERE bu.user_id = $1 AND bu.business_id = $2
         LIMIT 1
       `, [userId, headerBusinessId]);
       userBiz = rows;
+      if (rows.length > 0) {
+        userRolePermissions = rows[0].permissions;
+      }
     } else {
       const { rows } = await query(`
-        SELECT bu.business_id, r.id AS role_id, r.code AS role_code, r.name AS role_name
+        SELECT bu.business_id, r.id AS role_id, r.code AS role_code, r.name AS role_name, r.permissions
         FROM public.business_users bu
         JOIN public.roles r ON bu.role_id = r.id
         WHERE bu.user_id = $1
         LIMIT 1
       `, [userId]);
       userBiz = rows;
+      if (rows.length > 0) {
+        userRolePermissions = rows[0].permissions;
+      }
     }
 
     console.log('[NAV] business_id usado:', userBiz[0]?.business_id);
@@ -941,6 +948,31 @@ router.get('/navigation', async (req, res, next) => {
 
     const { business_id, role_id, role_code, role_name } = userBiz[0];
 
+    // ─── SI ES MANAGER O ADMIN, ACCESO TOTAL ──────────────────────────────
+    const isManagerOrAdmin = role_code === 'manager' || role_code === 'admin' || role_code === 'owner';
+
+    // ─── OBTENER PERMISOS DEL ROL (solo si no es manager/admin) ──────────
+    let permsByModule = null;
+    if (!isManagerOrAdmin) {
+      if (Array.isArray(userRolePermissions) && userRolePermissions.length > 0) {
+        permsByModule = {};
+        for (const p of userRolePermissions) {
+          permsByModule[p.modulo] = new Set(Array.isArray(p.features) ? p.features : []);
+        }
+      } else if (typeof userRolePermissions === 'string') {
+        try {
+          const parsed = JSON.parse(userRolePermissions);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            permsByModule = {};
+            for (const p of parsed) {
+              permsByModule[p.modulo] = new Set(Array.isArray(p.features) ? p.features : []);
+            }
+          }
+        } catch {}
+      }
+    }
+
+    // ─── OBTENER MÓDULOS ACTIVOS ──────────────────────────────────────────
     const { rows: modules } = await query(`
       SELECT m.id, m.code, m.name, m.icon, m.sort_order
       FROM public.business_modules bm
@@ -951,8 +983,15 @@ router.get('/navigation', async (req, res, next) => {
 
     console.log('[NAV] Módulos activos:', modules.map(m => m.code));
 
+    // ─── FILTRAR MÓDULOS POR PERMISOS ──────────────────────────────────────
+    let allowedModules = modules;
+    if (!isManagerOrAdmin && permsByModule) {
+      allowedModules = modules.filter(m => permsByModule.hasOwnProperty(m.id));
+      console.log('[NAV] Módulos permitidos por permisos:', allowedModules.map(m => m.code));
+    }
+
     const menuModules = [];
-    for (const mod of modules) {
+    for (const mod of allowedModules) {
       const { rows: featureRows } = await query(`
         SELECT f.id, f.code, f.name, f.description
         FROM public.business_features bf
@@ -963,14 +1002,28 @@ router.get('/navigation', async (req, res, next) => {
 
       console.log(`[NAV] Módulo ${mod.code} → features: [${featureRows.map(f => f.code).join(', ')}]`);
 
-      const pages = buildModulePages(mod, featureRows);
+      // ─── FILTRAR FEATURES POR PERMISOS ──────────────────────────────────
+      let allowedFeatures = featureRows;
+      if (!isManagerOrAdmin && permsByModule && permsByModule[mod.id]) {
+        allowedFeatures = featureRows.filter(f => permsByModule[mod.id].has(f.id));
+        console.log(`[NAV] Features permitidas para ${mod.code}: [${allowedFeatures.map(f => f.code).join(', ')}]`);
+      }
+
+      const pages = buildModulePages(mod, allowedFeatures);
+      // ✅ SOLO agregar módulo si tiene páginas (features)
       if (pages.length > 0) {
         menuModules.push({
-          id: mod.id, code: mod.code, name: mod.name,
-          icon: mod.icon, features: featureRows.map(f => f.code), pages,
+          id: mod.id, 
+          code: mod.code, 
+          name: mod.name,
+          icon: mod.icon, 
+          features: allowedFeatures.map(f => f.code), 
+          pages,
         });
       }
     }
+
+    console.log('[NAV] Módulos finales:', menuModules.map(m => m.code));
 
     res.json({
       ok: true,
