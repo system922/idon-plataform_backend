@@ -443,7 +443,7 @@ export const createReceivableFromOrder = async (req, res) => {
       ]);
     }
 
-    // Registrar auditoría en audit_logs
+    // Registrar auditoría - record_id = null
     await client.query(`
       INSERT INTO "${schema}".audit_logs 
       (user_id, table_name, action, record_id, new_values, description, created_at)
@@ -452,7 +452,7 @@ export const createReceivableFromOrder = async (req, res) => {
       user_id || null,
       'accounts_receivable',
       'INSERT',
-      receivable.id.toString(),
+      null,  // ← record_id como NULL
       receivable,
       `Cuenta por cobrar creada - Orden #${order_number} - Total: $${total} - Abono: $${abono} - Saldo: $${saldo}`
     ]);
@@ -537,7 +537,7 @@ export const deleteReceivable = async (req, res) => {
       return res.status(404).json({ success: false, error: 'Cuenta no encontrada' });
     }
 
-    // Registrar auditoría en audit_logs
+    // Registrar auditoría - record_id = null
     const oldValues = oldRecord.rows[0];
     await client.query(`
       INSERT INTO "${schema}".audit_logs 
@@ -547,7 +547,7 @@ export const deleteReceivable = async (req, res) => {
       user_id || null,
       'accounts_receivable',
       'DELETE',
-      id.toString(),
+      null,  // ← record_id como NULL
       oldValues,
       `Cuenta por cobrar eliminada - Orden #${oldValues.order_number || 'N/A'} - Cliente: ${oldValues.customer_name || 'N/A'} - Monto: $${oldValues.amount || 0}`
     ]);
@@ -615,7 +615,7 @@ export const addPaymentToReceivable = async (req, res) => {
       [id]
     );
 
-    // Registrar auditoría en audit_logs
+    // Registrar auditoría - record_id = null
     await client.query(`
       INSERT INTO "${schema}".audit_logs 
       (user_id, table_name, action, record_id, old_values, new_values, description, created_at)
@@ -624,7 +624,7 @@ export const addPaymentToReceivable = async (req, res) => {
       user_id || null,
       'accounts_receivable',
       'UPDATE',
-      id.toString(),
+      null,  // ← record_id como NULL
       oldValues,
       updatedRecord.rows[0],
       `Pago registrado - Cuenta #${rec.order_number || id} - Monto: $${amount.toFixed(2)} - Método: ${payment_method} - Nuevo saldo: $${newBalance.toFixed(2)}`
