@@ -1,11 +1,9 @@
-// ========== backend/controllers/userController.js ==========
-
 import bcrypt from 'bcrypt';
 import * as userModel from '../models/User.js';
 import { getSchemaName } from '../utils/tenantHelper.js';
 import { validateUserUniqueness } from '../middleware/validateUserUniqueness.js';
 
-// LISTAR USUARIOS - SIN CAMBIOS
+// LISTAR USUARIOS
 export async function getUsers(req, res) {
   try {
     const schema = await getSchemaName(req);
@@ -17,7 +15,7 @@ export async function getUsers(req, res) {
   }
 }
 
-// UNO - SIN CAMBIOS
+// UNO
 export async function getUser(req, res) {
   try {
     const schema = await getSchemaName(req);
@@ -31,7 +29,7 @@ export async function getUser(req, res) {
   }
 }
 
-// CREAR - ✅ SOLO AGREGAR VALIDACIÓN
+// CREAR
 export async function createUser(req, res) {
   try {
     const schema = await getSchemaName(req);
@@ -42,7 +40,7 @@ export async function createUser(req, res) {
       return res.status(400).json({ error: 'Email, contraseña y rol son requeridos' });
     }
 
-    // ✅ 1. VALIDAR UNICIDAD DEL EMAIL
+    // Validar unicidad del email
     const uniquenessCheck = await validateUserUniqueness(email, schema);
     if (uniquenessCheck.exists) {
       return res.status(409).json({
@@ -74,7 +72,7 @@ export async function createUser(req, res) {
   }
 }
 
-// ACTUALIZAR - ✅ SOLO AGREGAR VALIDACIÓN
+// excluye el usuario actual
 export async function updateUser(req, res) {
   try {
     const schema = await getSchemaName(req);
@@ -82,11 +80,12 @@ export async function updateUser(req, res) {
     const { id } = req.params;
     const { first_name, last_name, password, role_id, is_active, email } = req.body;
 
-    // ✅ Si el email cambia, validar unicidad
+    // Si el email cambia, validar unicidad EXCLUYENDO el usuario actual
     if (email) {
       const existingUser = await userModel.findUserById(schema, id);
       if (existingUser && email !== existingUser.email) {
-        const uniquenessCheck = await validateUserUniqueness(email, schema);
+        // Validar unicidad pasando el ID actual para EXCLUIRLO
+        const uniquenessCheck = await validateUserUniqueness(email, schema, id);
         if (uniquenessCheck.exists) {
           return res.status(409).json({
             error: 'Email ya registrado',
@@ -123,7 +122,7 @@ export async function updateUser(req, res) {
   }
 }
 
-// ELIMINAR - SIN CAMBIOS
+// ELIMINAR
 export async function deleteUser(req, res) {
   try {
     const schema = await getSchemaName(req);
