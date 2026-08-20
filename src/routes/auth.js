@@ -11,20 +11,16 @@ const router = express.Router();
 // ── POST /api/auth/refresh ────────────────────────────────────
 router.post('/refresh', async (req, res, next) => {
   try {
-    // ✅ PRIORIDAD: body (sessionStorage) > cookie (respaldo)
+    // PRIORIDAD: body (sessionStorage) > cookie (respaldo)
     const refreshToken = req.body?.refreshToken || req.cookies?.refreshToken;
-    
-    console.log('📦 Refresh token en body:', req.body?.refreshToken ? '✅ Sí' : '❌ No');
-    console.log('🍪 Refresh token en cookie:', req.cookies?.refreshToken ? '✅ Sí' : '❌ No');
-    
     if (!refreshToken) {
       return res.status(401).json(errorResponse('Refresh token no encontrado', 401));
     }
 
     const result = await authService.refreshAccessToken(refreshToken, req);
     
-    // ✅ Enviar nuevo refresh token en el body (para sessionStorage)
-    // ✅ También en cookie (para compatibilidad)
+    // Enviar nuevo refresh token en el body (para sessionStorage)
+    // También en cookie (para compatibilidad)
     res.cookie('refreshToken', result.refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
@@ -34,7 +30,7 @@ router.post('/refresh', async (req, res, next) => {
 
     res.json(successResponse({
       token: result.token,
-      refreshToken: result.refreshToken // ✅ Enviar en body
+      refreshToken: result.refreshToken 
     }, 'Token renovado'));
 
   } catch (error) {
@@ -53,7 +49,7 @@ router.post('/refresh', async (req, res, next) => {
 // ── POST /api/auth/logout ────────────────────────────────────
 router.post('/logout', async (req, res, next) => {
   try {
-    // ✅ Obtener refresh token del body o cookie
+    // Obtener refresh token del body o cookie
     const refreshToken = req.body?.refreshToken || req.cookies?.refreshToken;
     
     if (refreshToken) {
@@ -86,7 +82,7 @@ router.post('/login', async (req, res, next) => {
 
     const result = await authService.login(email, password);
     
-    // ✅ Guardar refresh token en cookie HttpOnly (respaldo)
+    // Guardar refresh token en cookie HttpOnly (respaldo)
     if (result.refreshToken) {
       res.cookie('refreshToken', result.refreshToken, {
         httpOnly: true,
@@ -100,7 +96,7 @@ router.post('/login', async (req, res, next) => {
     logger.info(`[LOGIN] requiresBusinessSelection: ${result.requiresBusinessSelection}`);
     logger.info(`[LOGIN] Negocios: ${result.businesses?.length || 0}`);
     
-    // ✅ Enviar refresh token en el body (para sessionStorage)
+    // Enviar refresh token en el body (para sessionStorage)
     const responseData = {
       token: result.token,
       user: result.user,
@@ -109,7 +105,7 @@ router.post('/login', async (req, res, next) => {
       hasSuspendedBusinesses: result.hasSuspendedBusinesses || false,
       warnings: result.warnings || null,
       type: result.type || null,
-      refreshToken: result.refreshToken // ✅ Enviar en body
+      refreshToken: result.refreshToken 
     };
 
     res.json(successResponse(responseData, 'Login successful'));
@@ -150,7 +146,7 @@ router.post('/select-business', async (req, res, next) => {
 
     const result = await authService.selectBusiness(decoded.userId, businessId);
     
-    // ✅ Guardar refresh token en cookie HttpOnly (respaldo)
+    // Guardar refresh token en cookie HttpOnly (respaldo)
     if (result.refreshToken) {
       res.cookie('refreshToken', result.refreshToken, {
         httpOnly: true,
@@ -160,11 +156,11 @@ router.post('/select-business', async (req, res, next) => {
       });
     }
 
-    // ✅ Enviar refresh token en el body (para sessionStorage)
+    // Enviar refresh token en el body (para sessionStorage)
     const responseData = {
       token: result.token,
       user: result.user,
-      refreshToken: result.refreshToken // ✅ Enviar en body
+      refreshToken: result.refreshToken 
     };
 
     res.json(successResponse(responseData, 'Business selected'));
@@ -250,7 +246,6 @@ router.get('/businesses', async (req, res, next) => {
         b.name, 
         b.slug, 
         b.schema_name,
-        bu.role
        FROM public.businesses b
        JOIN public.business_users bu ON bu.business_id = b.id
        WHERE bu.user_id = $1

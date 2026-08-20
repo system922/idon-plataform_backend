@@ -1,5 +1,3 @@
-// ========== backend/routes/user.routes.js ==========
-
 import { Router } from 'express';
 import { authMiddleware } from '../middleware/auth.js';
 import { validateUniqueEmail } from '../middleware/validateUserUniqueness.js';
