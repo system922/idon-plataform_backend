@@ -1,14 +1,5 @@
-// ========== backend/middleware/validateUserUniqueness.js ==========
-
 import { query } from '../config/database.js';
 
-/**
- * Verifica si un email ya existe en public.users o en el esquema actual
- * 
- * @param {string} email - Email a verificar
- * @param {string} schema - Esquema del negocio actual
- * @param {string} excludeUserId - ID del usuario a excluir (opcional, para ediciones)
- */
 export const validateUserUniqueness = async (email, schema, excludeUserId = null) => {
   // 1. Verificar en public.users
   let publicQuery = `SELECT id FROM public.users WHERE email = $1`;
@@ -20,7 +11,6 @@ export const validateUserUniqueness = async (email, schema, excludeUserId = null
   }
   
   const publicUser = await query(publicQuery, publicParams);
-  
   if (publicUser.rows.length > 0) {
     return {
       exists: true,
@@ -41,7 +31,6 @@ export const validateUserUniqueness = async (email, schema, excludeUserId = null
   const userInSchema = await query(schemaQuery, schemaParams);
   
   if (userInSchema.rows.length > 0) {
-    // Obtener nombre del negocio
     let businessName = null;
     const businessRes = await query(
       `SELECT name FROM public.businesses WHERE schema_name = $1`,
@@ -64,9 +53,6 @@ export const validateUserUniqueness = async (email, schema, excludeUserId = null
   return { exists: false };
 };
 
-/**
- * Middleware para validar unicidad de email
- */
 export const validateUniqueEmail = async (req, res, next) => {
   const { email } = req.body;
   
@@ -78,9 +64,7 @@ export const validateUniqueEmail = async (req, res, next) => {
   }
 
   try {
-    // Usar req.schema del middleware
     const schema = req.schema;
-    
     if (!schema) {
       return res.status(400).json({ 
         ok: false, 
@@ -88,7 +72,10 @@ export const validateUniqueEmail = async (req, res, next) => {
       });
     }
     
-    const result = await validateUserUniqueness(email, schema);
+    // Para PUT, excluir el ID del usuario que se está editando
+    const excludeUserId = req.params.id || null;
+    
+    const result = await validateUserUniqueness(email, schema, excludeUserId);
     
     if (result.exists) {
       return res.status(409).json({
