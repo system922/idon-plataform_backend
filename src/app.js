@@ -21,6 +21,8 @@ import businessStatusRoutes  from './routes/businessStatus.js';
 import businessTypeRoutes_r  from './routes/businessTypeRoutes.js';
 import authRoutes            from './routes/auth.js';
 import registerRoutes        from './routes/register.js';
+import blogRoutes from './routes/blogRoutes.js';
+
 
 // ─── Admin routes (una por sección del sidebar) ───────────────────────────────
 import adminDashboardRoutes  from './routes/admin/dashboard.js';
@@ -144,6 +146,8 @@ app.use('/api/business-types',  businessTypeRoutes_r);
 app.use('/api/security',        securityRoutes);
 app.use('/api/audit-log',       auditLogRoutes);
 app.use('/api/business-owners', businessOwnersRoutes);
+app.use('/api/blog',            blogRoutes);
+
 // ─── Rutas de negocio por WhatsApp ─────────────────────────────────────────────
 app.use('/api/business_ws', businessByWhatsappRoutes);
 
