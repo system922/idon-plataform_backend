@@ -1,7 +1,7 @@
 import express from 'express';
 import { query, getClient } from '../../config/database.js';
+import { provisionBusinessFromRequest } from '../../services/provisioningService.js';
 import { successResponse, errorResponse } from '../../utils/response.js';
-import { createBusinessFromRequest } from '../../services/provisioningService.js';
 import logger from '../../utils/logger.js';
 
 const router = express.Router();
@@ -86,13 +86,12 @@ router.post('/:requestId/approve', async (req, res, next) => {
   const { requestId } = req.params;
   const { adminId } = req.body;
   logger.info(`[ADMIN] Approve requestId=${requestId}, adminId=${adminId}`);
-
   try {
-    const result = await createBusinessFromRequest(requestId, adminId);
-    logger.info(`[APPROVE] Solicitud ${requestId} aprobada, negocio creado (sin provisionar)`, result);
-    res.json(successResponse(result, 'Solicitud aprobada. El negocio ha sido creado. Ahora puede activar módulos y aprovisionar desde Clientes.'));
+    const result = await provisionBusinessFromRequest(requestId, adminId);
+    logger.info(`[APPROVE] Provisión exitosa para request: ${requestId}`, result);
+    res.json(successResponse(result, 'Business approved and provisioned successfully'));
   } catch (error) {
-    logger.error({ err: error }, `[APPROVE] Error al aprobar solicitud ${requestId}`);
+    logger.error({ err: error }, `[APPROVE] Error en provisión para request ${requestId}`);
     if (error.message?.includes('not found'))
       return res.status(404).json(errorResponse(error.message, 404));
     res.status(500).json(errorResponse('Internal server error', 500, error.message));

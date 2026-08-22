@@ -2,8 +2,6 @@ import express from 'express';
 import { query, getClient } from '../../config/database.js';
 import logger from '../../utils/logger.js';
 import { sendGenericEmail } from '../../services/crmEmailService.js';
-import { provisionTenantTables } from '../../services/provisioningService.js';
-
 
 const router = express.Router();
 
@@ -116,24 +114,6 @@ router.put('/businesses/:businessId', async (req, res, next) => {
   } catch (error) {
     logger.error('Error actualizando negocio:', error);
     next(error);
-  }
-});
-
-// POST /api/admin/businesses/:businessId/provision
-// Crea el esquema y todas las tablas necesarias para los módulos activos del negocio
-router.post('/businesses/:businessId/provision', async (req, res, next) => {
-  const { businessId } = req.params;
-  try {
-    const result = await provisionTenantTables(businessId);
-    logger.info(`[PROVISION] Tablas creadas/verificadas para business ${businessId}: ${result.tablesCreated} tablas`);
-    res.json({
-      ok: true,
-      message: `Aprovisionamiento completado. ${result.tablesCreated} tablas creadas/verificadas.`,
-      data: result
-    });
-  } catch (error) {
-    logger.error('[PROVISION] Error:', error);
-    res.status(500).json({ ok: false, message: error.message });
   }
 });
 

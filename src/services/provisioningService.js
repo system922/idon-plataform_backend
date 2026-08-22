@@ -1,13 +1,14 @@
-import { v4 as uuidv4 } from 'uuid';
 import { getClient } from '../config/database.js';
 import logger from '../utils/logger.js';
 
 /**
- * Aprobar y provisionar un negocio desde una solicitud.
+ * Solo crea el negocio (business) y vincula usuario, sin activar módulos ni crear tablas.
+ * Útil para la aprobación sin provisionamiento.
  * @param {string} requestId - UUID de business_registration_requests
- * @param {string} adminId   - UUID del admin que aprueba (de public.admin_users)
+ * @param {string} adminId   - UUID del admin que aprueba
+ * @returns {Promise<{ businessId: string, schemaName: string, slug: string }>}
  */
-export const provisionBusinessFromRequest = async (requestId, adminId) => {
+export const createBusinessFromRequest = async (requestId, adminId) => {
   const client = await getClient();
 
   try {
@@ -27,26 +28,7 @@ export const provisionBusinessFromRequest = async (requestId, adminId) => {
       throw new Error(`Request already processed (status: ${req.status})`);
     }
 
-    // 2. Cargar módulos y features seleccionados
-    const { rows: modRows } = await client.query(
-      `SELECT m.id, m.code
-       FROM public.business_registration_request_modules brrm
-       JOIN public.modules m ON brrm.module_id = m.id
-       WHERE brrm.request_id = $1`,
-      [requestId]
-    );
-    const enabledModuleCodes = modRows.map(m => m.code);
-
-    const { rows: featRows } = await client.query(
-      `SELECT f.id, f.code
-       FROM public.business_registration_request_features brrf
-       JOIN public.features f ON brrf.feature_id = f.id
-       WHERE brrf.request_id = $1`,
-      [requestId]
-    );
-    const enabledFeatureCodes = featRows.map(f => f.code);
-
-    // 3. Crear public.businesses
+    // 2. Generar businessId y schemaName
     const businessId = uuidv4();
     const schemaName = `tenant_${req.slug.replace(/-/g, '_')}`;
 
@@ -59,6 +41,7 @@ export const provisionBusinessFromRequest = async (requestId, adminId) => {
       throw new Error(`Business with slug '${req.slug}' is already provisioned`);
     }
 
+    // 3. Crear public.businesses (sin activar módulos ni features)
     await client.query(
       `INSERT INTO public.businesses
          (id, slug, name, business_type_id, schema_name,
@@ -67,39 +50,19 @@ export const provisionBusinessFromRequest = async (requestId, adminId) => {
       [businessId, req.slug, req.business_name, req.business_type_id, schemaName]
     );
 
-    // 4. Activar módulos en public.business_modules
-    for (const mod of modRows) {
-      await client.query(
-        `INSERT INTO public.business_modules
-           (id, business_id, module_id, is_active, activated_at, created_at, updated_at)
-         VALUES ($1,$2,$3,TRUE,NOW(),NOW(),NOW())
-         ON CONFLICT (business_id, module_id) DO UPDATE SET is_active=TRUE, activated_at=NOW()`,
-        [uuidv4(), businessId, mod.id]
-      );
-    }
 
-    // 5. Activar features en public.business_features
-    for (const feat of featRows) {
-      await client.query(
-        `INSERT INTO public.business_features
-           (id, business_id, feature_id, is_active, activated_at, created_at, updated_at)
-         VALUES ($1,$2,$3,TRUE,NOW(),NOW(),NOW())
-         ON CONFLICT (business_id, feature_id) DO UPDATE SET is_active=TRUE, activated_at=NOW()`,
-        [uuidv4(), businessId, feat.id]
-      );
-    }
 
-    // 6. Buscar el user_id del solicitante
+    // 4. Buscar el user_id del solicitante
     const userId = req.user_id;
 
-    // 7. Buscar rol 'manager'
+    // 5. Buscar rol 'manager'
     const { rows: roleRows } = await client.query(
       `SELECT id FROM public.roles WHERE code = 'manager' LIMIT 1`
     );
     if (roleRows.length === 0) throw new Error('Role manager not found in public.roles');
     const roleId = roleRows[0].id;
 
-    // 8. Vincular usuario al negocio como manager/owner
+    // 6. Vincular usuario al negocio como manager/owner
     if (userId) {
       await client.query(
         `INSERT INTO public.business_users
@@ -111,13 +74,12 @@ export const provisionBusinessFromRequest = async (requestId, adminId) => {
       );
     }
 
-    // 9. Marcar solicitud como aprobada
+    // 8. Marcar solicitud como aprobada
     await client.query(
       `UPDATE public.business_registration_requests
        SET status = 'approved',
            reviewed_by = $1,
            reviewed_at = NOW(),
-           provisioned_at = NOW(),
            provisioned_business_id = $2,
            schema_name = $3,
            updated_at = NOW()
@@ -125,36 +87,86 @@ export const provisionBusinessFromRequest = async (requestId, adminId) => {
       [adminId, businessId, schemaName, requestId]
     );
 
-    // 10. Crear schema y tablas DENTRO de la transacción para atomicidad
-    logger.info(`[PROVISION] Creando schema ${schemaName} con módulos: [${enabledModuleCodes.join(',')}]`);
-    const { rows: provRows } = await client.query(
-      `SELECT public.provision_business_tenant($1, $2, $3) as result`,
-      [requestId, schemaName, enabledModuleCodes]
-    );
-    const prov = provRows[0]?.result ?? {};
-    if (!prov.success) {
-      throw new Error(`Schema provision failed: ${prov.error} (hint: ${prov.hint})`);
-    }
-    logger.info(`[PROVISION] Schema creado — ${prov.tables_created} tablas en ${schemaName}`);
-
     await client.query('COMMIT');
 
     logger.info(
-      `[PROVISION] Completado — business=${businessId} schema=${schemaName} ` +
-      `modules=[${enabledModuleCodes.join(',')}] features=[${enabledFeatureCodes.join(',')}]`
+      `[APPROVE] Solicitud ${requestId} aprobada — business=${businessId} schema=${schemaName} (sin módulos ni tablas)`
     );
 
     return {
       businessId,
       schemaName,
       slug: req.slug,
-      modulesActivated: enabledModuleCodes,
-      featuresActivated: enabledFeatureCodes,
     };
 
   } catch (err) {
     await client.query('ROLLBACK');
-    logger.error({ err, code: err?.code, detail: err?.detail, hint: err?.hint }, '[PROVISION] Error — transacción revertida');
+    logger.error({ err, code: err?.code, detail: err?.detail, hint: err?.hint }, '[APPROVE] Error — transacción revertida');
+    throw err;
+  } finally {
+    client.release();
+  }
+};
+
+
+/**
+ * Crea (o verifica) las tablas del tenant para un negocio existente,
+ * basado en los módulos que tiene activos en ese momento.
+ * @param {string} businessId - UUID del negocio
+ * @returns {Promise<{ success: boolean, schema: string, tablesCreated: number, modules: string[] }>}
+ */
+export const provisionTenantTables = async (businessId) => {
+  const client = await getClient();
+  try {
+    // 1. Obtener datos del negocio
+    const { rows: bizRows } = await client.query(
+      `SELECT id, schema_name FROM public.businesses WHERE id = $1`,
+      [businessId]
+    );
+    if (bizRows.length === 0) throw new Error(`Business not found: ${businessId}`);
+    const business = bizRows[0];
+    if (!business.schema_name) throw new Error(`Business ${businessId} has no schema assigned`);
+
+    // 2. Obtener módulos activos
+    const { rows: modRows } = await client.query(
+      `SELECT m.code
+       FROM public.business_modules bm
+       JOIN public.modules m ON bm.module_id = m.id
+       WHERE bm.business_id = $1 AND bm.is_active = TRUE`,
+      [businessId]
+    );
+    const moduleCodes = modRows.map(r => r.code);
+    if (moduleCodes.length === 0) throw new Error(`Business ${businessId} has no active modules`);
+
+    // 3. Obtener la solicitud asociada (necesaria para provision_business_tenant)
+    const { rows: reqRows } = await client.query(
+      `SELECT id FROM public.business_registration_requests 
+       WHERE provisioned_business_id = $1 AND status = 'approved'`,
+      [businessId]
+    );
+    if (reqRows.length === 0) {
+      throw new Error(`No approved request found for business ${businessId}`);
+    }
+    const requestId = reqRows[0].id;
+
+    // 4. Ejecutar la función SQL (idempotente)
+    const { rows: provRows } = await client.query(
+      `SELECT public.provision_business_tenant($1, $2, $3) as result`,
+      [requestId, business.schema_name, moduleCodes]
+    );
+    const provResult = provRows[0]?.result;
+    if (!provResult || !provResult.success) {
+      throw new Error(provResult?.error || 'Unknown error creating tables');
+    }
+
+    return {
+      success: true,
+      schema: business.schema_name,
+      tablesCreated: provResult.tables_created,
+      modules: moduleCodes,
+    };
+  } catch (err) {
+    logger.error({ err, businessId }, '[PROVISION] Error en provisionTenantTables');
     throw err;
   } finally {
     client.release();
