@@ -34,17 +34,6 @@ router.post('/', authMiddleware, async (req, res) => {
 
     await client.query('BEGIN');
 
-    // Crear tabla de contador diario (si no existe)
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS "${schema}".daily_order_counter (
-        id SERIAL PRIMARY KEY,
-        order_date DATE NOT NULL UNIQUE,
-        last_number INTEGER NOT NULL DEFAULT 0,
-        created_at TIMESTAMP DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'America/Guayaquil'),
-        updated_at TIMESTAMP DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'America/Guayaquil')
-      )
-    `);
-
     // Obtener siguiente número
     const counterResult = await client.query(`
       SELECT ${schema}.get_next_order_number() as next_number

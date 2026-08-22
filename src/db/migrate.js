@@ -28,10 +28,10 @@ const getActiveModules = async (schemaName) => {
     `, [schemaName]);
     
     const modules = result.rows.map(row => row.code);
-    logger.info(`📦 Módulos activos para ${schemaName}: ${modules.join(', ')}`);
+    logger.info(`Módulos activos para ${schemaName}: ${modules.join(', ')}`);
     return modules;
   } catch (error) {
-    logger.warn(`⚠️ No se pudo obtener módulos activos para ${schemaName}, usando core solamente:`, error.message);
+    logger.warn(`No se pudo obtener módulos activos para ${schemaName}, usando core solamente:`, error.message);
     return ['core'];
   }
 };
@@ -58,7 +58,7 @@ export const migrateTenant = async (schemaName) => {
     }
     
     await client.query('COMMIT');
-    logger.info(`✅ Tenant schema ${schemaName} migrated successfully with modules: ${modulesToMigrate.join(', ')}`);
+    logger.info(`Tenant schema ${schemaName} migrated successfully with modules: ${modulesToMigrate.join(', ')}`);
   } catch (error) {
     await client.query('ROLLBACK');
     logger.error(`❌ Tenant migration for ${schemaName} failed:`, error);
@@ -76,7 +76,7 @@ export const migrateTenantModule = async (client, schemaName, moduleName) => {
   
   // Verificar si el directorio del módulo existe
   if (!(await exists(moduleDir))) {
-    logger.warn(`⚠️ Módulo ${moduleName} no tiene migraciones, saltando`);
+    logger.warn(`Módulo ${moduleName} no tiene migraciones, saltando`);
     return;
   }
   
@@ -110,7 +110,7 @@ export const migrateTenantModule = async (client, schemaName, moduleName) => {
     for (const file of sortedFiles) {
       const version = `${moduleName}_${file.replace('.sql', '')}`;
       if (applied.has(version)) {
-        logger.debug(`⏭️ Saltando migración ya aplicada: ${file}`);
+        logger.debug(`Saltando migración ya aplicada: ${file}`);
         continue;
       }
 
@@ -118,7 +118,7 @@ export const migrateTenantModule = async (client, schemaName, moduleName) => {
       const sql = await readFile(filePath, 'utf-8');
       const processedSql = sql.replace(/{SCHEMA}/g, schemaName);
       
-      logger.info(`📦 Ejecutando migración: ${moduleName}/${file}`);
+      logger.info(`Ejecutando migración: ${moduleName}/${file}`);
       
       try {
         await client.query(processedSql);
@@ -128,18 +128,18 @@ export const migrateTenantModule = async (client, schemaName, moduleName) => {
            ON CONFLICT (version) DO NOTHING`,
           [version, moduleName, file]
         );
-        logger.info(`✅ Migración completada: ${file}`);
+        logger.info(`Migración completada: ${file}`);
       } catch (err) {
         // Si el error es porque la tabla no existe, omitir y continuar
         if (err.message && err.message.includes('does not exist')) {
-          logger.warn(`⚠️ Tabla no existe en ${moduleName}/${file}, omitiendo: ${err.message}`);
+          logger.warn(`Tabla no existe en ${moduleName}/${file}, omitiendo: ${err.message}`);
           continue;
         }
         throw err;
       }
     }
   } catch (error) {
-    logger.error(`❌ Error migrating module ${moduleName} for schema ${schemaName}:`, error);
+    logger.error(`Error migrating module ${moduleName} for schema ${schemaName}:`, error);
     throw error;
   }
 };
@@ -168,10 +168,10 @@ export const migrateControlPlane = async () => {
     }
 
     await migClient.query('COMMIT');
-    logger.info('✅ Control-plane migrations completed');
+    logger.info('Control-plane migrations completed');
   } catch (error) {
     await migClient.query('ROLLBACK');
-    logger.error({ err: error }, '❌ Control-plane migration failed');
+    logger.error({ err: error }, 'Control-plane migration failed');
     throw error;
   } finally {
     migClient.release();
@@ -186,13 +186,13 @@ export const migrateControlPlane = async () => {
       for (const file of fnFiles) {
         const fnPath = path.join(functionsDir, file);
         const fnSql = await readFile(fnPath, 'utf-8');
-        logger.info(`📦 Registering DB function: ${file}`);
+        logger.info(`Registering DB function: ${file}`);
         await fnClient.query('BEGIN');
         await fnClient.query(fnSql);
         await fnClient.query('COMMIT');
       }
     }
-    logger.info('✅ Control-plane migrations completed successfully');
+    logger.info('Control-plane migrations completed successfully');
   } catch (error) {
     await fnClient.query('ROLLBACK').catch(() => {});
     logger.error({ err: error }, '❌ DB function registration failed');
@@ -212,10 +212,10 @@ export const rollbackTenant = async (schemaName) => {
     await client.query(`DROP SCHEMA IF EXISTS ${schemaName} CASCADE`);
     await client.query('DELETE FROM public.businesses WHERE schema_name = $1', [schemaName]);
     await client.query('COMMIT');
-    logger.info(`✅ Tenant schema ${schemaName} rolled back successfully`);
+    logger.info(`Tenant schema ${schemaName} rolled back successfully`);
   } catch (error) {
     await client.query('ROLLBACK');
-    logger.error(`❌ Tenant rollback for ${schemaName} failed:`, error);
+    logger.error(`Tenant rollback for ${schemaName} failed:`, error);
     throw error;
   } finally {
     client.release();
@@ -240,15 +240,15 @@ const run = async () => {
         try {
           await migrateTenant(tenant.schema_name);
         } catch (err) {
-          logger.error(`❌ Error migrando tenant ${tenant.schema_name}:`, err.message);
+          logger.error(`Error migrando tenant ${tenant.schema_name}:`, err.message);
         }
       }
     }
     
-    logger.info('✅ Todas las migraciones completadas');
+    logger.info('Todas las migraciones completadas');
     process.exit(0);
   } catch (error) {
-    logger.error('❌ Error en migraciones:', error);
+    logger.error('Error en migraciones:', error);
     process.exit(1);
   }
 };

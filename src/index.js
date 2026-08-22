@@ -7,6 +7,7 @@ import pool from './config/database.js';
 import env from './config/env.js';
 import logger from './utils/logger.js';
 import { migrateControlPlane } from './db/migrate.js';
+import { migrateTenant } from './db/migrate.js';
 import { initSocket } from './socket.js';
 
 const PORT = env.port;
@@ -21,6 +22,18 @@ const startServer = async () => {
     logger.info('Running control-plane migrations...');
     await migrateControlPlane();
     logger.info('Control-plane migrations completed');
+
+    // Obtener todos los tenants activos
+    const tenants = await pool.query(
+      `SELECT schema_name FROM public.businesses WHERE is_active = true AND schema_name IS NOT NULL`
+    );
+    for (const row of tenants.rows) {
+      try {
+        await migrateTenant(row.schema_name);
+      } catch (err) {
+        logger.error(`Error migrando tenant ${row.schema_name}:`, err.message);
+      }
+    }
 
     // Attach Socket.io to the HTTP server
     const httpServer = createServer(app);
