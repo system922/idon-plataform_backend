@@ -66,7 +66,7 @@ router.post('/subscriptions/:subId/mark-paid', async (req, res, next) => {
     const { subId } = req.params;
     const { notes, payment_method, reference } = req.body;
 
-    // ✅ CONSULTA CORREGIDA - Usando business_users
+    // CONSULTA CORREGIDA - Usando business_users
     const { rows: subRows } = await query(`
       SELECT 
         s.*,
@@ -163,7 +163,7 @@ router.post('/subscriptions/:subId/mark-paid', async (req, res, next) => {
 });
 
 // 🔥 Función para enviar email de pago confirmado
-async function sendPaymentConfirmedEmail(subscriptionId, ownerName, ownerEmail) {
+async function sendPaymentConfirmedEmail(subscriptionId, ownerName, ownerEmail, monthsPaid = 1) {
   try {
     // Obtener datos de la suscripción
     const { rows } = await query(`
@@ -211,7 +211,9 @@ async function sendPaymentConfirmedEmail(subscriptionId, ownerName, ownerEmail) 
       business_name: sub.business_name || '—',
       amount: `$${parseFloat(sub.total_amount || 0).toFixed(2)}`,
       due_date: fmtDate(sub.next_billing_at),
+      months_paid: monthsPaid,
     };
+    
 
     const interpolate = (str) =>
       str.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? `{{${k}}}`);
@@ -227,13 +229,158 @@ async function sendPaymentConfirmedEmail(subscriptionId, ownerName, ownerEmail) 
       businessName: 'IDON PLATAFORM'
     });
 
-    logger.info(`✅ Email de pago confirmado enviado a ${email}`);
+    logger.info(`Email de pago confirmado enviado a ${email}`);
 
   } catch (error) {
     logger.error('Error en sendPaymentConfirmedEmail:', error);
     throw error;
   }
 }
+
+
+// POST /api/admin/payments/record
+router.post('/payments/record', async (req, res, next) => {
+  try {
+    const { subscriptionId, notes, payment_method, reference, months = 1 } = req.body;
+
+    if (!subscriptionId) {
+      return res.status(400).json({ ok: false, message: 'subscriptionId es requerido' });
+    }
+
+    const monthsToAdd = Math.max(1, parseInt(months) || 1);
+
+    // Obtener suscripción con negocio y propietario
+    const { rows: subRows } = await query(`
+      SELECT 
+        s.*,
+        b.name AS business_name,
+        u.id AS user_id,
+        u.first_name,
+        u.last_name,
+        u.email AS owner_email,
+        bo.id AS owner_id
+      FROM public.subscriptions s
+      JOIN public.businesses b ON s.business_id = b.id
+      JOIN public.business_users bu ON bu.business_id = b.id AND bu.is_owner = TRUE
+      JOIN public.users u ON u.id = bu.user_id
+      JOIN public.business_owners bo ON bo.user_id = u.id
+      WHERE s.id = $1
+    `, [subscriptionId]);
+
+    if (subRows.length === 0) {
+      return res.status(404).json({ ok: false, message: 'Suscripción no encontrada' });
+    }
+
+    const sub = subRows[0];
+    const ownerName = `${sub.first_name} ${sub.last_name || ''}`.trim();
+
+    // No permitir pagos si suspendida
+    if (sub.status === 'suspended') {
+      return res.status(400).json({
+        ok: false,
+        message: 'No se puede registrar un pago para una suscripción suspendida. Primero reactívala.'
+      });
+    }
+
+    // --- Calcular nueva fecha de vencimiento ---
+    // Si está pendiente o no tiene next_billing_at, partimos de hoy
+    let baseDate = new Date(sub.next_billing_at);
+    if (sub.status === 'pending_activation' || !baseDate || baseDate < new Date()) {
+      baseDate = new Date();
+    }
+    // Ajustar al día 1 del mes actual
+    baseDate.setDate(1);
+    baseDate.setHours(0, 0, 0, 0);
+
+    // Sumar los meses pagados
+    const newNextBilling = new Date(baseDate);
+    newNextBilling.setMonth(newNextBilling.getMonth() + monthsToAdd);
+    // Ajustar al día 1 del mes resultante
+    newNextBilling.setDate(1);
+
+    const invoiceNumber = `INV-${Date.now()}`;
+
+    // --- Calcular el período cubierto por este pago ---
+    const periodStart = baseDate.toISOString();
+    const periodEnd = newNextBilling.toISOString();
+
+    // Registrar en billing_history
+    await query(
+      `INSERT INTO public.billing_history
+         (subscription_id, billing_date, due_date, amount, status, invoice_number, 
+          notes, payment_method, reference, period_start, period_end, months_paid)
+       VALUES ($1, NOW(), $2, $3, 'paid', $4, $5, $6, $7, $8, $9, $10)`,
+      [
+        sub.id,
+        sub.next_billing_at,  // due_date (fecha de vencimiento anterior)
+        sub.total_amount,
+        invoiceNumber,
+        notes || null,
+        payment_method || null,
+        reference || null,
+        periodStart,
+        periodEnd,
+        monthsToAdd
+      ]
+    );
+
+    // --- Actualizar suscripción ---
+    await query(
+      `UPDATE public.subscriptions 
+       SET next_billing_at = $1,
+           paid_until = $2,
+           updated_at = NOW()
+       WHERE id = $3`,
+      [newNextBilling.toISOString(), newNextBilling.toISOString(), sub.id]
+    );
+
+    // Si estaba pendiente, activar
+    let statusChanged = false;
+    if (sub.status === 'pending_activation') {
+      await query(
+        `UPDATE public.subscriptions 
+         SET status = 'active', 
+             activated_at = NOW()
+         WHERE id = $1`,
+        [sub.id]
+      );
+      await query(
+        'UPDATE public.businesses SET is_active = TRUE, updated_at = NOW() WHERE id = (SELECT business_id FROM public.subscriptions WHERE id = $1)',
+        [sub.id]
+      );
+      statusChanged = true;
+    }
+
+    // Enviar email de confirmación (opcional)
+    try {
+      await sendPaymentConfirmedEmail(sub.id, ownerName, sub.owner_email, monthsToAdd);
+    } catch (emailError) {
+      logger.error('Error enviando email de pago confirmado:', emailError);
+    }
+
+    logger.info(`[PAYMENT-RECORD] Pago registrado para suscripción ${sub.id}, meses=${monthsToAdd}, invoice ${invoiceNumber}`);
+
+    res.json({
+      ok: true,
+      message: `Pago de ${monthsToAdd} mes(es) registrado correctamente.`,
+      data: {
+        invoice_number: invoiceNumber,
+        next_billing_at: newNextBilling,
+        months_paid: monthsToAdd,
+        status: sub.status,
+        activated: statusChanged
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error registrando pago en /payments/record:', error);
+    res.status(500).json({
+      ok: false,
+      message: 'Error al registrar el pago: ' + error.message
+    });
+  }
+});
+
 
 // POST /api/admin/subscriptions/:subId/suspend
 router.post('/subscriptions/:subId/suspend', async (req, res, next) => {
