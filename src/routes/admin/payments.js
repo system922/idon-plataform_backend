@@ -282,21 +282,24 @@ router.post('/payments/record', async (req, res, next) => {
       });
     }
 
-    // --- Calcular nueva fecha de vencimiento ---
-    // Si está pendiente o no tiene next_billing_at, partimos de hoy
-    let baseDate = new Date(sub.next_billing_at);
-    if (sub.status === 'pending_activation' || !baseDate || baseDate < new Date()) {
-      baseDate = new Date();
-    }
-    // Ajustar al día 1 del mes actual
+    // --- Calcular fecha base para sumar los meses ---
+    // Si está pendiente o no tiene next_billing_at o ya expiró, partimos de hoy
+    let baseDate = sub.next_billing_at ? new Date(sub.next_billing_at) : new Date();
+    const now = new Date();
+    // Ajustar a día 1 y cero horas
     baseDate.setDate(1);
     baseDate.setHours(0, 0, 0, 0);
+    // Si baseDate es menor que hoy, usar hoy (para renovaciones atrasadas)
+    if (baseDate < now) {
+      baseDate = new Date(now);
+      baseDate.setDate(1);
+      baseDate.setHours(0, 0, 0, 0);
+    }
 
     // Sumar los meses pagados
     const newNextBilling = new Date(baseDate);
     newNextBilling.setMonth(newNextBilling.getMonth() + monthsToAdd);
-    // Ajustar al día 1 del mes resultante
-    newNextBilling.setDate(1);
+    newNextBilling.setDate(1); // asegurar día 1
 
     const invoiceNumber = `INV-${Date.now()}`;
 
@@ -304,7 +307,7 @@ router.post('/payments/record', async (req, res, next) => {
     const periodStart = baseDate.toISOString();
     const periodEnd = newNextBilling.toISOString();
 
-    // Registrar en billing_history
+    // Registrar en billing_history (con las columnas agregadas)
     await query(
       `INSERT INTO public.billing_history
          (subscription_id, billing_date, due_date, amount, status, invoice_number, 
@@ -325,13 +328,14 @@ router.post('/payments/record', async (req, res, next) => {
     );
 
     // --- Actualizar suscripción ---
+    // Actualizar next_billing_at y paid_until
     await query(
       `UPDATE public.subscriptions 
        SET next_billing_at = $1,
-           paid_until = $2,
+           paid_until = $1,
            updated_at = NOW()
-       WHERE id = $3`,
-      [newNextBilling.toISOString(), newNextBilling.toISOString(), sub.id]
+       WHERE id = $2`,
+      [newNextBilling.toISOString(), sub.id]
     );
 
     // Si estaba pendiente, activar
