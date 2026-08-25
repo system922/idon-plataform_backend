@@ -60,13 +60,14 @@ router.patch('/subscriptions/:subId/discount', async (req, res, next) => {
   }
 });
 
-// POST /api/admin/payments/:subId/mark-paid
+
+// POST /api/admin/subscriptions/:subId/mark-paid
 router.post('/subscriptions/:subId/mark-paid', async (req, res, next) => {
   try {
     const { subId } = req.params;
     const { notes, payment_method, reference } = req.body;
 
-    // CONSULTA CORREGIDA - Usando business_users
+    // Obtener suscripción con datos del negocio y propietario
     const { rows: subRows } = await query(`
       SELECT 
         s.*,
@@ -91,57 +92,108 @@ router.post('/subscriptions/:subId/mark-paid', async (req, res, next) => {
     const sub = subRows[0];
     const ownerName = `${sub.first_name} ${sub.last_name || ''}`.trim();
 
-    // Verificar que no esté ya activa
+    // No permitir si ya está activa
     if (sub.status === 'active') {
-      return res.status(400).json({ 
-        ok: false, 
-        message: 'Esta suscripción ya está activa' 
-      });
+      return res.status(400).json({ ok: false, message: 'Esta suscripción ya está activa' });
     }
 
-    // Calcular próxima fecha de cobro
-    const nextBilling = new Date(sub.next_billing_at || new Date());
+    // --- Definir fecha base según el estado ---
+    const now = new Date();
+    let baseDate;
+
+    if (sub.status === 'pending_activation') {
+      // Primer pago: la base es hoy (fecha del pago)
+      baseDate = new Date(now);
+    } else {
+      // Renovación (estado 'active' o 'suspended'? solo permitimos si no está activa, pero puede ser 'suspended')
+      // Si está suspendida, usamos la fecha actual o la del próximo cobro si existe y es futura
+      baseDate = sub.next_billing_at ? new Date(sub.next_billing_at) : new Date(now);
+      // Si la fecha base es anterior a hoy, usar hoy (para reactivaciones)
+      if (baseDate < now) {
+        baseDate = new Date(now);
+      }
+    }
+
+    // Calcular próximo cobro (sumar un período)
+    const nextBilling = new Date(baseDate);
     if (sub.billing_period === 'monthly') {
       nextBilling.setMonth(nextBilling.getMonth() + 1);
     } else {
       nextBilling.setFullYear(nextBilling.getFullYear() + 1);
     }
 
-    const invoiceNumber = `INV-${Date.now()}`;
+    // Asegurar día 1 si lo prefieres (comenta si no)
+    // nextBilling.setDate(1);
+    // nextBilling.setHours(0, 0, 0, 0);
 
-    // Registrar en billing_history
+    const invoiceNumber = `INV-${Date.now()}`;
+    const periodStart = baseDate.toISOString();
+    const periodEnd = nextBilling.toISOString();
+    const monthsPaid = 1; // Siempre 1 mes en este endpoint
+
+    // --- Registrar en billing_history con todos los campos ---
     await query(
       `INSERT INTO public.billing_history
-         (subscription_id, billing_date, due_date, amount, status, invoice_number, notes, payment_method, reference)
-       VALUES ($1, NOW(), $2, $3, 'paid', $4, $5, $6, $7)`,
-      [subId, sub.next_billing_at, sub.total_amount, invoiceNumber, notes || null, payment_method || null, reference || null]
+         (subscription_id, billing_date, due_date, amount, status, invoice_number,
+          notes, payment_method, reference, period_start, period_end, months_paid)
+       VALUES ($1, NOW(), $2, $3, 'paid', $4, $5, $6, $7, $8, $9, $10)`,
+      [
+        sub.id,
+        sub.next_billing_at,   // due_date (fecha de vencimiento anterior, puede ser null)
+        sub.total_amount,
+        invoiceNumber,
+        notes || null,
+        payment_method || null,
+        reference || null,
+        periodStart,
+        periodEnd,
+        monthsPaid
+      ]
     );
 
-    // Actualizar suscripción a ACTIVE
-    await query(
-      `UPDATE public.subscriptions 
-       SET status = 'active', 
-           activated_at = NOW(),
-           next_billing_at = $1, 
-           updated_at = NOW() 
-       WHERE id = $2`,
-      [nextBilling.toISOString(), subId]
-    );
+    // --- Actualizar suscripción ---
+    // Cambiar estado a 'active' si estaba pendiente
+    let statusChanged = false;
+    if (sub.status === 'pending_activation') {
+      await query(
+        `UPDATE public.subscriptions 
+         SET status = 'active', 
+             activated_at = NOW(),
+             next_billing_at = $1,
+             paid_until = $1,
+             updated_at = NOW()
+         WHERE id = $2`,
+        [nextBilling.toISOString(), sub.id]
+      );
+      // Activar el negocio
+      await query(
+        `UPDATE public.businesses 
+         SET is_active = TRUE, updated_at = NOW() 
+         WHERE id = (SELECT business_id FROM public.subscriptions WHERE id = $1)`,
+        [sub.id]
+      );
+      statusChanged = true;
+    } else {
+      // Si ya estaba activa (no debería por la validación anterior) o suspendida
+      // Solo actualizar next_billing_at y paid_until
+      await query(
+        `UPDATE public.subscriptions 
+         SET next_billing_at = $1,
+             paid_until = $1,
+             updated_at = NOW()
+         WHERE id = $2`,
+        [nextBilling.toISOString(), sub.id]
+      );
+    }
 
-    // Activar el negocio
-    await query(
-      'UPDATE public.businesses SET is_active = TRUE, updated_at = NOW() WHERE id = (SELECT business_id FROM public.subscriptions WHERE id = $1)',
-      [subId]
-    );
-
-    // 🔥 ENVIAR EMAIL DE PAGO CONFIRMADO
+    // --- Enviar email de confirmación ---
     try {
-      await sendPaymentConfirmedEmail(subId, ownerName, sub.owner_email);
+      await sendPaymentConfirmedEmail(subId, ownerName, sub.owner_email, monthsPaid);
     } catch (emailError) {
       logger.error('Error enviando email de pago confirmado:', emailError);
     }
 
-    logger.info(`[PAYMENT] Pago registrado para suscripción ${subId}, invoice ${invoiceNumber}`);
+    logger.info(`[PAYMENT] Pago registrado para suscripción ${subId}, invoice ${invoiceNumber}, próximo cobro ${nextBilling}`);
 
     res.json({
       ok: true,
@@ -149,15 +201,18 @@ router.post('/subscriptions/:subId/mark-paid', async (req, res, next) => {
       data: {
         invoice_number: invoiceNumber,
         next_billing_at: nextBilling,
-        status: 'active'
+        status: 'active',
+        period_start: periodStart,
+        period_end: periodEnd,
+        months_paid: monthsPaid
       }
     });
 
   } catch (error) {
     logger.error('Error registrando pago:', error);
-    res.status(500).json({ 
-      ok: false, 
-      message: 'Error al registrar el pago: ' + error.message 
+    res.status(500).json({
+      ok: false,
+      message: 'Error al registrar el pago: ' + error.message
     });
   }
 });
