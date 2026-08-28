@@ -1,4 +1,3 @@
-// models/BusinessTypeModel.js
 import { query } from '../config/database.js';
 
 export async function findAllBusinessTypes() {
@@ -12,7 +11,7 @@ export async function findBusinessTypeById(id) {
 }
 
 export async function createBusinessType(data) {
-  const { code, name, description, is_active = true } = data;
+  const { code, name, description, is_active } = data;
   const result = await query(
     `INSERT INTO public.business_types (code, name, description, is_active)
      VALUES ($1, $2, $3, $4) RETURNING *`,
@@ -24,15 +23,13 @@ export async function createBusinessType(data) {
 export async function updateBusinessType(id, data) {
   const { code, name, description, is_active } = data;
   const result = await query(
-    `UPDATE public.business_types 
-     SET code = $2, name = $3, description = $4, is_active = $5, updated_at = NOW() 
-     WHERE id = $1 RETURNING *`,
+    `UPDATE public.business_types SET code=$2, name=$3, description=$4, is_active=$5 WHERE id=$1 RETURNING *`,
     [id, code, name, description, is_active]
   );
   return result.rows[0];
 }
 
 export async function deleteBusinessType(id) {
-  const result = await query('DELETE FROM public.business_types WHERE id = $1 RETURNING id', [id]);
-  return result.rows.length > 0;
+  await query('DELETE FROM public.business_types WHERE id = $1', [id]);
+  return true;
 }

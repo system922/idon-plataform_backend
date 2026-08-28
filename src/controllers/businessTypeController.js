@@ -1,121 +1,49 @@
-// controllers/businessTypeController.js
 import * as businessTypeService from '../services/businessTypeService.js';
 
 export const getAllBusinessTypes = async (req, res) => {
   try {
     const businessTypes = await businessTypeService.getAllBusinessTypes();
-    // ✅ Devolver con la misma estructura que módulos
-    res.json({ 
-      ok: true, 
-      data: businessTypes 
-    });
+    res.json(businessTypes);
   } catch (error) {
-    console.error('❌ Error en getAllBusinessTypes:', error);
-    res.status(500).json({ 
-      ok: false,
-      error: error.message 
-    });
+    res.status(500).json({ error: error.message });
   }
 };
 
 export const getBusinessTypeById = async (req, res) => {
   try {
     const businessType = await businessTypeService.getBusinessTypeById(req.params.id);
-    if (!businessType) {
-      return res.status(404).json({ 
-        ok: false,
-        error: 'Business type not found' 
-      });
-    }
-    res.json({ 
-      ok: true, 
-      data: businessType 
-    });
+    if (!businessType) return res.status(404).json({ error: 'Business type not found' });
+    res.json(businessType);
   } catch (error) {
-    console.error('❌ Error en getBusinessTypeById:', error);
-    res.status(500).json({ 
-      ok: false,
-      error: error.message 
-    });
+    res.status(500).json({ error: error.message });
   }
 };
 
 export const createBusinessType = async (req, res) => {
   try {
-    const { code, name, description, is_active } = req.body;
-    
-    // Validaciones
-    if (!code || !name) {
-      return res.status(400).json({ 
-        ok: false,
-        error: 'Código y nombre son requeridos' 
-      });
-    }
-    
     const newBusinessType = await businessTypeService.createBusinessType(req.body);
-    res.status(201).json({ 
-      ok: true, 
-      data: newBusinessType 
-    });
+    res.status(201).json(newBusinessType);
   } catch (error) {
-    console.error('❌ Error en createBusinessType:', error);
-    res.status(500).json({ 
-      ok: false,
-      error: error.message 
-    });
+    res.status(500).json({ error: error.message });
   }
 };
 
 export const updateBusinessType = async (req, res) => {
   try {
-    const { code, name, description, is_active } = req.body;
-    
-    // Validaciones
-    if (!code || !name) {
-      return res.status(400).json({ 
-        ok: false,
-        error: 'Código y nombre son requeridos' 
-      });
-    }
-    
     const updated = await businessTypeService.updateBusinessType(req.params.id, req.body);
-    if (!updated) {
-      return res.status(404).json({ 
-        ok: false,
-        error: 'Business type not found' 
-      });
-    }
-    res.json({ 
-      ok: true, 
-      data: updated 
-    });
+    if (!updated) return res.status(404).json({ error: 'Business type not found' });
+    res.json(updated);
   } catch (error) {
-    console.error('❌ Error en updateBusinessType:', error);
-    res.status(500).json({ 
-      ok: false,
-      error: error.message 
-    });
+    res.status(500).json({ error: error.message });
   }
 };
 
 export const deleteBusinessType = async (req, res) => {
   try {
     const deleted = await businessTypeService.deleteBusinessType(req.params.id);
-    if (!deleted) {
-      return res.status(404).json({ 
-        ok: false,
-        error: 'Business type not found' 
-      });
-    }
-    res.json({ 
-      ok: true, 
-      message: 'Business type deleted successfully' 
-    });
+    if (!deleted) return res.status(404).json({ error: 'Business type not found' });
+    res.json({ message: 'Business type deleted' });
   } catch (error) {
-    console.error('❌ Error en deleteBusinessType:', error);
-    res.status(500).json({ 
-      ok: false,
-      error: error.message 
-    });
+    res.status(500).json({ error: error.message });
   }
 };
