@@ -241,7 +241,7 @@ app.use('/api/admin', ...authAdmin, adminSettingsRoutes);   // Global   → Conf
 app.use('/api/admin', ...authAdmin, adminAuditRoutes);      // Global   → Auditoría
 app.use('/api/admin', ...authAdmin, adminTemplatesRoutes);      // Sistema  → Plantillas de negocios
 app.use('/api/admin', ...authAdmin, adminEmailTemplatesRoutes); // Comercial → Plantillas de Email
-app.use('/api/admin/business-types',  ...authAdmin, businessTypeRoutes);  // Sistema → Tipos de Negocio
+app.use('/api/admin', ...authAdmin, businessTypeRoutes);  // Sistema → Tipos de Negocio
 app.use('/api/admin/fiscal-config',   ...authAdmin, fiscalConfigRoutes);  // Global  → Config Fiscal
 app.use('/api/notifications-admin',   ...authAdmin, notificationsAdminRoutes);
 
