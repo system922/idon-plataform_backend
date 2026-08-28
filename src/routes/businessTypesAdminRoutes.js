@@ -1,7 +1,7 @@
 // routes/admin/businessTypes.js
 import express from 'express';
-import { query } from '../../config/database.js';
-import logger from '../../utils/logger.js';
+import { query } from '../config/database.js';
+import logger from '../utils/logger.js';
 
 const router = express.Router();
 
