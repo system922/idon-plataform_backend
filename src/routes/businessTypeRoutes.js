@@ -3,10 +3,19 @@ import * as businessTypeController from '../controllers/businessTypeController.j
 
 const router = express.Router();
 
-router.get('/', businessTypeController.getAllBusinessTypes);
-router.get('/:id', businessTypeController.getBusinessTypeById);
-router.post('/', businessTypeController.createBusinessType);
-router.put('/:id', businessTypeController.updateBusinessType);
-router.delete('/:id', businessTypeController.deleteBusinessType);
+// GET /api/admin/business-types
+router.get('/business-types', businessTypeController.getAllBusinessTypes);
+
+// GET /api/admin/business-types/:id
+router.get('/business-types/:id', businessTypeController.getBusinessTypeById);
+
+// POST /api/admin/business-types
+router.post('/business-types', businessTypeController.createBusinessType);
+
+// PUT /api/admin/business-types/:id
+router.put('/business-types/:id', businessTypeController.updateBusinessType);
+
+// DELETE /api/admin/business-types/:id
+router.delete('/business-types/:id', businessTypeController.deleteBusinessType);
 
 export default router;
