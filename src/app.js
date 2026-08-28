@@ -27,7 +27,7 @@ import blogRoutes from './routes/blogRoutes.js';
 // ─── Admin routes (una por sección del sidebar) ───────────────────────────────
 import adminDashboardRoutes  from './routes/admin/dashboard.js';
 import adminRequestsRoutes   from './routes/admin/requests.js';
-import businessTypeRoutesA    from './routes/businessTypesAdminRoutes.js';
+import businessTypeRoutesA    from './routes/admin/businessTypesAdminRoutes.js';
 import adminClientsRoutes    from './routes/admin/clients.js';
 import adminModulesRoutes    from './routes/admin/modules.js';
 import adminFeaturesRoutes   from './routes/admin/features.js';
