@@ -27,6 +27,7 @@ import blogRoutes from './routes/blogRoutes.js';
 // ─── Admin routes (una por sección del sidebar) ───────────────────────────────
 import adminDashboardRoutes  from './routes/admin/dashboard.js';
 import adminRequestsRoutes   from './routes/admin/requests.js';
+import businessTypeRoutesA    from './routes/businessTypesAdminRoutes.js';
 import adminClientsRoutes    from './routes/admin/clients.js';
 import adminModulesRoutes    from './routes/admin/modules.js';
 import adminFeaturesRoutes   from './routes/admin/features.js';
@@ -42,7 +43,7 @@ import catalogRoutes         from './routes/catalog.js';
 import navigationRoutes      from './routes/navigation.js';
 import notificationsAdminRoutes from './routes/notificationsAdmin.js';
 import subscriptionRoutes    from './routes/subscription.js';
-import businessTypeRoutes    from './routes/businessTypeRoutes.js';
+
 import roleRoutes            from './routes/roleRoutes.js';
 import fiscalConfigRoutes    from './routes/fiscalConfigRoutes.js';
 import businessOwnersRoutes  from './routes/businessOwners.js';
@@ -241,7 +242,7 @@ app.use('/api/admin', ...authAdmin, adminSettingsRoutes);   // Global   → Conf
 app.use('/api/admin', ...authAdmin, adminAuditRoutes);      // Global   → Auditoría
 app.use('/api/admin', ...authAdmin, adminTemplatesRoutes);      // Sistema  → Plantillas de negocios
 app.use('/api/admin', ...authAdmin, adminEmailTemplatesRoutes); // Comercial → Plantillas de Email
-app.use('/api/admin/business-types',  ...authAdmin, businessTypeRoutes);  // Sistema → Tipos de Negocio
+app.use('/api/admin',  ...authAdmin, businessTypeRoutesA);  // Sistema → Tipos de Negocio
 app.use('/api/admin/fiscal-config',   ...authAdmin, fiscalConfigRoutes);  // Global  → Config Fiscal
 app.use('/api/notifications-admin',   ...authAdmin, notificationsAdminRoutes);
 
