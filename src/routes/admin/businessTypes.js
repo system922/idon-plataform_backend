@@ -5,7 +5,7 @@ import { query } from '../../config/database.js';
 const router = express.Router();
 
 // GET /api/admin/business-types
-router.get('/business-types', async (req, res, next) => {
+router.get('/', async (req, res, next) => {
   try {
     const { rows } = await query(
       `SELECT * FROM public.business_types ORDER BY name`
@@ -18,7 +18,7 @@ router.get('/business-types', async (req, res, next) => {
 });
 
 // GET /api/admin/business-types/:id
-router.get('/business-types/:id', async (req, res, next) => {
+router.get('/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
     const { rows } = await query(
@@ -36,7 +36,7 @@ router.get('/business-types/:id', async (req, res, next) => {
 });
 
 // POST /api/admin/business-types
-router.post('/business-types', async (req, res, next) => {
+router.post('/', async (req, res, next) => {
   try {
     const { code, name, description, is_active = true } = req.body;
     
@@ -72,7 +72,7 @@ router.post('/business-types', async (req, res, next) => {
 });
 
 // PUT /api/admin/business-types/:id
-router.put('/business-types/:id', async (req, res, next) => {
+router.put('/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
     const { code, name, description, is_active } = req.body;
@@ -121,7 +121,7 @@ router.put('/business-types/:id', async (req, res, next) => {
 });
 
 // DELETE /api/admin/business-types/:id
-router.delete('/business-types/:id', async (req, res, next) => {
+router.delete('/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
 
