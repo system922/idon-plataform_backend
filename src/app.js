@@ -244,7 +244,7 @@ app.use('/api/admin', ...authAdmin, adminSettingsRoutes);   // Global   → Conf
 app.use('/api/admin', ...authAdmin, adminAuditRoutes);      // Global   → Auditoría
 app.use('/api/admin', ...authAdmin, adminTemplatesRoutes);      // Sistema  → Plantillas de negocios
 app.use('/api/admin', ...authAdmin, adminEmailTemplatesRoutes); // Comercial → Plantillas de Email
-app.use('/api/admin', ...authAdmin, adminBusinessesRoutes); 
+app.use('/api/admin/businesses', ...authAdmin, adminBusinessesRoutes); 
 app.use('/api/admin/business-types',  ...authAdmin, adminbusinessTypesRoutes);  // Sistema → Tipos de Negocio
 
 

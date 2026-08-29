@@ -47,105 +47,134 @@ router.get('/stats', async (req, res, next) => {
     // 2. Para cada negocio, obtener estadísticas adicionales
     const statsPromises = businesses.map(async (business) => {
       try {
-        // Obtener ingresos totales (ventas)
-        const revenueResult = await query(`
-          SELECT 
-            COALESCE(SUM(total), 0) AS total_revenue,
-            COALESCE(SUM(total), 0) AS monthly_revenue,
-            COUNT(*) AS total_sales
-          FROM "${business.schema_name}".sales
-          WHERE created_at >= NOW() - INTERVAL '30 days'
-            AND status = 'completed'
-        `);
+        // Verificar si el schema existe antes de consultar
+        let schemaExists = false;
+        try {
+          const schemaCheck = await query(`
+            SELECT schema_name FROM information_schema.schemata 
+            WHERE schema_name = $1
+          `, [business.schema_name]);
+          schemaExists = schemaCheck.rows.length > 0;
+        } catch {
+          schemaExists = false;
+        }
 
-        // Obtener usuarios activos por módulo
-        const modulesResult = await query(`
-          SELECT 
-            m.name,
-            m.code,
-            COUNT(DISTINCT um.user_id) AS user_count
-          FROM "${business.schema_name}".modules m
-          LEFT JOIN "${business.schema_name}".user_modules um ON m.id = um.module_id
-          WHERE m.is_active = TRUE
-          GROUP BY m.id, m.name, m.code
-          ORDER BY m.name
-        `);
+        let revenueResult = { rows: [{ total_revenue: 0, monthly_revenue: 0, total_sales: 0 }] };
+        let modulesResult = { rows: [] };
+        let monthlyDataResult = { rows: [] };
+        let growthResult = { rows: [{ growth_percentage: 0 }] };
+        let topProductsResult = { rows: [] };
+        let customersResult = { rows: [{ total_customers: 0, active_customers: 0 }] };
+        let activeModulesResult = { rows: [] };
 
-        // Obtener datos mensuales (últimos 6 meses)
-        const monthlyDataResult = await query(`
-          SELECT 
-            TO_CHAR(DATE_TRUNC('month', created_at), 'MM/YYYY') AS month,
-            COALESCE(SUM(total), 0) AS revenue,
-            COUNT(DISTINCT customer_id) AS customers,
-            COUNT(*) AS sales
-          FROM "${business.schema_name}".sales
-          WHERE created_at >= NOW() - INTERVAL '6 months'
-            AND status = 'completed'
-          GROUP BY DATE_TRUNC('month', created_at)
-          ORDER BY DATE_TRUNC('month', created_at)
-          LIMIT 6
-        `);
+        if (schemaExists) {
+          try {
+            revenueResult = await query(`
+              SELECT 
+                COALESCE(SUM(total), 0) AS total_revenue,
+                COALESCE(SUM(total), 0) AS monthly_revenue,
+                COUNT(*) AS total_sales
+              FROM "${business.schema_name}".sales
+              WHERE created_at >= NOW() - INTERVAL '30 days'
+                AND status = 'completed'
+            `);
+          } catch { /* tabla no existe */ }
 
-        // Calcular crecimiento (comparar mes actual con mes anterior)
-        const growthResult = await query(`
-          WITH monthly_revenue AS (
-            SELECT 
-              DATE_TRUNC('month', created_at) AS month,
-              COALESCE(SUM(total), 0) AS revenue
-            FROM "${business.schema_name}".sales
-            WHERE created_at >= NOW() - INTERVAL '2 months'
-              AND status = 'completed'
-            GROUP BY DATE_TRUNC('month', created_at)
-            ORDER BY month DESC
-            LIMIT 2
-          )
-          SELECT 
-            COALESCE(
-              ((SELECT revenue FROM monthly_revenue ORDER BY month DESC LIMIT 1) - 
-               (SELECT revenue FROM monthly_revenue ORDER BY month DESC LIMIT 1 OFFSET 1)) / 
-              NULLIF((SELECT revenue FROM monthly_revenue ORDER BY month DESC LIMIT 1 OFFSET 1), 0) * 100,
-              0
-            ) AS growth_percentage
-        `);
+          try {
+            modulesResult = await query(`
+              SELECT 
+                m.name,
+                m.code,
+                COUNT(DISTINCT um.user_id) AS user_count
+              FROM "${business.schema_name}".modules m
+              LEFT JOIN "${business.schema_name}".user_modules um ON m.id = um.module_id
+              WHERE m.is_active = TRUE
+              GROUP BY m.id, m.name, m.code
+              ORDER BY m.name
+            `);
+          } catch { /* tabla no existe */ }
 
-        // Obtener productos más vendidos
-        const topProductsResult = await query(`
-          SELECT 
-            p.name,
-            COUNT(si.id) AS sales_count,
-            COALESCE(SUM(si.quantity), 0) AS total_quantity,
-            COALESCE(SUM(si.subtotal), 0) AS total_revenue
-          FROM "${business.schema_name}".sales_items si
-          JOIN "${business.schema_name}".products p ON si.product_id = p.id
-          JOIN "${business.schema_name}".sales s ON si.sale_id = s.id
-          WHERE s.created_at >= NOW() - INTERVAL '30 days'
-            AND s.status = 'completed'
-          GROUP BY p.id, p.name
-          ORDER BY total_revenue DESC
-          LIMIT 5
-        `);
+          try {
+            monthlyDataResult = await query(`
+              SELECT 
+                TO_CHAR(DATE_TRUNC('month', created_at), 'MM/YYYY') AS month,
+                COALESCE(SUM(total), 0) AS revenue,
+                COUNT(DISTINCT customer_id) AS customers,
+                COUNT(*) AS sales
+              FROM "${business.schema_name}".sales
+              WHERE created_at >= NOW() - INTERVAL '6 months'
+                AND status = 'completed'
+              GROUP BY DATE_TRUNC('month', created_at)
+              ORDER BY DATE_TRUNC('month', created_at)
+              LIMIT 6
+            `);
+          } catch { /* tabla no existe */ }
 
-        // Obtener estadísticas de clientes
-        const customersResult = await query(`
-          SELECT 
-            COUNT(*) AS total_customers,
-            COUNT(DISTINCT id) AS active_customers
-          FROM "${business.schema_name}".customers
-          WHERE is_active = TRUE
-        `);
+          try {
+            growthResult = await query(`
+              WITH monthly_revenue AS (
+                SELECT 
+                  DATE_TRUNC('month', created_at) AS month,
+                  COALESCE(SUM(total), 0) AS revenue
+                FROM "${business.schema_name}".sales
+                WHERE created_at >= NOW() - INTERVAL '2 months'
+                  AND status = 'completed'
+                GROUP BY DATE_TRUNC('month', created_at)
+                ORDER BY month DESC
+                LIMIT 2
+              )
+              SELECT 
+                COALESCE(
+                  ((SELECT revenue FROM monthly_revenue ORDER BY month DESC LIMIT 1) - 
+                   (SELECT revenue FROM monthly_revenue ORDER BY month DESC LIMIT 1 OFFSET 1)) / 
+                  NULLIF((SELECT revenue FROM monthly_revenue ORDER BY month DESC LIMIT 1 OFFSET 1), 0) * 100,
+                  0
+                ) AS growth_percentage
+            `);
+          } catch { /* tabla no existe */ }
 
-        // Obtener módulos activos del negocio
-        const activeModulesResult = await query(`
-          SELECT 
-            m.id,
-            m.name,
-            m.code,
-            m.icon,
-            m.is_active
-          FROM "${business.schema_name}".modules m
-          WHERE m.is_active = TRUE
-          ORDER BY m.name
-        `);
+          try {
+            topProductsResult = await query(`
+              SELECT 
+                p.name,
+                COUNT(si.id) AS sales_count,
+                COALESCE(SUM(si.quantity), 0) AS total_quantity,
+                COALESCE(SUM(si.subtotal), 0) AS total_revenue
+              FROM "${business.schema_name}".sales_items si
+              JOIN "${business.schema_name}".products p ON si.product_id = p.id
+              JOIN "${business.schema_name}".sales s ON si.sale_id = s.id
+              WHERE s.created_at >= NOW() - INTERVAL '30 days'
+                AND s.status = 'completed'
+              GROUP BY p.id, p.name
+              ORDER BY total_revenue DESC
+              LIMIT 5
+            `);
+          } catch { /* tabla no existe */ }
+
+          try {
+            customersResult = await query(`
+              SELECT 
+                COUNT(*) AS total_customers,
+                COUNT(DISTINCT id) AS active_customers
+              FROM "${business.schema_name}".customers
+              WHERE is_active = TRUE
+            `);
+          } catch { /* tabla no existe */ }
+
+          try {
+            activeModulesResult = await query(`
+              SELECT 
+                m.id,
+                m.name,
+                m.code,
+                m.icon,
+                m.is_active
+              FROM "${business.schema_name}".modules m
+              WHERE m.is_active = TRUE
+              ORDER BY m.name
+            `);
+          } catch { /* tabla no existe */ }
+        }
 
         return {
           id: business.id,
@@ -164,29 +193,23 @@ router.get('/stats', async (req, res, next) => {
           suspended_at: business.suspended_at,
           total_users: parseInt(business.total_users) || 0,
           active_users: parseInt(business.active_users) || 0,
-          // Estadísticas calculadas
           total_revenue: parseFloat(revenueResult.rows[0]?.total_revenue) || 0,
           monthly_revenue: parseFloat(revenueResult.rows[0]?.monthly_revenue) || 0,
           total_sales: parseInt(revenueResult.rows[0]?.total_sales) || 0,
           growth: parseFloat(growthResult.rows[0]?.growth_percentage) || 0,
-          // Módulos
           modules: activeModulesResult.rows || [],
           module_stats: modulesResult.rows || [],
-          // Datos mensuales (formateados para el gráfico)
           monthly_data: monthlyDataResult.rows.map(row => ({
             month: row.month,
             revenue: parseFloat(row.revenue) || 0,
             customers: parseInt(row.customers) || 0,
             sales: parseInt(row.sales) || 0
           })),
-          // Top productos
           top_products: topProductsResult.rows || [],
-          // Estadísticas de clientes
           customers: {
             total: parseInt(customersResult.rows[0]?.total_customers) || 0,
             active: parseInt(customersResult.rows[0]?.active_customers) || 0
           },
-          // Módulos activos (count)
           active_modules: activeModulesResult.rows.length || 0
         };
       } catch (err) {
@@ -203,11 +226,12 @@ router.get('/stats', async (req, res, next) => {
     const statsData = await Promise.all(statsPromises);
 
     // 3. Estadísticas generales (resumen)
-    const totalBusinesses = statsData.filter(b => !b.error).length;
-    const activeBusinesses = statsData.filter(b => b.status === 'active' && !b.error).length;
-    const totalUsers = statsData.reduce((sum, b) => sum + (b.total_users || 0), 0);
-    const totalRevenue = statsData.reduce((sum, b) => sum + (b.total_revenue || 0), 0);
-    const totalModules = statsData.reduce((sum, b) => sum + (b.active_modules || 0), 0);
+    const validBusinesses = statsData.filter(b => !b.error);
+    const totalBusinesses = validBusinesses.length;
+    const activeBusinesses = validBusinesses.filter(b => b.status === 'active').length;
+    const totalUsers = validBusinesses.reduce((sum, b) => sum + (b.total_users || 0), 0);
+    const totalRevenue = validBusinesses.reduce((sum, b) => sum + (b.total_revenue || 0), 0);
+    const totalModules = validBusinesses.reduce((sum, b) => sum + (b.active_modules || 0), 0);
 
     const summary = {
       total_businesses: totalBusinesses,
@@ -236,7 +260,6 @@ router.get('/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    // Obtener información detallada del negocio
     const businessResult = await query(`
       SELECT 
         b.id,
@@ -275,67 +298,58 @@ router.get('/:id', async (req, res, next) => {
 
     const business = businessResult.rows[0];
 
-    // Obtener usuarios del negocio
-    const usersResult = await query(`
-      SELECT 
-        u.id,
-        u.first_name,
-        u.last_name,
-        u.email,
-        u.phone,
-        r.name AS role_name,
-        r.code AS role_code,
-        bu.is_active,
-        bu.created_at AS joined_at
-      FROM "${business.schema_name}".users u
-      LEFT JOIN "${business.schema_name}".roles r ON u.role_id = r.id
-      LEFT JOIN public.business_users bu ON bu.user_id = u.id AND bu.business_id = $1
-      ORDER BY u.created_at DESC
-      LIMIT 50
-    `, [id]);
+    let usersResult = { rows: [] };
+    let billingResult = { rows: [] };
 
-    // Obtener historial de facturación
-    const billingResult = await query(`
-      SELECT 
-        bh.id,
-        bh.billing_date,
-        bh.amount,
-        bh.status,
-        bh.payment_method,
-        bh.description,
-        bh.created_at
-      FROM public.billing_history bh
-      JOIN public.subscriptions s ON bh.subscription_id = s.id
-      WHERE s.business_id = $1
-      ORDER BY bh.billing_date DESC
-      LIMIT 20
-    `, [id]);
+    try {
+      const schemaCheck = await query(`
+        SELECT schema_name FROM information_schema.schemata 
+        WHERE schema_name = $1
+      `, [business.schema_name]);
+      
+      if (schemaCheck.rows.length > 0) {
+        usersResult = await query(`
+          SELECT 
+            u.id,
+            u.first_name,
+            u.last_name,
+            u.email,
+            u.phone,
+            r.name AS role_name,
+            r.code AS role_code,
+            u.is_active,
+            u.created_at AS joined_at
+          FROM "${business.schema_name}".users u
+          LEFT JOIN "${business.schema_name}".roles r ON u.role_id = r.id
+          ORDER BY u.created_at DESC
+          LIMIT 50
+        `);
+      }
+    } catch { /* schema no existe */ }
 
-    // Obtener logs de actividad recientes
-    const logsResult = await query(`
-      SELECT 
-        al.id,
-        al.user_id,
-        al.action,
-        al.details,
-        al.ip_address,
-        al.created_at,
-        u.first_name,
-        u.last_name,
-        u.email
-      FROM public.audit_logs al
-      LEFT JOIN public.users u ON al.user_id = u.id
-      WHERE al.business_id = $1
-      ORDER BY al.created_at DESC
-      LIMIT 20
-    `, [id]);
+    try {
+      billingResult = await query(`
+        SELECT 
+          bh.id,
+          bh.billing_date,
+          bh.amount,
+          bh.status,
+          bh.payment_method,
+          bh.description,
+          bh.created_at
+        FROM public.billing_history bh
+        JOIN public.subscriptions s ON bh.subscription_id = s.id
+        WHERE s.business_id = $1
+        ORDER BY bh.billing_date DESC
+        LIMIT 20
+      `, [id]);
+    } catch { /* tabla no existe */ }
 
     res.json(successResponse({
       business: {
         ...business,
         users: usersResult.rows || [],
-        billing_history: billingResult.rows || [],
-        recent_activity: logsResult.rows || []
+        billing_history: billingResult.rows || []
       }
     }, 'Detalle del negocio obtenido exitosamente'));
 
