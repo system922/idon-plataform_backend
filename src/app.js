@@ -28,6 +28,8 @@ import blogRoutes from './routes/blogRoutes.js';
 import adminDashboardRoutes  from './routes/admin/dashboard.js';
 import adminRequestsRoutes   from './routes/admin/requests.js';
 import adminbusinessTypesRoutes   from './routes/admin/businessTypes.js';
+import adminBusinessesRoutes from './routes/admin/businesses.js';
+
 import adminClientsRoutes    from './routes/admin/clients.js';
 import adminModulesRoutes    from './routes/admin/modules.js';
 import adminFeaturesRoutes   from './routes/admin/features.js';
@@ -242,7 +244,10 @@ app.use('/api/admin', ...authAdmin, adminSettingsRoutes);   // Global   → Conf
 app.use('/api/admin', ...authAdmin, adminAuditRoutes);      // Global   → Auditoría
 app.use('/api/admin', ...authAdmin, adminTemplatesRoutes);      // Sistema  → Plantillas de negocios
 app.use('/api/admin', ...authAdmin, adminEmailTemplatesRoutes); // Comercial → Plantillas de Email
+app.use('/api/admin', ...authAdmin, adminBusinessesRoutes); 
 app.use('/api/admin/business-types',  ...authAdmin, adminbusinessTypesRoutes);  // Sistema → Tipos de Negocio
+
+
 app.use('/api/admin/fiscal-config',   ...authAdmin, fiscalConfigRoutes);  // Global  → Config Fiscal
 app.use('/api/notifications-admin',   ...authAdmin, notificationsAdminRoutes);
 
