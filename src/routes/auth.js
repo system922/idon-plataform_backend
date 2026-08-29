@@ -402,4 +402,74 @@ router.post('/validate-jefe-caja', async (req, res) => {
   }
 });
 
+// ── POST /api/auth/forgot-password ────────────────────────────
+router.post('/forgot-password', async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json(errorResponse('Email es requerido', 400));
+    }
+
+    const result = await authService.requestPasswordReset(email);
+    res.json(successResponse(result, 'Se ha enviado un enlace de recuperación a tu correo'));
+  } catch (error) {
+    logger.error(`[FORGOT-PASSWORD] Error:`, error.message);
+    if (error.message === 'Usuario no encontrado') {
+      // Por seguridad, siempre respondemos igual aunque no exista el usuario
+      return res.json(successResponse(
+        { message: 'Se ha enviado un enlace de recuperación a tu correo' },
+        'Se ha enviado un enlace de recuperación a tu correo'
+      ));
+    }
+    next(error);
+  }
+});
+
+// ── POST /api/auth/validate-reset-token ───────────────────────
+router.post('/validate-reset-token', async (req, res, next) => {
+  try {
+    const { token } = req.body;
+    if (!token) {
+      return res.status(400).json(errorResponse('Token es requerido', 400));
+    }
+
+    const result = await authService.validateResetToken(token);
+    res.json(successResponse(result, 'Token válido'));
+  } catch (error) {
+    logger.error(`[VALIDATE-RESET-TOKEN] Error:`, error.message);
+    if (error.message === 'Token inválido o expirado') {
+      return res.status(400).json(errorResponse('El enlace de recuperación ha expirado o es inválido', 400));
+    }
+    next(error);
+  }
+});
+
+// ── POST /api/auth/reset-password ─────────────────────────────
+router.post('/reset-password', async (req, res, next) => {
+  try {
+    const { token, password, confirmPassword } = req.body;
+    
+    if (!token || !password || !confirmPassword) {
+      return res.status(400).json(errorResponse('Todos los campos son requeridos', 400));
+    }
+    
+    if (password !== confirmPassword) {
+      return res.status(400).json(errorResponse('Las contraseñas no coinciden', 400));
+    }
+    
+    if (password.length < 6) {
+      return res.status(400).json(errorResponse('La contraseña debe tener al menos 6 caracteres', 400));
+    }
+
+    const result = await authService.resetPassword(token, password);
+    res.json(successResponse(result, 'Contraseña actualizada exitosamente'));
+  } catch (error) {
+    logger.error(`[RESET-PASSWORD] Error:`, error.message);
+    if (error.message === 'Token inválido o expirado') {
+      return res.status(400).json(errorResponse('El enlace de recuperación ha expirado o es inválido', 400));
+    }
+    next(error);
+  }
+});
+
 export default router;

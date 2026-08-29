@@ -1,12 +1,211 @@
 // ========== backend/services/authService.js ==========
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
+import crypto from 'crypto';
+import { sendPasswordResetEmail } from '../services/crmEmailService.js';
 import { v4 as uuidv4 } from 'uuid';
 import { query } from '../config/database.js';
 import env from '../config/env.js';
 import logger from '../utils/logger.js';
 
 const SALT_ROUNDS = 10;
+
+// ════════════════════════════════════════════════════════════════
+// RECUPERACIÓN DE CONTRASEÑA
+// ════════════════════════════════════════════════════════════════
+
+// ─── Solicitar recuperación de contraseña ─────────────────────
+export const requestPasswordReset = async (email) => {
+  logger.info(`[PASSWORD-RESET] Solicitando recuperación para: ${email}`);
+
+  // 1. Buscar usuario en todas las fuentes
+  let user = null;
+  let userSource = null;
+  let schemaName = null;
+  let businessName = null;
+
+  // Buscar en admin_users
+  const adminResult = await query(
+    `SELECT id, email, first_name, last_name, 'admin' as user_type 
+     FROM public.admin_users 
+     WHERE email = $1 AND is_active = true`,
+    [email]
+  );
+  if (adminResult.rows.length > 0) {
+    user = adminResult.rows[0];
+    userSource = 'admin_idon';
+    businessName = 'IDON Admin';
+  }
+
+  // Buscar en public.users
+  if (!user) {
+    const userResult = await query(
+      `SELECT u.id, u.email, u.first_name, u.last_name, 'user' as user_type,
+              b.name as business_name
+       FROM public.users u
+       LEFT JOIN public.business_owners bo ON u.id = bo.user_id
+       LEFT JOIN public.business_registration_requests brr ON bo.id = brr.business_owner_id
+       LEFT JOIN public.businesses b ON brr.business_id = b.id
+       WHERE u.email = $1 AND u.is_active = true
+       LIMIT 1`,
+      [email]
+    );
+    if (userResult.rows.length > 0) {
+      user = userResult.rows[0];
+      userSource = 'public';
+      businessName = user.business_name || 'IDON';
+    }
+  }
+
+  // Buscar en schemas de negocios
+  if (!user) {
+    const businesses = await query(
+      `SELECT b.id, b.schema_name, b.name 
+       FROM public.businesses b 
+       WHERE b.is_active = true`
+    );
+
+    for (const biz of businesses.rows) {
+      try {
+        const schemaUser = await query(
+          `SELECT id, email, first_name, last_name 
+           FROM "${biz.schema_name}".users 
+           WHERE email = $1 AND is_active = true`,
+          [email]
+        );
+        if (schemaUser.rows.length > 0) {
+          user = schemaUser.rows[0];
+          userSource = 'schema';
+          schemaName = biz.schema_name;
+          businessName = biz.name;
+          break;
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+  }
+
+  if (!user) {
+    logger.warn(`[PASSWORD-RESET] Usuario no encontrado: ${email}`);
+    throw new Error('Usuario no encontrado');
+  }
+
+  // 2. Generar token de recuperación
+  const resetToken = crypto.randomBytes(32).toString('hex');
+  const tokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hora
+
+  // 3. Guardar token en la tabla password_resets
+  await query(
+    `INSERT INTO public.password_resets 
+     (user_id, user_source, schema_name, token_hash, expires_at, email)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [user.id, userSource, schemaName, tokenHash, expiresAt, email]
+  );
+
+  // 4. Construir URL de recuperación
+  const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
+  
+  // 5. Enviar email con Resend
+  try {
+    await sendPasswordResetEmail(
+      email,
+      resetUrl,
+      businessName || 'IDON'
+    );
+    logger.info(`[PASSWORD-RESET] Email enviado a: ${email}`);
+  } catch (emailError) {
+    logger.error(`[PASSWORD-RESET] Error enviando email:`, emailError);
+    // No lanzamos error para no exponer que el usuario existe
+  }
+
+  logger.info(`[PASSWORD-RESET] Token generado para: ${email}`);
+  
+  return {
+    message: 'Se ha enviado un enlace de recuperación a tu correo',
+    // En desarrollo, devolver el token para pruebas
+    ...(process.env.NODE_ENV === 'development' && { resetToken })
+  };
+};
+
+// ─── Validar token de recuperación ─────────────────────────────
+export const validateResetToken = async (token) => {
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  
+  const result = await query(
+    `SELECT pr.*, 
+            COALESCE(u.first_name, a.first_name, su.first_name) as first_name,
+            COALESCE(u.email, a.email, pr.email) as email
+     FROM public.password_resets pr
+     LEFT JOIN public.users u ON pr.user_id = u.id AND pr.user_source = 'public'
+     LEFT JOIN public.admin_users a ON pr.user_id = a.id AND pr.user_source = 'admin_idon'
+     LEFT JOIN public.users su ON pr.user_id = su.id AND pr.user_source = 'schema'
+     WHERE pr.token_hash = $1 AND pr.used = false AND pr.expires_at > NOW()`,
+    [tokenHash]
+  );
+
+  if (result.rows.length === 0) {
+    throw new Error('Token inválido o expirado');
+  }
+
+  return {
+    valid: true,
+    email: result.rows[0].email,
+    firstName: result.rows[0].first_name
+  };
+};
+
+// ─── Resetear contraseña ──────────────────────────────────────
+export const resetPassword = async (token, newPassword) => {
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  
+  // Verificar token
+  const tokenResult = await query(
+    `SELECT pr.* 
+     FROM public.password_resets pr
+     WHERE pr.token_hash = $1 AND pr.used = false AND pr.expires_at > NOW()`,
+    [tokenHash]
+  );
+
+  if (tokenResult.rows.length === 0) {
+    throw new Error('Token inválido o expirado');
+  }
+
+  const resetData = tokenResult.rows[0];
+  const passwordHash = await bcrypt.hash(newPassword, 10);
+
+  // Actualizar contraseña según la fuente del usuario
+  if (resetData.user_source === 'admin_idon') {
+    await query(
+      `UPDATE public.admin_users SET password_hash = $1 WHERE id = $2`,
+      [passwordHash, resetData.user_id]
+    );
+  } else if (resetData.user_source === 'public') {
+    await query(
+      `UPDATE public.users SET password_hash = $1 WHERE id = $2`,
+      [passwordHash, resetData.user_id]
+    );
+  } else if (resetData.user_source === 'schema' && resetData.schema_name) {
+    await query(
+      `UPDATE "${resetData.schema_name}".users SET password_hash = $1 WHERE id = $2`,
+      [passwordHash, resetData.user_id]
+    );
+  }
+
+  // Marcar token como usado
+  await query(
+    `UPDATE public.password_resets SET used = true, used_at = NOW() WHERE id = $1`,
+    [resetData.id]
+  );
+
+  // Invalidar todos los refresh tokens del usuario por seguridad
+  await invalidateAllUserRefreshTokens(resetData.user_id, resetData.user_source);
+
+  logger.info(`[PASSWORD-RESET] Contraseña actualizada para usuario: ${resetData.user_id}`);
+  
+  return { success: true };
+};
 
 // ----------------------
 // Register

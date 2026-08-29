@@ -65,13 +65,53 @@ export async function sendWelcomeEmail(to, customerName, businessName) {
 }
 
 export async function sendPasswordResetEmail(to, resetLink, businessName) {
-  const subject = `Restablece tu contraseña - ${businessName}`;
+  const subject = `Restablece tu contraseña - ${businessName || 'IDON'}`;
   const html = `
-    <div style="font-family:sans-serif;">
-      <p>Recibimos una solicitud para restablecer tu contraseña.</p>
-      <a href="${resetLink}" style="background:#6842fe; color:white; padding:10px 20px;">Restablecer contraseña</a>
-      <p>Si no solicitaste esto, ignora este mensaje.</p>
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #f9f9f9; border-radius: 12px;">
+      <div style="text-align: center; padding: 20px 0;">
+        <h1 style="color: #1a1a2e; font-size: 24px; margin: 0;">${businessName || 'IDON'}</h1>
+      </div>
+      
+      <div style="background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05);">
+        <h2 style="color: #1a1a2e; margin-top: 0;">Recuperación de contraseña</h2>
+        
+        <p style="color: #333; line-height: 1.6;">
+          Hemos recibido una solicitud para restablecer la contraseña de tu cuenta en <strong>${businessName || 'IDON'}</strong>.
+        </p>
+        
+        <p style="color: #333; line-height: 1.6;">
+          Para crear una nueva contraseña, haz clic en el siguiente botón:
+        </p>
+        
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="${resetLink}" 
+             style="display: inline-block; background: #ff8c42; color: white; padding: 14px 32px; 
+                    border-radius: 8px; text-decoration: none; font-weight: bold; font-size: 16px;">
+            Restablecer contraseña
+          </a>
+        </div>
+        
+        <p style="color: #666; font-size: 14px; line-height: 1.6;">
+          ⏰ Este enlace expirará en <strong>1 hora</strong>.
+        </p>
+        
+        <p style="color: #666; font-size: 14px; line-height: 1.6;">
+          🔒 Si no solicitaste este cambio, puedes ignorar este mensaje. Tu contraseña seguirá siendo la misma.
+        </p>
+        
+        <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+        
+        <p style="color: #999; font-size: 12px; text-align: center; margin: 0;">
+          Este es un mensaje automático de ${businessName || 'IDON'}. Por favor no respondas a este correo.
+        </p>
+      </div>
     </div>
   `;
-  return sendGenericEmail({ to, subject, html });
+  
+  return sendGenericEmail({ 
+    to, 
+    subject, 
+    html, 
+    businessName: businessName || 'IDON' 
+  });
 }
