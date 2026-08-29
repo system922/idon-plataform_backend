@@ -4,6 +4,7 @@ import { Resend } from 'resend';
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 // Direcciones según el tipo de email
+const FACTURAS_ADDRESS = process.env.FROM_EMAIL || process.env.FACTURAS_EMAIL || 'facturas@idonplataform.site';
 const NOTIFICATIONS_ADDRESS = process.env.NOTIFICATIONS_EMAIL || process.env.FROM_EMAIL || 'notificaciones@idonplataform.site';
 const SOPORTE_ADDRESS = process.env.SOPORTE_EMAIL || process.env.FROM_EMAIL || 'soporte@idonplataform.site';
 
@@ -13,9 +14,11 @@ function buildFrom(businessName, type = 'generic') {
   // Según el tipo de email, usar diferente remitente
   let fromEmail = SOPORTE_ADDRESS; // por defecto soporte
   
-  if (type === 'campaign') {
+  if (type === 'facturas' || type === 'factura') {
+    fromEmail = FACTURAS_ADDRESS;
+  } else if (type === 'campaign' || type === 'notificacion') {
     fromEmail = NOTIFICATIONS_ADDRESS;
-  } else if (type === 'soporte' || type === 'password_reset' || type === 'generic') {
+  } else if (type === 'soporte' || type === 'password_reset' || type === 'generic' || type === 'confirmacion') {
     fromEmail = SOPORTE_ADDRESS;
   }
   
@@ -78,6 +81,7 @@ export async function sendWelcomeEmail(to, customerName, businessName) {
   return sendGenericEmail({ to, subject, html, businessName });
 }
 
+// EMAIL DE RECUPERACIÓN DE CONTRASEÑA (desde SOPORTE)
 export async function sendPasswordResetEmail(to, resetLink, businessName) {
   const subject = `Restablece tu contraseña - IDON CONTROL`;
   const html = `
@@ -132,17 +136,17 @@ export async function sendPasswordResetEmail(to, resetLink, businessName) {
     </html>
   `;
   
+  // Enviar desde SOPORTE
   return sendEmail({ 
     to, 
     subject, 
     html, 
     businessName: 'IDON CONTROL',
-    type: 'password_reset' // ✅ Soporte
+    type: 'password_reset'
   });
 }
 
-// Reestabelcer contarseña exitoso
-
+// EMAIL DE CONFIRMACIÓN DE CAMBIO DE CONTRASEÑA (desde SOPORTE)
 export async function sendPasswordResetConfirmationEmail(to, firstName, businessName) {
   const subject = `Contraseña actualizada - IDON CONTROL`;
   const html = `
@@ -151,38 +155,47 @@ export async function sendPasswordResetConfirmationEmail(to, firstName, business
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Contraseña actualizada</title>
     </head>
-    <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #f9f9f9; border-radius: 12px;">
-      <div style="text-align: center; padding: 20px 0;">
+    <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #f5f6fa; border-radius: 12px;">
+      <div style="text-align: center; padding: 20px 0; background: white; border-radius: 12px 12px 0 0;">
         <h1 style="color: #1a1a2e; font-size: 24px; margin: 0;">IDON CONTROL</h1>
       </div>
       
-      <div style="background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05);">
+      <div style="background: white; padding: 30px; border-radius: 0 0 12px 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.05);">
         <div style="text-align: center; margin-bottom: 20px;">
-          <div style="display: inline-block; background: #28a745; color: white; border-radius: 50%; width: 60px; height: 60px; line-height: 60px; font-size: 30px;">
+          <div style="display: inline-block; background: #28a745; color: white; border-radius: 50%; width: 60px; height: 60px; line-height: 60px; font-size: 30px; text-align: center;">
             ✓
           </div>
         </div>
         
-        <h2 style="color: #1a1a2e; margin-top: 0; text-align: center;">¡Contraseña actualizada!</h2>
+        <h2 style="color: #1a1a2e; margin-top: 0; text-align: center;">¡Contraseña actualizada exitosamente!</h2>
         
         <p style="color: #333; line-height: 1.6;">
           Hola <strong>${firstName || 'usuario'}</strong>,
         </p>
         
         <p style="color: #333; line-height: 1.6;">
-          Te confirmamos que tu contraseña ha sido <strong>actualizada exitosamente</strong> en <strong>IDON CONTROL</strong>.
+          Te confirmamos que tu contraseña ha sido <strong>actualizada exitosamente</strong> en tu cuenta de <strong>IDON CONTROL</strong>.
         </p>
         
-        <div style="background: #f0f8ff; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ff8c42;">
+        <div style="background: #fff3e0; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ff8c42;">
           <p style="color: #333; line-height: 1.6; margin: 0;">
-            🔐 Si no realizaste este cambio, por favor contacta inmediatamente a nuestro soporte.
+            🔐 <strong>Importante:</strong> Si no realizaste este cambio, por favor contacta inmediatamente a nuestro soporte.
           </p>
         </div>
         
         <p style="color: #666; font-size: 14px; line-height: 1.6;">
-          Si tienes alguna duda, no dudes en contactarnos.
+          Ahora puedes iniciar sesión con tu nueva contraseña.
         </p>
+        
+        <div style="text-align: center; margin: 25px 0;">
+          <a href="${process.env.FRONTEND_URL || 'https://www.idonplataform.site'}/login" 
+             style="display: inline-block; background: #ff8c42; color: white; padding: 12px 32px; 
+                    border-radius: 8px; text-decoration: none; font-weight: bold; font-size: 16px;">
+            Iniciar sesión
+          </a>
+        </div>
         
         <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
         
@@ -197,11 +210,43 @@ export async function sendPasswordResetConfirmationEmail(to, firstName, business
     </html>
   `;
   
+  // Enviar desde SOPORTE
   return sendEmail({ 
     to, 
     subject, 
     html, 
     businessName: 'IDON CONTROL',
     type: 'soporte'
+  });
+}
+
+// EMAIL DE FACTURAS (desde FACTURAS)
+export async function sendInvoiceEmail(to, invoiceData, businessName) {
+  const subject = `Factura Electrónica - ${businessName || 'IDON CONTROL'}`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #f9f9f9; border-radius: 12px;">
+      <div style="text-align: center; padding: 20px 0;">
+        <h1 style="color: #1a1a2e; font-size: 24px; margin: 0;">${businessName || 'IDON CONTROL'}</h1>
+      </div>
+      
+      <div style="background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05);">
+        <h2 style="color: #1a1a2e; margin-top: 0;">Factura Electrónica</h2>
+        <p style="color: #333; line-height: 1.6;">
+          Adjuntamos tu factura electrónica correspondiente a tu compra.
+        </p>
+        <p style="color: #666; font-size: 14px; line-height: 1.6;">
+          Si tienes alguna duda, contacta a <a href="mailto:soporte@idonplataform.site" style="color: #ff8c42;">soporte@idonplataform.site</a>
+        </p>
+      </div>
+    </div>
+  `;
+  
+  // Enviar desde FACTURAS
+  return sendEmail({ 
+    to, 
+    subject, 
+    html, 
+    businessName: businessName || 'IDON CONTROL',
+    type: 'facturas'
   });
 }

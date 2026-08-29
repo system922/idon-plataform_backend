@@ -2,7 +2,7 @@
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
-import { sendPasswordResetEmail } from '../services/crmEmailService.js';
+import { sendPasswordResetEmail, sendPasswordResetConfirmationEmail } from '../services/crmEmailService.js';
 import { v4 as uuidv4 } from 'uuid';
 import { query } from '../config/database.js';
 import env from '../config/env.js';
@@ -262,99 +262,112 @@ export const validateResetToken = async (token) => {
 
 // ─── Resetear contraseña ──────────────────────────────────────
 export const resetPassword = async (token, newPassword) => {
-  logger.info(`[RESET-PASSWORD] Intentando resetear contraseña...`);
-  
-  if (!token) {
-    logger.warn('[RESET-PASSWORD] Token vacío');
-    throw new Error('Token inválido o expirado');
-  }
-
   const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-  logger.info(`[RESET-PASSWORD] Hash calculado: ${tokenHash.substring(0, 30)}...`);
   
-  // PRIMERO: Verificar si el token existe
-  const checkResult = await query(
-    `SELECT * FROM public.password_resets WHERE token_hash = $1`,
+  // Verificar token
+  const tokenResult = await query(
+    `SELECT pr.* 
+     FROM public.password_resets pr
+     WHERE pr.token_hash = $1 AND pr.used = false AND pr.expires_at > NOW()`,
     [tokenHash]
   );
-  
-  if (checkResult.rows.length === 0) {
-    logger.warn('[RESET-PASSWORD] Token no encontrado en la base de datos');
+
+  if (tokenResult.rows.length === 0) {
+    // Verificar si el token expiró
+    const expiredResult = await query(
+      `SELECT pr.*, pr.expires_at, pr.used 
+       FROM public.password_resets pr
+       WHERE pr.token_hash = $1`,
+      [tokenHash]
+    );
+    if (expiredResult.rows.length > 0) {
+      const row = expiredResult.rows[0];
+      if (row.used) throw new Error('Token ya utilizado');
+      if (new Date(row.expires_at) < new Date()) throw new Error('Token expirado');
+    }
     throw new Error('Token inválido o expirado');
   }
 
-  const tokenData = checkResult.rows[0];
-  
-  // LOGS PARA DEPURACIÓN
-  logger.info(`[RESET-PASSWORD] Token encontrado:`);
-  logger.info(`  - user_id: ${tokenData.user_id}`);
-  logger.info(`  - user_source: ${tokenData.user_source}`);
-  logger.info(`  - email: ${tokenData.email}`);
-  logger.info(`  - used: ${tokenData.used}`);
-  logger.info(`  - expires_at: ${tokenData.expires_at}`);
-  logger.info(`  - NOW(): ${new Date().toISOString()}`);
-  
-  // VERIFICAR SI EXPIRÓ
-  const now = new Date();
-  const expiresAt = new Date(tokenData.expires_at);
-  const isExpired = expiresAt < now;
-  
-  if (tokenData.used) {
-    logger.warn('[RESET-PASSWORD] Token ya utilizado');
-    throw new Error('Token ya utilizado');
-  }
-  
-  if (isExpired) {
-    logger.warn(`[RESET-PASSWORD] Token expirado: expires_at=${expiresAt.toISOString()}, now=${now.toISOString()}`);
-    throw new Error('Token expirado');
-  }
-
+  const resetData = tokenResult.rows[0];
   const passwordHash = await bcrypt.hash(newPassword, 10);
+  
+  // Obtener datos del usuario ANTES de actualizar
+  let userEmail = resetData.email; // Usar email del token como fallback
+  let firstName = null;
 
-  // ACTUALIZAR CONTRASEÑA SEGÚN LA FUENTE DEL USUARIO
-  if (tokenData.user_source === 'admin_idon') {
-    logger.info(`[RESET-PASSWORD] Actualizando admin_user: ${tokenData.user_id}`);
+  if (resetData.user_source === 'admin_idon') {
+    const userResult = await query(
+      `SELECT first_name, email FROM public.admin_users WHERE id = $1`,
+      [resetData.user_id]
+    );
+    if (userResult.rows.length > 0) {
+      firstName = userResult.rows[0].first_name;
+      userEmail = userResult.rows[0].email;
+    }
+  } else if (resetData.user_source === 'public') {
+    const userResult = await query(
+      `SELECT first_name, email FROM public.users WHERE id = $1`,
+      [resetData.user_id]
+    );
+    if (userResult.rows.length > 0) {
+      firstName = userResult.rows[0].first_name;
+      userEmail = userResult.rows[0].email;
+    }
+  } else if (resetData.user_source === 'schema' && resetData.schema_name) {
+    try {
+      const userResult = await query(
+        `SELECT first_name, email FROM "${resetData.schema_name}".users WHERE id = $1`,
+        [resetData.user_id]
+      );
+      if (userResult.rows.length > 0) {
+        firstName = userResult.rows[0].first_name;
+        userEmail = userResult.rows[0].email;
+      }
+    } catch (e) {
+      logger.warn(`[RESET-PASSWORD] Error obteniendo usuario schema: ${e.message}`);
+    }
+  }
+
+  // Actualizar contraseña según la fuente del usuario
+  if (resetData.user_source === 'admin_idon') {
     await query(
       `UPDATE public.admin_users SET password_hash = $1 WHERE id = $2`,
-      [passwordHash, tokenData.user_id]
+      [passwordHash, resetData.user_id]
     );
-  } else if (tokenData.user_source === 'public') {
-    logger.info(`[RESET-PASSWORD] Actualizando public.user: ${tokenData.user_id}`);
+  } else if (resetData.user_source === 'public') {
     await query(
       `UPDATE public.users SET password_hash = $1 WHERE id = $2`,
-      [passwordHash, tokenData.user_id]
+      [passwordHash, resetData.user_id]
     );
-  } else if (tokenData.user_source === 'schema' && tokenData.schema_name) {
-    logger.info(`[RESET-PASSWORD] Actualizando schema.user: ${tokenData.user_id} en ${tokenData.schema_name}`);
+  } else if (resetData.user_source === 'schema' && resetData.schema_name) {
     await query(
-      `UPDATE "${tokenData.schema_name}".users SET password_hash = $1 WHERE id = $2`,
-      [passwordHash, tokenData.user_id]
+      `UPDATE "${resetData.schema_name}".users SET password_hash = $1 WHERE id = $2`,
+      [passwordHash, resetData.user_id]
     );
-  } else {
-    logger.error(`[RESET-PASSWORD] Fuente de usuario no soportada: ${tokenData.user_source}`);
-    throw new Error('Fuente de usuario no soportada');
   }
 
-  // MARCAR TOKEN COMO USADO
+  // Marcar token como usado
   await query(
     `UPDATE public.password_resets SET used = true, used_at = NOW() WHERE id = $1`,
-    [tokenData.id]
+    [resetData.id]
   );
 
-  // INVALIDAR TODOS LOS REFRESH TOKENS POR SEGURIDAD
-  await invalidateAllUserRefreshTokens(tokenData.user_id, tokenData.user_source);
+  // Invalidar todos los refresh tokens del usuario por seguridad
+  await invalidateAllUserRefreshTokens(resetData.user_id, resetData.user_source);
 
-  logger.info(`[RESET-PASSWORD] Contraseña actualizada exitosamente para usuario: ${tokenData.user_id}`);
-  
-  // ENVIAR CORREO DE CONFIRMACIÓN
+  logger.info(`[RESET-PASSWORD] Contraseña actualizada para usuario: ${resetData.user_id}`);
+
+  // ENVIAR CORREO DE CONFIRMACIÓN (usando userEmail que ya está definido)
   try {
-    if (email) {
+    if (userEmail) {
       await sendPasswordResetConfirmationEmail(
-        email,
+        userEmail,
         firstName || 'usuario',
         'IDON CONTROL'
       );
-      logger.info(`[RESET-PASSWORD] Email de confirmación enviado a: ${email}`);
+      logger.info(`[RESET-PASSWORD] Email de confirmación enviado a: ${userEmail}`);
+    } else {
+      logger.warn(`[RESET-PASSWORD] No se pudo enviar email de confirmación: email no disponible`);
     }
   } catch (emailError) {
     logger.error(`[RESET-PASSWORD] Error enviando email de confirmación:`, emailError);
