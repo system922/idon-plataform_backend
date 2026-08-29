@@ -140,3 +140,68 @@ export async function sendPasswordResetEmail(to, resetLink, businessName) {
     type: 'password_reset' // ✅ Soporte
   });
 }
+
+// Reestabelcer contarseña exitoso
+
+export async function sendPasswordResetConfirmationEmail(to, firstName, businessName) {
+  const subject = `Contraseña actualizada - IDON CONTROL`;
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    </head>
+    <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #f9f9f9; border-radius: 12px;">
+      <div style="text-align: center; padding: 20px 0;">
+        <h1 style="color: #1a1a2e; font-size: 24px; margin: 0;">IDON CONTROL</h1>
+      </div>
+      
+      <div style="background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05);">
+        <div style="text-align: center; margin-bottom: 20px;">
+          <div style="display: inline-block; background: #28a745; color: white; border-radius: 50%; width: 60px; height: 60px; line-height: 60px; font-size: 30px;">
+            ✓
+          </div>
+        </div>
+        
+        <h2 style="color: #1a1a2e; margin-top: 0; text-align: center;">¡Contraseña actualizada!</h2>
+        
+        <p style="color: #333; line-height: 1.6;">
+          Hola <strong>${firstName || 'usuario'}</strong>,
+        </p>
+        
+        <p style="color: #333; line-height: 1.6;">
+          Te confirmamos que tu contraseña ha sido <strong>actualizada exitosamente</strong> en <strong>IDON CONTROL</strong>.
+        </p>
+        
+        <div style="background: #f0f8ff; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ff8c42;">
+          <p style="color: #333; line-height: 1.6; margin: 0;">
+            🔐 Si no realizaste este cambio, por favor contacta inmediatamente a nuestro soporte.
+          </p>
+        </div>
+        
+        <p style="color: #666; font-size: 14px; line-height: 1.6;">
+          Si tienes alguna duda, no dudes en contactarnos.
+        </p>
+        
+        <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+        
+        <p style="color: #999; font-size: 12px; text-align: center; margin: 0;">
+          Este es un mensaje automático de IDON CONTROL. Por favor no respondas a este correo.
+        </p>
+        <p style="color: #999; font-size: 12px; text-align: center; margin: 5px 0;">
+          Si tienes dudas, contacta a <a href="mailto:soporte@idonplataform.site" style="color: #ff8c42;">soporte@idonplataform.site</a>
+        </p>
+      </div>
+    </body>
+    </html>
+  `;
+  
+  return sendEmail({ 
+    to, 
+    subject, 
+    html, 
+    businessName: 'IDON CONTROL',
+    type: 'soporte'
+  });
+}

@@ -156,8 +156,6 @@ export const requestPasswordReset = async (email) => {
   };
 };
 
-// ========== backend/services/authService.js ==========
-// Reemplazar estas funciones con el código completo
 
 // ─── Validar token de recuperación ─────────────────────────────
 export const validateResetToken = async (token) => {
@@ -171,7 +169,7 @@ export const validateResetToken = async (token) => {
   const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
   logger.info(`[VALIDATE-RESET] Hash calculado: ${tokenHash.substring(0, 30)}...`);
   
-  // ✅ PRIMERO: Verificar si el token existe en la tabla
+  // PRIMERO: Verificar si el token existe en la tabla
   const checkResult = await query(
     `SELECT * FROM public.password_resets WHERE token_hash = $1`,
     [tokenHash]
@@ -184,7 +182,7 @@ export const validateResetToken = async (token) => {
 
   const tokenData = checkResult.rows[0];
   
-  // ✅ LOGS PARA DEPURACIÓN
+  // LOGS PARA DEPURACIÓN
   logger.info(`[VALIDATE-RESET] Token encontrado:`);
   logger.info(`  - user_id: ${tokenData.user_id}`);
   logger.info(`  - user_source: ${tokenData.user_source}`);
@@ -193,7 +191,7 @@ export const validateResetToken = async (token) => {
   logger.info(`  - expires_at: ${tokenData.expires_at}`);
   logger.info(`  - NOW(): ${new Date().toISOString()}`);
   
-  // ✅ VERIFICAR SI EXPIRÓ
+  // VERIFICAR SI EXPIRÓ
   const now = new Date();
   const expiresAt = new Date(tokenData.expires_at);
   const isExpired = expiresAt < now;
@@ -208,7 +206,7 @@ export const validateResetToken = async (token) => {
     throw new Error('Token expirado');
   }
   
-  // ✅ OBTENER DATOS DEL USUARIO (opcional)
+  // OBTENER DATOS DEL USUARIO (opcional)
   let firstName = null;
   let email = tokenData.email;
   
@@ -274,7 +272,7 @@ export const resetPassword = async (token, newPassword) => {
   const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
   logger.info(`[RESET-PASSWORD] Hash calculado: ${tokenHash.substring(0, 30)}...`);
   
-  // ✅ PRIMERO: Verificar si el token existe
+  // PRIMERO: Verificar si el token existe
   const checkResult = await query(
     `SELECT * FROM public.password_resets WHERE token_hash = $1`,
     [tokenHash]
@@ -287,7 +285,7 @@ export const resetPassword = async (token, newPassword) => {
 
   const tokenData = checkResult.rows[0];
   
-  // ✅ LOGS PARA DEPURACIÓN
+  // LOGS PARA DEPURACIÓN
   logger.info(`[RESET-PASSWORD] Token encontrado:`);
   logger.info(`  - user_id: ${tokenData.user_id}`);
   logger.info(`  - user_source: ${tokenData.user_source}`);
@@ -296,7 +294,7 @@ export const resetPassword = async (token, newPassword) => {
   logger.info(`  - expires_at: ${tokenData.expires_at}`);
   logger.info(`  - NOW(): ${new Date().toISOString()}`);
   
-  // ✅ VERIFICAR SI EXPIRÓ
+  // VERIFICAR SI EXPIRÓ
   const now = new Date();
   const expiresAt = new Date(tokenData.expires_at);
   const isExpired = expiresAt < now;
@@ -313,7 +311,7 @@ export const resetPassword = async (token, newPassword) => {
 
   const passwordHash = await bcrypt.hash(newPassword, 10);
 
-  // ✅ ACTUALIZAR CONTRASEÑA SEGÚN LA FUENTE DEL USUARIO
+  // ACTUALIZAR CONTRASEÑA SEGÚN LA FUENTE DEL USUARIO
   if (tokenData.user_source === 'admin_idon') {
     logger.info(`[RESET-PASSWORD] Actualizando admin_user: ${tokenData.user_id}`);
     await query(
@@ -337,16 +335,31 @@ export const resetPassword = async (token, newPassword) => {
     throw new Error('Fuente de usuario no soportada');
   }
 
-  // ✅ MARCAR TOKEN COMO USADO
+  // MARCAR TOKEN COMO USADO
   await query(
     `UPDATE public.password_resets SET used = true, used_at = NOW() WHERE id = $1`,
     [tokenData.id]
   );
 
-  // ✅ INVALIDAR TODOS LOS REFRESH TOKENS POR SEGURIDAD
+  // INVALIDAR TODOS LOS REFRESH TOKENS POR SEGURIDAD
   await invalidateAllUserRefreshTokens(tokenData.user_id, tokenData.user_source);
 
   logger.info(`[RESET-PASSWORD] Contraseña actualizada exitosamente para usuario: ${tokenData.user_id}`);
+  
+  // ENVIAR CORREO DE CONFIRMACIÓN
+  try {
+    if (email) {
+      await sendPasswordResetConfirmationEmail(
+        email,
+        firstName || 'usuario',
+        'IDON CONTROL'
+      );
+      logger.info(`[RESET-PASSWORD] Email de confirmación enviado a: ${email}`);
+    }
+  } catch (emailError) {
+    logger.error(`[RESET-PASSWORD] Error enviando email de confirmación:`, emailError);
+    // No lanzamos error para no bloquear el reset
+  }
   
   return { success: true };
 };
