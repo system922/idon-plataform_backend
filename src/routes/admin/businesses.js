@@ -11,7 +11,7 @@ router.get('/stats', async (req, res, next) => {
   try {
     logger.info('[BUSINESS-STATS] Obteniendo estadísticas de negocios');
 
-    // ✅ CONSULTA CORREGIDA - Usando provisioned_business_id
+    // 1. Obtener todos los negocios con información básica
     const businessesResult = await query(`
       SELECT 
         b.id,
@@ -38,7 +38,7 @@ router.get('/stats', async (req, res, next) => {
       LEFT JOIN public.business_registration_requests brr ON b.id = brr.provisioned_business_id
       LEFT JOIN public.business_owners bo ON brr.business_owner_id = bo.id
       LEFT JOIN public.users u ON bo.user_id = u.id
-      LEFT JOIN public.subscriptions s ON b.id = s.business_id AND s.status = 'active'
+      LEFT JOIN public.subscriptions s ON b.id = s.business_id
       WHERE b.is_active = TRUE
       ORDER BY b.created_at DESC
     `);
@@ -77,18 +77,42 @@ router.get('/stats', async (req, res, next) => {
         let totalCustomers = 0;
         let activeCustomers = 0;
         let activeModules = 0;
+        let users = [];
 
         if (schemaExists) {
-          // ✅ VERIFICAR TABLA sales
+          // ✅ OBTENER USUARIOS DEL NEGOCIO
+          try {
+            const usersResult = await query(`
+              SELECT 
+                u.id,
+                u.email,
+                u.first_name,
+                u.last_name,
+                u.phone,
+                r.name AS role_name,
+                r.code AS role_code,
+                u.is_active,
+                u.created_at
+              FROM "${business.schema_name}".users u
+              LEFT JOIN "${business.schema_name}".roles r ON u.role_id = r.id
+              ORDER BY u.created_at DESC
+              LIMIT 100
+            `);
+            users = usersResult.rows || [];
+            logger.info(`[BUSINESS-STATS] ${business.name} - Usuarios: ${users.length}`);
+          } catch (err) {
+            logger.warn(`[BUSINESS-STATS] Error en users para ${business.name}: ${err.message}`);
+          }
+
+          // ✅ OBTENER VENTAS
           try {
             const revenueResult = await query(`
               SELECT 
                 COALESCE(SUM(total), 0) AS total_revenue,
-                COALESCE(SUM(total), 0) AS monthly_revenue,
+                COALESCE(SUM(CASE WHEN created_at >= NOW() - INTERVAL '30 days' THEN total ELSE 0 END), 0) AS monthly_revenue,
                 COUNT(*) AS total_sales
               FROM "${business.schema_name}".sales
-              WHERE created_at >= NOW() - INTERVAL '30 days'
-                AND status = 'completed'
+              WHERE status = 'completed'
             `);
             totalRevenue = parseFloat(revenueResult.rows[0]?.total_revenue) || 0;
             monthlyRevenue = parseFloat(revenueResult.rows[0]?.monthly_revenue) || 0;
@@ -98,7 +122,7 @@ router.get('/stats', async (req, res, next) => {
             logger.warn(`[BUSINESS-STATS] Error en sales para ${business.name}: ${err.message}`);
           }
 
-          // ✅ VERIFICAR TABLA modules
+          // ✅ OBTENER MÓDULOS ACTIVOS
           try {
             const modulesResult = await query(`
               SELECT 
@@ -118,7 +142,7 @@ router.get('/stats', async (req, res, next) => {
             logger.warn(`[BUSINESS-STATS] Error en modules para ${business.name}: ${err.message}`);
           }
 
-          // ✅ VERIFICAR TABLA monthly_data
+          // ✅ OBTENER DATOS MENSUALES (últimos 6 meses)
           try {
             const monthlyResult = await query(`
               SELECT 
@@ -143,44 +167,7 @@ router.get('/stats', async (req, res, next) => {
             logger.warn(`[BUSINESS-STATS] Error en monthly_data para ${business.name}: ${err.message}`);
           }
 
-          // ✅ VERIFICAR TABLA customers
-          try {
-            const customersResult = await query(`
-              SELECT 
-                COUNT(*) AS total_customers,
-                COUNT(DISTINCT id) AS active_customers
-              FROM "${business.schema_name}".customers
-              WHERE is_active = TRUE
-            `);
-            totalCustomers = parseInt(customersResult.rows[0]?.total_customers) || 0;
-            activeCustomers = parseInt(customersResult.rows[0]?.active_customers) || 0;
-          } catch (err) {
-            logger.warn(`[BUSINESS-STATS] Error en customers para ${business.name}: ${err.message}`);
-          }
-
-          // ✅ VERIFICAR TABLA top_products
-          try {
-            const topProductsResult = await query(`
-              SELECT 
-                p.name,
-                COUNT(si.id) AS sales_count,
-                COALESCE(SUM(si.quantity), 0) AS total_quantity,
-                COALESCE(SUM(si.subtotal), 0) AS total_revenue
-              FROM "${business.schema_name}".sales_items si
-              JOIN "${business.schema_name}".products p ON si.product_id = p.id
-              JOIN "${business.schema_name}".sales s ON si.sale_id = s.id
-              WHERE s.created_at >= NOW() - INTERVAL '30 days'
-                AND s.status = 'completed'
-              GROUP BY p.id, p.name
-              ORDER BY total_revenue DESC
-              LIMIT 5
-            `);
-            topProducts = topProductsResult.rows || [];
-          } catch (err) {
-            logger.warn(`[BUSINESS-STATS] Error en top_products para ${business.name}: ${err.message}`);
-          }
-
-          // ✅ VERIFICAR TABLA growth
+          // ✅ CALCULAR CRECIMIENTO
           try {
             const growthResult = await query(`
               WITH monthly_revenue AS (
@@ -206,6 +193,42 @@ router.get('/stats', async (req, res, next) => {
           } catch (err) {
             logger.warn(`[BUSINESS-STATS] Error en growth para ${business.name}: ${err.message}`);
           }
+
+          // ✅ OBTENER PRODUCTOS MÁS VENDIDOS
+          try {
+            const topProductsResult = await query(`
+              SELECT 
+                p.name,
+                COUNT(si.id) AS sales_count,
+                COALESCE(SUM(si.quantity), 0) AS total_quantity,
+                COALESCE(SUM(si.subtotal), 0) AS total_revenue
+              FROM "${business.schema_name}".sales_items si
+              JOIN "${business.schema_name}".products p ON si.product_id = p.id
+              JOIN "${business.schema_name}".sales s ON si.sale_id = s.id
+              WHERE s.created_at >= NOW() - INTERVAL '30 days'
+                AND s.status = 'completed'
+              GROUP BY p.id, p.name
+              ORDER BY total_revenue DESC
+              LIMIT 5
+            `);
+            topProducts = topProductsResult.rows || [];
+          } catch (err) {
+            logger.warn(`[BUSINESS-STATS] Error en top_products para ${business.name}: ${err.message}`);
+          }
+
+          // ✅ OBTENER CLIENTES
+          try {
+            const customersResult = await query(`
+              SELECT 
+                COUNT(*) AS total_customers,
+                COUNT(CASE WHEN is_active = TRUE THEN 1 END) AS active_customers
+              FROM "${business.schema_name}".customers
+            `);
+            totalCustomers = parseInt(customersResult.rows[0]?.total_customers) || 0;
+            activeCustomers = parseInt(customersResult.rows[0]?.active_customers) || 0;
+          } catch (err) {
+            logger.warn(`[BUSINESS-STATS] Error en customers para ${business.name}: ${err.message}`);
+          }
         } else {
           logger.warn(`[BUSINESS-STATS] Schema ${business.schema_name} NO existe, usando datos por defecto`);
         }
@@ -218,15 +241,18 @@ router.get('/stats', async (req, res, next) => {
           status: business.is_active ? 'active' : 'inactive',
           is_verified: business.is_verified,
           created_at: business.created_at,
+          updated_at: business.updated_at,
           business_type: business.business_type || 'No definido',
           client_name: `${business.client_first_name || ''} ${business.client_last_name || ''}`.trim() || 'Sin cliente',
           client_email: business.client_email || 'Sin email',
+          owner_id: business.owner_id || null,
           subscription_status: business.subscription_status || 'no_subscription',
           subscription_activated_at: business.subscription_activated_at,
           next_billing_at: business.next_billing_at,
           suspended_at: business.suspended_at,
           total_users: parseInt(business.total_users) || 0,
           active_users: parseInt(business.active_users) || 0,
+          users: users,
           total_revenue: totalRevenue,
           monthly_revenue: monthlyRevenue,
           total_sales: totalSales,
@@ -248,10 +274,10 @@ router.get('/stats', async (req, res, next) => {
           name: business.name,
           error: true,
           error_message: err.message,
-          // Datos por defecto para evitar errores en el frontend
           status: 'inactive',
           total_users: 0,
           active_users: 0,
+          users: [],
           total_revenue: 0,
           monthly_revenue: 0,
           total_sales: 0,
@@ -272,6 +298,7 @@ router.get('/stats', async (req, res, next) => {
     const validBusinesses = statsData.filter(b => !b.error);
     const totalBusinesses = validBusinesses.length;
     const activeBusinesses = validBusinesses.filter(b => b.status === 'active').length;
+    const inactiveBusinesses = validBusinesses.filter(b => b.status === 'inactive').length;
     const totalUsers = validBusinesses.reduce((sum, b) => sum + (b.total_users || 0), 0);
     const totalRevenue = validBusinesses.reduce((sum, b) => sum + (b.total_revenue || 0), 0);
     const totalModules = validBusinesses.reduce((sum, b) => sum + (b.active_modules || 0), 0);
@@ -279,7 +306,7 @@ router.get('/stats', async (req, res, next) => {
     const summary = {
       total_businesses: totalBusinesses,
       active_businesses: activeBusinesses,
-      inactive_businesses: totalBusinesses - activeBusinesses,
+      inactive_businesses: inactiveBusinesses,
       total_users: totalUsers,
       total_revenue: totalRevenue,
       total_modules: totalModules,
@@ -296,6 +323,153 @@ router.get('/stats', async (req, res, next) => {
 
   } catch (error) {
     logger.error('[BUSINESS-STATS] Error:', error);
+    next(error);
+  }
+});
+
+// ─── GET /api/admin/businesses/:id ─────────────────────────────
+router.get('/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    // Obtener información detallada del negocio
+    const businessResult = await query(`
+      SELECT 
+        b.id,
+        b.name,
+        b.slug,
+        b.schema_name,
+        b.is_active,
+        b.is_verified,
+        b.created_at,
+        b.updated_at,
+        b.admin_notes,
+        bt.name AS business_type,
+        bt.code AS business_type_code,
+        u.email AS client_email,
+        u.first_name AS client_first_name,
+        u.last_name AS client_last_name,
+        u.phone AS client_phone,
+        u.document_type AS client_document_type,
+        u.document_number AS client_document_number,
+        bo.id AS owner_id,
+        COALESCE(s.status, 'no_subscription') AS subscription_status,
+        s.activated_at AS subscription_activated_at,
+        s.next_billing_at,
+        s.suspended_at,
+        s.amount_monthly,
+        s.amount_annual,
+        s.billing_period,
+        s.paid_until
+      FROM public.businesses b
+      LEFT JOIN public.business_types bt ON b.business_type_id = bt.id
+      LEFT JOIN public.business_registration_requests brr ON b.id = brr.provisioned_business_id
+      LEFT JOIN public.business_owners bo ON brr.business_owner_id = bo.id
+      LEFT JOIN public.users u ON bo.user_id = u.id
+      LEFT JOIN public.subscriptions s ON b.id = s.business_id
+      WHERE b.id = $1
+    `, [id]);
+
+    if (businessResult.rows.length === 0) {
+      return res.status(404).json(errorResponse('Negocio no encontrado', 404));
+    }
+
+    const business = businessResult.rows[0];
+
+    // Obtener usuarios del negocio desde el schema
+    let usersResult = { rows: [] };
+    let billingResult = { rows: [] };
+    let modulesResult = { rows: [] };
+    let salesResult = { rows: [] };
+
+    try {
+      const schemaCheck = await query(`
+        SELECT schema_name FROM information_schema.schemata 
+        WHERE schema_name = $1
+      `, [business.schema_name]);
+      
+      if (schemaCheck.rows.length > 0) {
+        // Usuarios
+        usersResult = await query(`
+          SELECT 
+            u.id,
+            u.first_name,
+            u.last_name,
+            u.email,
+            u.phone,
+            r.name AS role_name,
+            r.code AS role_code,
+            u.is_active,
+            u.created_at AS joined_at
+          FROM "${business.schema_name}".users u
+          LEFT JOIN "${business.schema_name}".roles r ON u.role_id = r.id
+          ORDER BY u.created_at DESC
+          LIMIT 50
+        `);
+
+        // Módulos
+        modulesResult = await query(`
+          SELECT 
+            m.id,
+            m.name,
+            m.code,
+            m.icon,
+            m.is_active,
+            m.created_at
+          FROM "${business.schema_name}".modules m
+          WHERE m.is_active = TRUE
+          ORDER BY m.name
+        `);
+
+        // Ventas resumen
+        salesResult = await query(`
+          SELECT 
+            COUNT(*) AS total_sales,
+            COALESCE(SUM(total), 0) AS total_revenue,
+            COALESCE(AVG(total), 0) AS average_sale,
+            COUNT(DISTINCT customer_id) AS unique_customers
+          FROM "${business.schema_name}".sales
+          WHERE status = 'completed'
+        `);
+      }
+    } catch (err) {
+      logger.warn(`[BUSINESS-DETAIL] Error obteniendo datos del schema: ${err.message}`);
+    }
+
+    // Historial de facturación
+    try {
+      billingResult = await query(`
+        SELECT 
+          bh.id,
+          bh.billing_date,
+          bh.amount,
+          bh.status,
+          bh.payment_method,
+          bh.reference,
+          bh.description,
+          bh.created_at
+        FROM public.billing_history bh
+        JOIN public.subscriptions s ON bh.subscription_id = s.id
+        WHERE s.business_id = $1
+        ORDER BY bh.billing_date DESC
+        LIMIT 20
+      `, [id]);
+    } catch (err) {
+      logger.warn(`[BUSINESS-DETAIL] Error obteniendo billing_history: ${err.message}`);
+    }
+
+    res.json(successResponse({
+      business: {
+        ...business,
+        users: usersResult.rows || [],
+        modules: modulesResult.rows || [],
+        sales_summary: salesResult.rows[0] || { total_sales: 0, total_revenue: 0, average_sale: 0, unique_customers: 0 },
+        billing_history: billingResult.rows || []
+      }
+    }, 'Detalle del negocio obtenido exitosamente'));
+
+  } catch (error) {
+    logger.error('[BUSINESS-DETAIL] Error:', error);
     next(error);
   }
 });
