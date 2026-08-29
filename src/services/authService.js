@@ -41,7 +41,8 @@ export const requestPasswordReset = async (email) => {
   if (!user) {
     const userResult = await query(
       `SELECT u.id, u.email, u.first_name, u.last_name, 'user' as user_type,
-              b.name as business_name
+              b.name as business_name,
+              bo.id as owner_id
        FROM public.users u
        LEFT JOIN public.business_owners bo ON u.id = bo.user_id
        LEFT JOIN public.business_registration_requests brr ON bo.id = brr.business_owner_id
@@ -57,7 +58,8 @@ export const requestPasswordReset = async (email) => {
     }
   }
 
-  // Buscar en schemas de negocios
+  // Si no se encontró en admin_users ni en public.users,
+  // buscar en schemas de negocios (empleados de esquemas)
   if (!user) {
     const businesses = await query(
       `SELECT b.id, b.schema_name, b.name 
