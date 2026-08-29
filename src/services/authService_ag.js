@@ -828,7 +828,7 @@ export const login = async (email, password) => {
   }
 
   logger.warn('[LOGIN] Usuario no encontrado en ninguna fuente');
-  throw new Error('Usuario no registrado');
+  throw new Error('Invalid credentials');
 };
 
 // ----------------------

@@ -71,9 +71,9 @@ router.post('/logout', async (req, res, next) => {
 
 // ── POST /api/auth/login ──────────────────────────────────────
 router.post('/login', async (req, res, next) => {
-  try {
-    const { email, password } = req.body;
+  const { email, password } = req.body;
 
+  try {
     if (!email || !password) {
       return res.status(400).json(errorResponse('Email and password are required', 400));
     }
@@ -113,7 +113,12 @@ router.post('/login', async (req, res, next) => {
   } catch (error) {
     logger.error(`[LOGIN] Error para ${email}:`, error.message);
     
-    if (error.message === 'Invalid credentials' || error.message === 'User is inactive') {
+    if (
+      error.message === 'Invalid credentials' ||
+      error.message === 'User is inactive' ||
+      error.message === 'Usuario no registrado' ||
+      error.message === 'User not registered'
+    ) {
       return res.status(401).json(errorResponse(error.message, 401));
     }
     if (error.statusCode === 403 || 
