@@ -437,6 +437,14 @@ router.post('/validate-reset-token', async (req, res, next) => {
     res.json(successResponse(result, 'Token válido'));
   } catch (error) {
     logger.error(`[VALIDATE-RESET-TOKEN] Error:`, error.message);
+    
+    // ✅ Manejar errores específicos
+    if (error.message === 'Token ya utilizado') {
+      return res.status(400).json(errorResponse('El enlace de recuperación ya ha sido utilizado', 400));
+    }
+    if (error.message === 'Token expirado') {
+      return res.status(400).json(errorResponse('El enlace de recuperación ha expirado', 400));
+    }
     if (error.message === 'Token inválido o expirado') {
       return res.status(400).json(errorResponse('El enlace de recuperación ha expirado o es inválido', 400));
     }
@@ -465,6 +473,14 @@ router.post('/reset-password', async (req, res, next) => {
     res.json(successResponse(result, 'Contraseña actualizada exitosamente'));
   } catch (error) {
     logger.error(`[RESET-PASSWORD] Error:`, error.message);
+    
+    // ✅ Manejar errores específicos
+    if (error.message === 'Token ya utilizado') {
+      return res.status(400).json(errorResponse('El enlace de recuperación ya ha sido utilizado', 400));
+    }
+    if (error.message === 'Token expirado') {
+      return res.status(400).json(errorResponse('El enlace de recuperación ha expirado', 400));
+    }
     if (error.message === 'Token inválido o expirado') {
       return res.status(400).json(errorResponse('El enlace de recuperación ha expirado o es inválido', 400));
     }

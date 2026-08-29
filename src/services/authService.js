@@ -132,7 +132,7 @@ export const requestPasswordReset = async (email) => {
   );
 
   // 4. Construir URL de recuperación
-  const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
+  const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}reset-password?token=${resetToken}`;
   
   // 5. Enviar email con Resend
   try {
@@ -156,80 +156,197 @@ export const requestPasswordReset = async (email) => {
   };
 };
 
+// ========== backend/services/authService.js ==========
+// Reemplazar estas funciones con el código completo
+
 // ─── Validar token de recuperación ─────────────────────────────
 export const validateResetToken = async (token) => {
-  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  logger.info(`[VALIDATE-RESET] Token recibido: ${token?.substring(0, 30)}...`);
   
-  const result = await query(
-    `SELECT pr.*, 
-            COALESCE(u.first_name, a.first_name, su.first_name) as first_name,
-            COALESCE(u.email, a.email, pr.email) as email
-     FROM public.password_resets pr
-     LEFT JOIN public.users u ON pr.user_id = u.id AND pr.user_source = 'public'
-     LEFT JOIN public.admin_users a ON pr.user_id = a.id AND pr.user_source = 'admin_idon'
-     LEFT JOIN public.users su ON pr.user_id = su.id AND pr.user_source = 'schema'
-     WHERE pr.token_hash = $1 AND pr.used = false AND pr.expires_at > NOW()`,
-    [tokenHash]
-  );
-
-  if (result.rows.length === 0) {
+  if (!token) {
+    logger.warn('[VALIDATE-RESET] Token vacío');
     throw new Error('Token inválido o expirado');
   }
 
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  logger.info(`[VALIDATE-RESET] Hash calculado: ${tokenHash.substring(0, 30)}...`);
+  
+  // ✅ PRIMERO: Verificar si el token existe en la tabla
+  const checkResult = await query(
+    `SELECT * FROM public.password_resets WHERE token_hash = $1`,
+    [tokenHash]
+  );
+  
+  if (checkResult.rows.length === 0) {
+    logger.warn('[VALIDATE-RESET] Token no encontrado en la base de datos');
+    throw new Error('Token inválido o expirado');
+  }
+
+  const tokenData = checkResult.rows[0];
+  
+  // ✅ LOGS PARA DEPURACIÓN
+  logger.info(`[VALIDATE-RESET] Token encontrado:`);
+  logger.info(`  - user_id: ${tokenData.user_id}`);
+  logger.info(`  - user_source: ${tokenData.user_source}`);
+  logger.info(`  - email: ${tokenData.email}`);
+  logger.info(`  - used: ${tokenData.used}`);
+  logger.info(`  - expires_at: ${tokenData.expires_at}`);
+  logger.info(`  - NOW(): ${new Date().toISOString()}`);
+  
+  // ✅ VERIFICAR SI EXPIRÓ
+  const now = new Date();
+  const expiresAt = new Date(tokenData.expires_at);
+  const isExpired = expiresAt < now;
+  
+  if (tokenData.used) {
+    logger.warn('[VALIDATE-RESET] Token ya utilizado');
+    throw new Error('Token ya utilizado');
+  }
+  
+  if (isExpired) {
+    logger.warn(`[VALIDATE-RESET] Token expirado: expires_at=${expiresAt.toISOString()}, now=${now.toISOString()}`);
+    throw new Error('Token expirado');
+  }
+  
+  // ✅ OBTENER DATOS DEL USUARIO (opcional)
+  let firstName = null;
+  let email = tokenData.email;
+  
+  if (tokenData.user_source === 'public') {
+    try {
+      const userResult = await query(
+        `SELECT first_name, email FROM public.users WHERE id = $1`,
+        [tokenData.user_id]
+      );
+      if (userResult.rows.length > 0) {
+        firstName = userResult.rows[0].first_name;
+        email = userResult.rows[0].email;
+      }
+    } catch (e) {
+      logger.warn(`[VALIDATE-RESET] Error obteniendo usuario: ${e.message}`);
+    }
+  } else if (tokenData.user_source === 'admin_idon') {
+    try {
+      const userResult = await query(
+        `SELECT first_name, email FROM public.admin_users WHERE id = $1`,
+        [tokenData.user_id]
+      );
+      if (userResult.rows.length > 0) {
+        firstName = userResult.rows[0].first_name;
+        email = userResult.rows[0].email;
+      }
+    } catch (e) {
+      logger.warn(`[VALIDATE-RESET] Error obteniendo admin: ${e.message}`);
+    }
+  } else if (tokenData.user_source === 'schema' && tokenData.schema_name) {
+    try {
+      const userResult = await query(
+        `SELECT first_name, email FROM "${tokenData.schema_name}".users WHERE id = $1`,
+        [tokenData.user_id]
+      );
+      if (userResult.rows.length > 0) {
+        firstName = userResult.rows[0].first_name;
+        email = userResult.rows[0].email;
+      }
+    } catch (e) {
+      logger.warn(`[VALIDATE-RESET] Error obteniendo usuario schema: ${e.message}`);
+    }
+  }
+
+  logger.info(`[VALIDATE-RESET] Token válido para: ${email}`);
+
   return {
     valid: true,
-    email: result.rows[0].email,
-    firstName: result.rows[0].first_name
+    email: email,
+    firstName: firstName || 'Usuario'
   };
 };
 
 // ─── Resetear contraseña ──────────────────────────────────────
 export const resetPassword = async (token, newPassword) => {
-  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  logger.info(`[RESET-PASSWORD] Intentando resetear contraseña...`);
   
-  // Verificar token
-  const tokenResult = await query(
-    `SELECT pr.* 
-     FROM public.password_resets pr
-     WHERE pr.token_hash = $1 AND pr.used = false AND pr.expires_at > NOW()`,
-    [tokenHash]
-  );
-
-  if (tokenResult.rows.length === 0) {
+  if (!token) {
+    logger.warn('[RESET-PASSWORD] Token vacío');
     throw new Error('Token inválido o expirado');
   }
 
-  const resetData = tokenResult.rows[0];
-  const passwordHash = await bcrypt.hash(newPassword, 10);
-
-  // Actualizar contraseña según la fuente del usuario
-  if (resetData.user_source === 'admin_idon') {
-    await query(
-      `UPDATE public.admin_users SET password_hash = $1 WHERE id = $2`,
-      [passwordHash, resetData.user_id]
-    );
-  } else if (resetData.user_source === 'public') {
-    await query(
-      `UPDATE public.users SET password_hash = $1 WHERE id = $2`,
-      [passwordHash, resetData.user_id]
-    );
-  } else if (resetData.user_source === 'schema' && resetData.schema_name) {
-    await query(
-      `UPDATE "${resetData.schema_name}".users SET password_hash = $1 WHERE id = $2`,
-      [passwordHash, resetData.user_id]
-    );
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  logger.info(`[RESET-PASSWORD] Hash calculado: ${tokenHash.substring(0, 30)}...`);
+  
+  // ✅ PRIMERO: Verificar si el token existe
+  const checkResult = await query(
+    `SELECT * FROM public.password_resets WHERE token_hash = $1`,
+    [tokenHash]
+  );
+  
+  if (checkResult.rows.length === 0) {
+    logger.warn('[RESET-PASSWORD] Token no encontrado en la base de datos');
+    throw new Error('Token inválido o expirado');
   }
 
-  // Marcar token como usado
+  const tokenData = checkResult.rows[0];
+  
+  // ✅ LOGS PARA DEPURACIÓN
+  logger.info(`[RESET-PASSWORD] Token encontrado:`);
+  logger.info(`  - user_id: ${tokenData.user_id}`);
+  logger.info(`  - user_source: ${tokenData.user_source}`);
+  logger.info(`  - email: ${tokenData.email}`);
+  logger.info(`  - used: ${tokenData.used}`);
+  logger.info(`  - expires_at: ${tokenData.expires_at}`);
+  logger.info(`  - NOW(): ${new Date().toISOString()}`);
+  
+  // ✅ VERIFICAR SI EXPIRÓ
+  const now = new Date();
+  const expiresAt = new Date(tokenData.expires_at);
+  const isExpired = expiresAt < now;
+  
+  if (tokenData.used) {
+    logger.warn('[RESET-PASSWORD] Token ya utilizado');
+    throw new Error('Token ya utilizado');
+  }
+  
+  if (isExpired) {
+    logger.warn(`[RESET-PASSWORD] Token expirado: expires_at=${expiresAt.toISOString()}, now=${now.toISOString()}`);
+    throw new Error('Token expirado');
+  }
+
+  const passwordHash = await bcrypt.hash(newPassword, 10);
+
+  // ✅ ACTUALIZAR CONTRASEÑA SEGÚN LA FUENTE DEL USUARIO
+  if (tokenData.user_source === 'admin_idon') {
+    logger.info(`[RESET-PASSWORD] Actualizando admin_user: ${tokenData.user_id}`);
+    await query(
+      `UPDATE public.admin_users SET password_hash = $1 WHERE id = $2`,
+      [passwordHash, tokenData.user_id]
+    );
+  } else if (tokenData.user_source === 'public') {
+    logger.info(`[RESET-PASSWORD] Actualizando public.user: ${tokenData.user_id}`);
+    await query(
+      `UPDATE public.users SET password_hash = $1 WHERE id = $2`,
+      [passwordHash, tokenData.user_id]
+    );
+  } else if (tokenData.user_source === 'schema' && tokenData.schema_name) {
+    logger.info(`[RESET-PASSWORD] Actualizando schema.user: ${tokenData.user_id} en ${tokenData.schema_name}`);
+    await query(
+      `UPDATE "${tokenData.schema_name}".users SET password_hash = $1 WHERE id = $2`,
+      [passwordHash, tokenData.user_id]
+    );
+  } else {
+    logger.error(`[RESET-PASSWORD] Fuente de usuario no soportada: ${tokenData.user_source}`);
+    throw new Error('Fuente de usuario no soportada');
+  }
+
+  // ✅ MARCAR TOKEN COMO USADO
   await query(
     `UPDATE public.password_resets SET used = true, used_at = NOW() WHERE id = $1`,
-    [resetData.id]
+    [tokenData.id]
   );
 
-  // Invalidar todos los refresh tokens del usuario por seguridad
-  await invalidateAllUserRefreshTokens(resetData.user_id, resetData.user_source);
+  // ✅ INVALIDAR TODOS LOS REFRESH TOKENS POR SEGURIDAD
+  await invalidateAllUserRefreshTokens(tokenData.user_id, tokenData.user_source);
 
-  logger.info(`[PASSWORD-RESET] Contraseña actualizada para usuario: ${resetData.user_id}`);
+  logger.info(`[RESET-PASSWORD] Contraseña actualizada exitosamente para usuario: ${tokenData.user_id}`);
   
   return { success: true };
 };
