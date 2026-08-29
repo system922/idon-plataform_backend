@@ -24,7 +24,7 @@ export const requestPasswordReset = async (email) => {
   let schemaName = null;
   let businessName = null;
 
-  // Buscar en admin_users
+  // ─── Buscar en admin_users ──────────────────────────────────────
   const adminResult = await query(
     `SELECT id, email, first_name, last_name, 'admin' as user_type 
      FROM public.admin_users 
@@ -35,31 +35,53 @@ export const requestPasswordReset = async (email) => {
     user = adminResult.rows[0];
     userSource = 'admin_idon';
     businessName = 'IDON Admin';
+    logger.info(`[PASSWORD-RESET] Usuario encontrado en admin_users: ${email}`);
   }
 
-  // Buscar en public.users
+  // ─── Buscar en public.users (dueños de negocio) ────────────────
   if (!user) {
+    // Primero obtenemos el usuario
     const userResult = await query(
       `SELECT u.id, u.email, u.first_name, u.last_name, 'user' as user_type,
-              b.name as business_name,
               bo.id as owner_id
        FROM public.users u
        LEFT JOIN public.business_owners bo ON u.id = bo.user_id
-       LEFT JOIN public.business_registration_requests brr ON bo.id = brr.business_owner_id
-       LEFT JOIN public.businesses b ON brr.business_id = b.id
        WHERE u.email = $1 AND u.is_active = true
        LIMIT 1`,
       [email]
     );
+    
     if (userResult.rows.length > 0) {
       user = userResult.rows[0];
       userSource = 'public';
-      businessName = user.business_name || 'IDON';
+      
+      // Buscar el nombre del negocio desde business_registration_requests
+      // (la tabla tiene business_name directamente, no business_id)
+      if (user.owner_id) {
+        const bizReqResult = await query(
+          `SELECT business_name 
+           FROM public.business_registration_requests 
+           WHERE business_owner_id = $1 
+             AND status IN ('pending', 'approved')
+           ORDER BY created_at DESC 
+           LIMIT 1`,
+          [user.owner_id]
+        );
+        if (bizReqResult.rows.length > 0) {
+          businessName = bizReqResult.rows[0].business_name;
+        }
+      }
+      
+      // Si no tiene negocio, usar nombre genérico
+      if (!businessName) {
+        businessName = 'IDON';
+      }
+      
+      logger.info(`[PASSWORD-RESET] Usuario encontrado en public.users: ${email}, negocio: ${businessName}`);
     }
   }
 
-  // Si no se encontró en admin_users ni en public.users,
-  // buscar en schemas de negocios (empleados de esquemas)
+  // ─── Buscar en schemas de negocios (empleados) ────────────────
   if (!user) {
     const businesses = await query(
       `SELECT b.id, b.schema_name, b.name 
@@ -80,14 +102,17 @@ export const requestPasswordReset = async (email) => {
           userSource = 'schema';
           schemaName = biz.schema_name;
           businessName = biz.name;
+          logger.info(`[PASSWORD-RESET] Usuario encontrado en schema: ${biz.schema_name}, email: ${email}`);
           break;
         }
       } catch (e) {
+        // Schema no existe o error, continuar
         continue;
       }
     }
   }
 
+  // ─── Si no se encontró en ninguna fuente ──────────────────────
   if (!user) {
     logger.warn(`[PASSWORD-RESET] Usuario no encontrado: ${email}`);
     throw new Error('Usuario no encontrado');
