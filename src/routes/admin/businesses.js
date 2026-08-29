@@ -11,7 +11,7 @@ router.get('/stats', async (req, res, next) => {
   try {
     logger.info('[BUSINESS-STATS] Obteniendo estadísticas de negocios');
 
-    // 1. Obtener todos los negocios con información básica
+    // CONSULTA CORREGIDA - Usando provisioned_business_id
     const businessesResult = await query(`
       SELECT 
         b.id,
@@ -35,7 +35,8 @@ router.get('/stats', async (req, res, next) => {
         (SELECT COUNT(*) FROM public.business_users WHERE business_id = b.id AND is_active = TRUE AND role_id IS NOT NULL) AS active_users
       FROM public.businesses b
       LEFT JOIN public.business_types bt ON b.business_type_id = bt.id
-      LEFT JOIN public.business_owners bo ON b.id = bo.business_id
+      LEFT JOIN public.business_registration_requests brr ON b.id = brr.provisioned_business_id
+      LEFT JOIN public.business_owners bo ON brr.business_owner_id = bo.id
       LEFT JOIN public.users u ON bo.user_id = u.id
       LEFT JOIN public.subscriptions s ON b.id = s.business_id AND s.status = 'active'
       WHERE b.is_active = TRUE
@@ -260,6 +261,7 @@ router.get('/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
 
+    // ✅ CONSULTA CORREGIDA
     const businessResult = await query(`
       SELECT 
         b.id,
@@ -286,7 +288,8 @@ router.get('/:id', async (req, res, next) => {
         s.billing_period
       FROM public.businesses b
       LEFT JOIN public.business_types bt ON b.business_type_id = bt.id
-      LEFT JOIN public.business_owners bo ON b.id = bo.business_id
+      LEFT JOIN public.business_registration_requests brr ON b.id = brr.provisioned_business_id
+      LEFT JOIN public.business_owners bo ON brr.business_owner_id = bo.id
       LEFT JOIN public.users u ON bo.user_id = u.id
       LEFT JOIN public.subscriptions s ON b.id = s.business_id
       WHERE b.id = $1
@@ -298,6 +301,7 @@ router.get('/:id', async (req, res, next) => {
 
     const business = businessResult.rows[0];
 
+    // Obtener usuarios del negocio desde el schema
     let usersResult = { rows: [] };
     let billingResult = { rows: [] };
 
