@@ -4,6 +4,7 @@ import {
   getConfig,
   updateConfig,
   resetConfig,
+  getHorarioAtencion
 } from '../../controllers/odontologia/configuracionGeneralController.js';
 
 const router = express.Router();
