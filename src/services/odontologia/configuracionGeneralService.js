@@ -6,9 +6,38 @@ import * as configModel from '../../models/odontologia/configuracionGeneralModel
 // ============================================================
 export const getConfig = async (schema) => {
   try {
-    return await configModel.findOrCreate(schema);
+    const config = await configModel.findOrCreate(schema);
+    // Si no existe, devolver null (sin crear)
+    return config;
   } catch (error) {
     throw new Error(`Error al obtener configuración: ${error.message}`);
+  }
+};
+
+// ============================================================
+// CREAR CONFIGURACIÓN
+// ============================================================
+export const createConfig = async (schema, data) => {
+  try {
+    // Validar datos
+    if (data.duracion_turno && data.duracion_turno < 5) {
+      throw new Error('La duración del turno debe ser al menos 5 minutos');
+    }
+    if (data.intervalo_inicio !== undefined && (data.intervalo_inicio < 0 || data.intervalo_inicio > 23)) {
+      throw new Error('La hora de inicio debe estar entre 0 y 23');
+    }
+    if (data.intervalo_fin !== undefined && (data.intervalo_fin < 0 || data.intervalo_fin > 23)) {
+      throw new Error('La hora de fin debe estar entre 0 y 23');
+    }
+    if (data.intervalo_inicio !== undefined && data.intervalo_fin !== undefined) {
+      if (data.intervalo_inicio >= data.intervalo_fin) {
+        throw new Error('La hora de inicio debe ser menor que la hora de fin');
+      }
+    }
+    
+    return await configModel.createConfig(schema, data);
+  } catch (error) {
+    throw new Error(`Error al crear configuración: ${error.message}`);
   }
 };
 

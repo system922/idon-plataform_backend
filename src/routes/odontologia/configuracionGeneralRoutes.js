@@ -2,9 +2,10 @@
 import express from 'express';
 import {
   getConfig,
+  getHorarioAtencion,
+  createConfig,
   updateConfig,
-  resetConfig,
-  getHorarioAtencion
+  resetConfig
 } from '../../controllers/odontologia/configuracionGeneralController.js';
 
 const router = express.Router();
@@ -13,7 +14,10 @@ const router = express.Router();
 router.get('/', getConfig);
 
 // GET /api/odontologia/configuracion-general/horario - Obtener solo el horario
-router.get('/horario', getHorarioAtencion);  // Nueva ruta
+router.get('/horario', getHorarioAtencion);
+
+// POST /api/odontologia/configuracion-general - Crear configuración
+router.post('/', createConfig);
 
 // PUT /api/odontologia/configuracion-general - Actualizar configuración
 router.put('/', updateConfig);
