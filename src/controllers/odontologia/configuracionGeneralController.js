@@ -10,6 +10,31 @@ const getSchema = (req, res) => {
   return schema;
 };
 
+
+// ============================================================
+// OBTENER HORARIO DE ATENCIÓN (SOLO INICIO Y FIN)
+// ============================================================
+export const getHorarioAtencion = async (req, res) => {
+  try {
+    const schema = getSchema(req, res);
+    if (!schema) return;
+
+    const config = await configService.getConfig(schema);
+    
+    res.json({ 
+      success: true, 
+      data: {
+        inicio: config.intervalo_inicio || 8,
+        fin: config.intervalo_fin || 18,
+        duracion_turno: config.duracion_turno || 30
+      }
+    });
+  } catch (err) {
+    console.error('Error en getHorarioAtencion:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
 // ============================================================
 // OBTENER CONFIGURACIÓN
 // ============================================================

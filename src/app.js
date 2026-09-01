@@ -231,7 +231,7 @@ app.use('/api/odontologia/plan-pagos', ...authBusiness, planPagosOrtodonciaRoute
 app.use('/api/odontologia/cuotas-ortodoncia', ...authBusiness, cuotasOrtodonciaRoutes);
 
 
-// ─── Rutas de admin (una por sección del sidebar) ─────────────────────────────
+// ─── Rutas de admin ─────────────────────────────
 app.use('/api/admin', ...authAdmin, adminDashboardRoutes);  // General → Dashboard
 app.use('/api/admin', ...authAdmin, adminRequestsRoutes);   // Negocios → Solicitudes
 app.use('/api/admin', ...authAdmin, adminClientsRoutes);    // Negocios → Gestión de Clientes
