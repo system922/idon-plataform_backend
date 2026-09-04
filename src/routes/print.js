@@ -9,6 +9,8 @@ const __dirname = path.dirname(__filename);
 
 const router = express.Router();
 
+const hashText = (value) => crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 16);
+
 // Obtener certificado desde archivo o variable
 const getCert = () => {
   try {
@@ -63,6 +65,12 @@ const getPrivateKey = () => {
 router.get('/cert', (req, res) => {
   try {
     const cert = getCert();
+    const certificate = new crypto.X509Certificate(cert);
+    console.log('[QZ] /cert OK', {
+      subject: certificate.subject,
+      fingerprint256: certificate.fingerprint256,
+      validTo: certificate.validTo,
+    });
     res.type('text/plain').send(cert);
   } catch (e) {
     console.error('[QZ] ❌ Error en /cert:', e.message);
@@ -70,7 +78,6 @@ router.get('/cert', (req, res) => {
   }
 });
 
-// Ruta para firmar - USANDO RSA-SHA512 en lugar de SHA512
 router.post('/sign', (req, res) => {
   try {
     const data = req.body.data;
@@ -79,12 +86,30 @@ router.post('/sign', (req, res) => {
     }
 
     const privateKey = getPrivateKey();
-    
-    // Usar RSA-SHA512 en lugar de SHA512
-    const sign = crypto.createSign('RSA-SHA512');
+
+    const cert = new crypto.X509Certificate(getCert());
+    const publicKey = cert.publicKey;
+    const sign = crypto.createSign('SHA512');
     sign.update(data);
     sign.end();
     const signature = sign.sign(privateKey, 'base64');
+
+    const verify = crypto.createVerify('SHA512');
+    verify.update(data);
+    verify.end();
+    const valid = verify.verify(publicKey, signature, 'base64');
+    console.log('[QZ] /sign', {
+      dataHash: hashText(data),
+      dataLength: String(data).length,
+      signatureLength: signature.length,
+      certificateFingerprint256: cert.fingerprint256,
+      signatureValidWithCertificate: valid,
+    });
+
+    if (!valid) {
+      return res.status(500).json({ error: 'La firma no coincide con el certificado QZ configurado' });
+    }
+
     res.json({ signature });
   } catch (e) {
     console.error('[QZ] ❌ Error al firmar:', e.message);
