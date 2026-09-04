@@ -66,6 +66,11 @@ router.get('/cert', (req, res) => {
   try {
     const cert = getCert();
     const certificate = new crypto.X509Certificate(cert);
+    res.set({
+      'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+      Pragma: 'no-cache',
+      Expires: '0',
+    });
     console.log('[QZ] /cert OK', {
       subject: certificate.subject,
       fingerprint256: certificate.fingerprint256,
