@@ -1009,7 +1009,7 @@ router.get('/profit-detail', authMiddleware, async (req, res) => {
 
 /**
  * GET /api/reports/collaborators
- * Reporte de ventas por colaborador.
+ * Reporte de ventas + rentabilidad por colaborador.
  *
  * Query params:
  *   from             (YYYY-MM-DD) requerido
@@ -1026,7 +1026,9 @@ router.get('/collaborators', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Parámetros "from" y "to" son obligatorios (YYYY-MM-DD)' });
     }
 
-    // ── 1. Desempeño por colaborador (employees) ──
+    const TZ = 'America/Guayaquil';
+
+    // ── 1. Colaboradores con totales + costo FIFO + ganancia ──
     const collabParams = [from, to];
     let collabWhere = '';
     if (collaborator_id) {
@@ -1034,7 +1036,8 @@ router.get('/collaborators', authMiddleware, async (req, res) => {
       collabWhere = `AND e.id = $${collabParams.length}`;
     }
 
-    const collaboratorsRes = await query(`
+    // 1a) Ventas por colaborador
+    const salesRes = await query(`
       SELECT
         e.id                                            AS collaborator_id,
         e.full_name,
@@ -1042,20 +1045,11 @@ router.get('/collaborators', authMiddleware, async (req, res) => {
         e.position,
         COUNT(DISTINCT oc.order_id)::int                AS orders,
         COALESCE(SUM(po.total), 0)::numeric             AS total_sales,
-        COALESCE(AVG(po.total), 0)::numeric             AS ticket_promedio,
+        COALESCE(SUM(po.subtotal), 0)::numeric          AS total_subtotal,
         COALESCE(SUM(po.tax_amount), 0)::numeric        AS total_iva,
         COALESCE(SUM(po.discount_amount), 0)::numeric   AS total_discounts,
         MIN(po.created_at)                              AS first_sale,
-        MAX(po.created_at)                              AS last_sale,
-        COALESCE((
-          SELECT SUM(poi.quantity)::int
-          FROM "${schema}".pos_order_items poi
-          JOIN "${schema}".pos_orders po2 ON po2.id = poi.order_id
-          JOIN "${schema}".order_collaborators oc2 ON oc2.order_id = po2.id
-          WHERE oc2.collaborator_id = e.id
-            AND po2.created_at::date BETWEEN $1 AND $2
-            AND po2.status = 'paid'
-        ), 0)::int                                       AS items_sold
+        MAX(po.created_at)                              AS last_sale
       FROM "${schema}".order_collaborators oc
       JOIN "${schema}".employees   e  ON e.id  = oc.collaborator_id
       JOIN "${schema}".pos_orders po ON po.id = oc.order_id
@@ -1065,6 +1059,41 @@ router.get('/collaborators', authMiddleware, async (req, res) => {
       GROUP BY e.id, e.full_name, e.email, e.position
       ORDER BY total_sales DESC
     `, collabParams);
+
+    // 1b) Costo FIFO por colaborador (una sola query para todos)
+    //     Se toma de inventory_movements con reference_id = order_id
+    //     y se asocia al colaborador vía order_collaborators
+    const costParams = [from, to];
+    let costWhere = '';
+    if (collaborator_id) {
+      costParams.push(collaborator_id);
+      costWhere = `AND oc.collaborator_id = $${costParams.length}`;
+    }
+
+    const costRes = await query(`
+      SELECT
+        oc.collaborator_id,
+        COALESCE(SUM(ABS(im.quantity) * im.unit_cost), 0)::numeric AS total_cost,
+        COALESCE(SUM(ABS(im.quantity))::int, 0)                    AS items_sold
+      FROM "${schema}".order_collaborators oc
+      JOIN "${schema}".pos_orders po ON po.id = oc.order_id
+      LEFT JOIN "${schema}".inventory_movements im
+        ON im.reference_id::text = po.id::text
+       AND im.type = 'venta'
+       AND im.applied = true
+      WHERE po.created_at::date BETWEEN $1 AND $2
+        AND po.status = 'paid'
+        ${costWhere}
+      GROUP BY oc.collaborator_id
+    `, costParams);
+
+    const costMap = new Map();
+    costRes.rows.forEach(r => {
+      costMap.set(r.collaborator_id, {
+        total_cost: Number(r.total_cost) || 0,
+        items_sold: Number(r.items_sold) || 0,
+      });
+    });
 
     // ── 2. Timeline diaria ──
     const timelineParams = [from, to];
@@ -1094,67 +1123,94 @@ router.get('/collaborators', authMiddleware, async (req, res) => {
       ORDER BY po.created_at::date ASC
     `, timelineParams);
 
-    // ── 3. Totales generales ──
-    const totalsRes = await query(`
+    // ── 3. Armar colaboradores con costo y ganancia ──
+    const collaborators = salesRes.rows.map((r) => {
+      const costoInfo = costMap.get(r.collaborator_id) || { total_cost: 0, items_sold: 0 };
+      const ventas = Number(r.total_sales) || 0;
+      const costo = costoInfo.total_cost;
+      const ganancia = ventas - costo;
+      const margen = ventas > 0 ? (ganancia / ventas) * 100 : 0;
+
+      return {
+        collaborator_id: r.collaborator_id,
+        full_name: r.full_name || '',
+        first_name: (r.full_name || '').split(' ')[0] || '',
+        last_name: (r.full_name || '').split(' ').slice(1).join(' ') || '',
+        email: r.email || '',
+        position: r.position || '',
+        orders: Number(r.orders) || 0,
+        items_sold: costoInfo.items_sold,
+        total_sales: ventas,
+        total_cost: costo,
+        total_profit: ganancia,
+        margin: margen,
+        ticket_promedio: Number(r.orders) > 0 ? ventas / Number(r.orders) : 0,
+        total_iva: Number(r.total_iva) || 0,
+        total_discounts: Number(r.total_discounts) || 0,
+        first_sale: r.first_sale,
+        last_sale: r.last_sale,
+      };
+    });
+
+    // ── 4. Timeline diaria con costo y ganancia ──
+    //      Se recalcula costo por día asociando inventory_movements
+    const timelineCostRes = await query(`
       SELECT
-        COALESCE(SUM(sub.total_sales), 0)::numeric        AS total_ventas,
-        COALESCE(SUM(sub.orders), 0)::int                 AS total_ordenes,
-        COUNT(sub.collaborator_id)::int                   AS total_colaboradores,
-        CASE
-          WHEN COALESCE(SUM(sub.orders), 0) > 0
-          THEN (SUM(sub.total_sales) / SUM(sub.orders))::numeric
-          ELSE 0
-        END                                              AS ticket_promedio
-      FROM (
-        SELECT
-          oc.collaborator_id,
-          COUNT(DISTINCT oc.order_id)::int       AS orders,
-          COALESCE(SUM(po.total), 0)::numeric    AS total_sales
-        FROM "${schema}".order_collaborators oc
-        JOIN "${schema}".pos_orders po ON po.id = oc.order_id
-        WHERE po.created_at::date BETWEEN $1 AND $2
-          AND po.status = 'paid'
-          ${collaborator_id ? `AND oc.collaborator_id = $3` : ''}
-        GROUP BY oc.collaborator_id
-      ) sub
+        po.created_at::date AS date,
+        COALESCE(SUM(ABS(im.quantity) * im.unit_cost), 0)::numeric AS total_cost
+      FROM "${schema}".pos_orders po
+      LEFT JOIN "${schema}".inventory_movements im
+        ON im.reference_id::text = po.id::text
+       AND im.type = 'venta'
+       AND im.applied = true
+      WHERE po.created_at::date BETWEEN $1 AND $2
+        AND po.status = 'paid'
+        ${collaborator_id ? `AND po.id IN (SELECT order_id FROM "${schema}".order_collaborators WHERE collaborator_id = $3)` : ''}
+      GROUP BY po.created_at::date
+      ORDER BY po.created_at::date ASC
     `, collaborator_id ? [from, to, collaborator_id] : [from, to]);
 
-    // ── 4. Formatear respuesta ──
-    const collaborators = collaboratorsRes.rows.map((r) => ({
-      collaborator_id: r.collaborator_id,
-      full_name: r.full_name,
-      first_name: (r.full_name || '').split(' ')[0] || '',
-      last_name: (r.full_name || '').split(' ').slice(1).join(' ') || '',
-      email: r.email,
-      position: r.position,
-      orders: Number(r.orders) || 0,
-      items_sold: Number(r.items_sold) || 0,
-      total_sales: Number(r.total_sales) || 0,
-      ticket_promedio: Number(r.ticket_promedio) || 0,
-      total_iva: Number(r.total_iva) || 0,
-      total_discounts: Number(r.total_discounts) || 0,
-      first_sale: r.first_sale,
-      last_sale: r.last_sale,
-    }));
+    const timelineCostMap = new Map();
+    timelineCostRes.rows.forEach(r => {
+      timelineCostMap.set(r.date, Number(r.total_cost) || 0);
+    });
 
-    const timeline = timelineRes.rows.map((r) => ({
-      date: r.date,
-      orders: Number(r.orders) || 0,
-      total_sales: Number(r.total_sales) || 0,
-      ticket_promedio: Number(r.ticket_promedio) || 0,
-      distinct_collaborators: Number(r.distinct_collaborators) || 0,
-    }));
+    const timeline = timelineRes.rows.map((r) => {
+      const costo = timelineCostMap.get(r.date) || 0;
+      const ventas = Number(r.total_sales) || 0;
+      const ganancia = ventas - costo;
+      const margen = ventas > 0 ? (ganancia / ventas) * 100 : 0;
+      return {
+        date: r.date,
+        orders: Number(r.orders) || 0,
+        total_sales: ventas,
+        total_cost: costo,
+        total_profit: ganancia,
+        margin: margen,
+        ticket_promedio: Number(r.ticket_promedio) || 0,
+        distinct_collaborators: Number(r.distinct_collaborators) || 0,
+      };
+    });
 
-    const totalsRow = totalsRes.rows[0] || {};
-    const topColab = collaborators[0];
-    const topColaborador = topColab?.full_name || '—';
+    // ── 5. Totales generales ──
+    const totalVentas = collaborators.reduce((s, c) => s + c.total_sales, 0);
+    const totalCosto = collaborators.reduce((s, c) => s + c.total_cost, 0);
+    const totalGanancia = totalVentas - totalCosto;
+    const margen = totalVentas > 0 ? (totalGanancia / totalVentas) * 100 : 0;
+    const totalOrdenes = collaborators.reduce((s, c) => s + c.orders, 0);
+    const totalItems = collaborators.reduce((s, c) => s + c.items_sold, 0);
+    const topColaborador = collaborators[0]?.full_name || '—';
 
     return res.json({
       totals: {
-        total_ventas: Number(totalsRow.total_ventas) || 0,
-        total_ordenes: Number(totalsRow.total_ordenes) || 0,
-        total_colaboradores: Number(totalsRow.total_colaboradores) || 0,
-        ticket_promedio: Number(totalsRow.ticket_promedio) || 0,
+        total_ventas: totalVentas,
+        total_costo: totalCosto,
+        total_ganancia: totalGanancia,
+        margen: margen,
+        total_ordenes: totalOrdenes,
+        total_colaboradores: collaborators.length,
+        total_items: totalItems,
+        ticket_promedio: totalOrdenes > 0 ? totalVentas / totalOrdenes : 0,
         top_colaborador: topColaborador,
       },
       collaborators,
