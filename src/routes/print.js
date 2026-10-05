@@ -9,8 +9,6 @@ const __dirname = path.dirname(__filename);
 
 const router = express.Router();
 
-const hashText = (value) => crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 16);
-
 // Obtener certificado desde archivo o variable
 const getCert = () => {
   try {
@@ -19,8 +17,6 @@ const getCert = () => {
     }
 
     const CERT_PATH = process.env.QZ_CERT_PATH || path.resolve(__dirname, '../credentials/override.crt');
-    console.log('[QZ] 📂 Intentando leer certificado desde:', CERT_PATH);
-
     if (!fs.existsSync(CERT_PATH)) {
       console.error('[QZ] ❌ El archivo NO existe en:', CERT_PATH);
       throw new Error(`Archivo no encontrado: ${CERT_PATH}`);
@@ -65,16 +61,11 @@ const getPrivateKey = () => {
 router.get('/cert', (req, res) => {
   try {
     const cert = getCert();
-    const certificate = new crypto.X509Certificate(cert);
+    new crypto.X509Certificate(cert);
     res.set({
       'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
       Pragma: 'no-cache',
       Expires: '0',
-    });
-    console.log('[QZ] /cert OK', {
-      subject: certificate.subject,
-      fingerprint256: certificate.fingerprint256,
-      validTo: certificate.validTo,
     });
     res.type('text/plain').send(cert);
   } catch (e) {
@@ -103,14 +94,6 @@ router.post('/sign', (req, res) => {
     verify.update(data);
     verify.end();
     const valid = verify.verify(publicKey, signature, 'base64');
-    console.log('[QZ] /sign', {
-      dataHash: hashText(data),
-      dataLength: String(data).length,
-      signatureLength: signature.length,
-      certificateFingerprint256: cert.fingerprint256,
-      signatureValidWithCertificate: valid,
-    });
-
     if (!valid) {
       return res.status(500).json({ error: 'La firma no coincide con el certificado QZ configurado' });
     }

@@ -55,8 +55,9 @@ import categoriesRoutes      from './routes/categoriesRoutes.js';
 import ordenesRoutes         from './routes/ordenes.js';
 import retailRoutes          from './routes/retail.js';
 import posSettingsRoutes     from './routes/posSettings.js';
-import discountsRoutes      from './routes/discountsRoutes.js';
+import discountsRoutes       from './routes/discountsRoutes.js';
 import reportsRoutes         from './routes/reportsRoutes.js';
+import CollaboratorsRoutes   from './routes/reportsCollaborators.js';
 import salesRouter           from './routes/salesRouter.js';
 import purchasesRouter       from './routes/purchasesRouter.js';
 import hoursRouter           from './routes/hoursRouter.js';
@@ -197,6 +198,7 @@ app.use('/api/purchase-receipts',     ...authBusiness, purchaseReceiptsRoutes);
 app.use('/api/admin/IdonNews',        idonNewsRoutes);
 
 app.use('/api/reports',             ...authBusiness, reportsRoutes);
+app.use('/api/reports-collaborators', ...authBusiness, CollaboratorsRoutes);
 app.use('/api/print',               ...authBusiness, printRoutes);
 app.use('/api/einvoicing',          ...authBusiness, einvoicingRoutes);
 app.use('/api/business',            ...authBusiness, businessRoutes);

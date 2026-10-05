@@ -713,6 +713,30 @@ BEGIN
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I_incomes_extras_date_idx ON %I.incomes_extras (date DESC)', p_schema_name, p_schema_name);
     v_table_count := v_table_count + 1;
 
+    -- ── order_collaborators (FK → pos_orders, employees) ── Asocia la venta con el colaborador (empleado) que la realizó.
+    EXECUTE format('
+      CREATE TABLE IF NOT EXISTS %I.order_collaborators (
+        id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        order_id          UUID NOT NULL REFERENCES %I.pos_orders(id) ON DELETE CASCADE,
+        collaborator_id   UUID NOT NULL REFERENCES %I.employees(id)  ON DELETE RESTRICT,
+        created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT uq_order_collaborator UNIQUE (order_id, collaborator_id)
+      )', p_schema_name, p_schema_name, p_schema_name);
+
+    EXECUTE format(
+      'CREATE INDEX IF NOT EXISTS %I_order_collaborators_order_id_idx ON %I.order_collaborators (order_id)',
+      p_schema_name, p_schema_name);
+
+    EXECUTE format(
+      'CREATE INDEX IF NOT EXISTS %I_order_collaborators_collaborator_id_idx ON %I.order_collaborators (collaborator_id)',
+      p_schema_name, p_schema_name);
+
+    EXECUTE format(
+      'CREATE INDEX IF NOT EXISTS %I_order_collaborators_created_at_idx ON %I.order_collaborators (created_at DESC)',
+      p_schema_name, p_schema_name);
+
+    v_table_count := v_table_count + 1;
+
   END IF;
 
 
