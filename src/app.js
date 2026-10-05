@@ -200,7 +200,6 @@ app.use('/api/purchase-receipts',     ...authBusiness, purchaseReceiptsRoutes);
 app.use('/api/admin/IdonNews',        idonNewsRoutes);
 
 app.use('/api/reports',             ...authBusiness, reportsRoutes);
-app.use('/api/reports-collaborators', ...authBusiness, CollaboratorsRoutes);
 app.use('/api/print',               ...authBusiness, printRoutes);
 app.use('/api/einvoicing',          ...authBusiness, einvoicingRoutes);
 app.use('/api/business',            ...authBusiness, businessRoutes);
