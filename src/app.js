@@ -51,6 +51,7 @@ import fiscalConfigRoutes    from './routes/fiscalConfigRoutes.js';
 import businessOwnersRoutes  from './routes/businessOwners.js';
 import CustomersRoutes       from './routes/customers.js';
 import productosRoutes       from './routes/productos.js';
+import posGeneralRoutes from './routes/posGeneral.js';
 import categoriesRoutes      from './routes/categoriesRoutes.js';
 import ordenesRoutes         from './routes/ordenes.js';
 import retailRoutes          from './routes/retail.js';
@@ -173,6 +174,7 @@ app.use('/api/subscriptions',       ...authBusiness, subscriptionRoutes);
 app.use('/api/customers',           ...authBusiness, CustomersRoutes);
 app.use('/api/products',            ...authBusiness, productosRoutes);
 app.use('/api/productos',           ...authBusiness, productosRoutes);
+app.use('/api/pos/general',         ...authBusiness, posGeneralRoutes);
 app.use('/api/categories',            ...authBusiness, categoriesRoutes);
 
 app.use('/api/graphs',                ...authBusiness, graphRoutes);

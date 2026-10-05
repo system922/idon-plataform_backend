@@ -9,7 +9,7 @@ const router = express.Router();
 
 /**
  * GET /api/pos-general/collaborators
- * Lista los usuarios activos del tenant para asociarlos a una venta.
+ * Lista los colaboradores (employees) activos del tenant para asociarlos a una venta.
  */
 router.get('/collaborators', authMiddleware, async (req, res) => {
   try {
@@ -17,10 +17,10 @@ router.get('/collaborators', authMiddleware, async (req, res) => {
     if (!schema) return res.status(400).json({ error: 'Business context required' });
 
     const result = await dbQuery(`
-      SELECT id, first_name, last_name, email
-      FROM "${schema}".users
-      WHERE is_active = true
-      ORDER BY first_name ASC NULLS LAST, last_name ASC NULLS LAST, email ASC
+      SELECT id, full_name, email, position, department, status
+      FROM "${schema}".employees
+      WHERE status IS NULL OR status NOT IN ('inactive', 'terminated')
+      ORDER BY full_name ASC NULLS LAST, email ASC
     `);
     res.json(result.rows);
   } catch (err) {
@@ -31,7 +31,7 @@ router.get('/collaborators', authMiddleware, async (req, res) => {
 
 /**
  * POST /api/pos-general/orders
- * Crea una venta asociando colaborador OBLIGATORIO.
+ * Crea una venta asociando colaborador (employees.id) OBLIGATORIO.
  */
 router.post('/orders', authMiddleware, async (req, res) => {
   const client = await getClient();
@@ -49,7 +49,7 @@ router.post('/orders', authMiddleware, async (req, res) => {
       payments = [],
       amount_paid,
       reference_number,
-      collaborator_id,          // 🔥 obligatorio
+      collaborator_id,          // employees.id
     } = req.body;
 
     // ── Validaciones ──
@@ -62,9 +62,11 @@ router.post('/orders', authMiddleware, async (req, res) => {
 
     await client.query('BEGIN');
 
-    // ── Verificar que el colaborador existe y está activo ──
+    // ── Verificar que el colaborador (empleado) existe y está activo ──
     const colabRes = await client.query(
-      `SELECT id FROM "${schema}".users WHERE id = $1 AND is_active = true LIMIT 1`,
+      `SELECT id FROM "${schema}".employees
+       WHERE id = $1 AND (status IS NULL OR status NOT IN ('inactive','terminated'))
+       LIMIT 1`,
       [collaborator_id]
     );
     if (colabRes.rowCount === 0) {
@@ -148,12 +150,12 @@ router.post('/orders', authMiddleware, async (req, res) => {
       insertedItems.push(itemRes.rows[0]);
     }
 
-    // ── 🔥 Crear tabla y asociar colaborador ──
+    // ── Asociar colaborador (employees) ──
     await client.query(`
       CREATE TABLE IF NOT EXISTS "${schema}".order_collaborators (
         id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         order_id          UUID NOT NULL REFERENCES "${schema}".pos_orders(id) ON DELETE CASCADE,
-        collaborator_id   UUID NOT NULL REFERENCES "${schema}".users(id) ON DELETE RESTRICT,
+        collaborator_id   UUID NOT NULL REFERENCES "${schema}".employees(id)  ON DELETE RESTRICT,
         created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         CONSTRAINT uq_order_collaborator UNIQUE (order_id, collaborator_id)
       )
