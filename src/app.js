@@ -174,7 +174,7 @@ app.use('/api/subscriptions',       ...authBusiness, subscriptionRoutes);
 app.use('/api/customers',           ...authBusiness, CustomersRoutes);
 app.use('/api/products',            ...authBusiness, productosRoutes);
 app.use('/api/productos',           ...authBusiness, productosRoutes);
-app.use('/api/pos/general',         ...authBusiness, posGeneralRoutes);
+app.use('/api/pos-general',         ...authBusiness, posGeneralRoutes);
 app.use('/api/categories',            ...authBusiness, categoriesRoutes);
 
 app.use('/api/graphs',                ...authBusiness, graphRoutes);
