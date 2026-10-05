@@ -58,7 +58,6 @@ import retailRoutes          from './routes/retail.js';
 import posSettingsRoutes     from './routes/posSettings.js';
 import discountsRoutes       from './routes/discountsRoutes.js';
 import reportsRoutes         from './routes/reportsRoutes.js';
-import CollaboratorsRoutes   from './routes/reportsCollaborators.js';
 import salesRouter           from './routes/salesRouter.js';
 import purchasesRouter       from './routes/purchasesRouter.js';
 import hoursRouter           from './routes/hoursRouter.js';
