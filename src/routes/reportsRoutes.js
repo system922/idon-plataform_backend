@@ -1034,7 +1034,7 @@ router.get('/collaborators', authMiddleware, async (req, res) => {
       collabWhere = `AND e.id = $${collabParams.length}`;
     }
 
-    const collaboratorsRes = await dbQuery(`
+    const collaboratorsRes = await query(`
       SELECT
         e.id                                            AS collaborator_id,
         e.full_name,
@@ -1074,7 +1074,7 @@ router.get('/collaborators', authMiddleware, async (req, res) => {
       timelineWhere = `AND oc.collaborator_id = $${timelineParams.length}`;
     }
 
-    const timelineRes = await dbQuery(`
+    const timelineRes = await query(`
       SELECT
         po.created_at::date                              AS date,
         COUNT(DISTINCT oc.order_id)::int                 AS orders,
@@ -1095,7 +1095,7 @@ router.get('/collaborators', authMiddleware, async (req, res) => {
     `, timelineParams);
 
     // ── 3. Totales generales ──
-    const totalsRes = await dbQuery(`
+    const totalsRes = await query(`
       SELECT
         COALESCE(SUM(sub.total_sales), 0)::numeric        AS total_ventas,
         COALESCE(SUM(sub.orders), 0)::int                 AS total_ordenes,
@@ -1146,8 +1146,8 @@ router.get('/collaborators', authMiddleware, async (req, res) => {
     }));
 
     const totalsRow = totalsRes.rows[0] || {};
-    const topCollab = collaborators[0];
-    const topColaborador = topCollab?.full_name || '—';
+    const topColab = collaborators[0];
+    const topColaborador = topColab?.full_name || '—';
 
     return res.json({
       totals: {
