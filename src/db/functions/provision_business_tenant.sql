@@ -390,6 +390,30 @@ BEGIN
   v_table_count := v_table_count + 1;
 
 
+  -- POS order collaborators reference employees even when the employees module
+  -- is not separately enabled, so create this shared table before POS tables.
+  IF ANY_MATCH(v_modules, 'employees') OR ANY_MATCH(v_modules, 'pos') THEN
+    EXECUTE format('
+      CREATE TABLE IF NOT EXISTS %I.employees (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id         UUID REFERENCES %I.users(id) ON DELETE SET NULL,
+        full_name       VARCHAR(255) NOT NULL,
+        email           VARCHAR(255),
+        phone           VARCHAR(20),
+        position        VARCHAR(100),
+        department      VARCHAR(100),
+        document_number VARCHAR(50),
+        salary          NUMERIC(12,2),
+        payment_type    VARCHAR(20) DEFAULT ''hourly'',
+        hired_at        DATE,
+        status          VARCHAR(20) DEFAULT ''active'',
+        created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )', p_schema_name, p_schema_name);
+    v_table_count := v_table_count + 1;
+  END IF;
+
+
   -- ═══════════════════════════════════════════════════════════════════════════════
   -- MÓDULO POS
   -- ═══════════════════════════════════════════════════════════════════════════════
@@ -1795,28 +1819,6 @@ BEGIN
   -- ═══════════════════════════════════════════════════════════════════════════════
   IF ANY_MATCH(v_modules, 'employees') THEN
 
-    -- ── employees (FK → users) ── Empleados del negocio con puesto, salario y estado.
-    EXECUTE format('
-      CREATE TABLE IF NOT EXISTS %I.employees (
-        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_id         UUID REFERENCES %I.users(id) ON DELETE SET NULL,
-        full_name       VARCHAR(255) NOT NULL,
-        email           VARCHAR(255),
-        phone           VARCHAR(20),
-        position        VARCHAR(100),
-        department      VARCHAR(100),
-        document_number VARCHAR(50),
-        salary          NUMERIC(12,2),
-        payment_type    VARCHAR(20) DEFAULT ''hourly'',
-        hired_at        DATE,
-        status          VARCHAR(20) DEFAULT ''active'',
-        created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )', p_schema_name, p_schema_name);
-    v_table_count := v_table_count + 1;
-
-
-
     -- ── worked_hours (FK → employees) ── Horas trabajadas por empleado por fecha.
     EXECUTE format('
       CREATE TABLE IF NOT EXISTS %I.worked_hours (
@@ -2485,6 +2487,5 @@ EXCEPTION WHEN OTHERS THEN
   );
 END;
 $$ LANGUAGE plpgsql;
-
 
 
