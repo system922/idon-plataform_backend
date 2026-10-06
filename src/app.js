@@ -178,6 +178,7 @@ app.use('/api/categories',            ...authBusiness, categoriesRoutes);
 
 app.use('/api/graphs',                ...authBusiness, graphRoutes);
 app.use('/api/inventory',             ...authBusiness, inventoryRoutes);
+// Incluye gestión de proveedores y precios/historiales por proveedor.
 app.use('/api/suppliers',             ...authBusiness, suppliersRoutes);
 app.use('/api/recipes',               ...authBusiness, recipesRoutes);
 app.use('/api/raw-materials',         ...authBusiness, rawMateriaPrimaRoutes);
