@@ -1165,7 +1165,10 @@ router.get('/collaborators', authMiddleware, async (req, res) => {
        AND im.applied = true
       WHERE po.created_at::date BETWEEN $1 AND $2
         AND po.status = 'paid'
-        ${collaborator_id ? `AND po.id IN (SELECT order_id FROM "${schema}".order_collaborators WHERE collaborator_id = $3)` : ''}
+        ${collaborator_id ? `AND EXISTS (
+          SELECT 1 FROM "${schema}".order_collaborators oc
+          WHERE oc.order_id = po.id AND oc.collaborator_id = $3
+        )` : ''}
       GROUP BY po.created_at::date
       ORDER BY po.created_at::date ASC
     `, collaborator_id ? [from, to, collaborator_id] : [from, to]);
