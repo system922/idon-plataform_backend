@@ -1095,33 +1095,78 @@ router.get('/collaborators', authMiddleware, async (req, res) => {
       });
     });
 
-    // ── 2. Timeline diaria ──
-    const timelineParams = [from, to];
-    let timelineWhere = '';
+    // ── Timeline diaria ──
+    // 1) Traer órdenes pagadas del período (opcionalmente filtradas por colaborador)
+    const timelineOrdersParams = [from, to];
+    let timelineCollabFilter = '';
     if (collaborator_id) {
-      timelineParams.push(collaborator_id);
-      timelineWhere = `AND oc.collaborator_id = $${timelineParams.length}`;
+      timelineOrdersParams.push(collaborator_id);
+      timelineCollabFilter = `AND po.id IN (
+        SELECT order_id FROM "${schema}".order_collaborators
+        WHERE collaborator_id = $${timelineOrdersParams.length}
+      )`;
     }
 
-    const timelineRes = await query(`
+    const timelineOrdersRes = await query(`
       SELECT
-        po.created_at::date                              AS date,
-        COUNT(DISTINCT oc.order_id)::int                 AS orders,
-        COALESCE(SUM(DISTINCT po.total), 0)::numeric     AS total_sales,
-        COUNT(DISTINCT oc.collaborator_id)::int          AS distinct_collaborators,
-        CASE
-          WHEN COUNT(DISTINCT oc.order_id) > 0
-          THEN (SUM(DISTINCT po.total) / COUNT(DISTINCT oc.order_id))::numeric
-          ELSE 0
-        END                                              AS ticket_promedio
-      FROM "${schema}".order_collaborators oc
-      JOIN "${schema}".pos_orders po ON po.id = oc.order_id
+        po.id AS order_id,
+        po.created_at::date AS date,
+        po.total,
+        po.tax_amount,
+        po.discount_amount,
+        (SELECT collaborator_id FROM "${schema}".order_collaborators oc WHERE oc.order_id = po.id LIMIT 1) AS first_collaborator
+      FROM "${schema}".pos_orders po
       WHERE po.created_at::date BETWEEN $1 AND $2
         AND po.status = 'paid'
-        ${timelineWhere}
-      GROUP BY po.created_at::date
-      ORDER BY po.created_at::date ASC
-    `, timelineParams);
+        ${timelineCollabFilter}
+      ORDER BY po.created_at ASC
+    `, timelineOrdersParams);
+
+    // 2) Por cada orden, traer su costo FIFO (igual que /advanced)
+    const dailyMap = {};
+    for (const o of timelineOrdersRes.rows) {
+      const dateKey = (typeof o.date === 'string') ? o.date.slice(0, 10) : String(o.date);
+      if (!dailyMap[dateKey]) {
+        dailyMap[dateKey] = {
+          date: dateKey,
+          orders: 0,
+          total_sales: 0,
+          total_cost: 0,
+          total_profit: 0,
+          collaboratorsSet: new Set(),
+        };
+      }
+      const costRes = await query(`
+        SELECT COALESCE(SUM(ABS(quantity) * unit_cost), 0)::numeric AS total_cost
+        FROM "${schema}".inventory_movements
+        WHERE reference_id::text = $1
+          AND type = 'venta'
+          AND applied = true
+      `, [o.order_id]);
+
+      const orderCost = Number(costRes.rows[0]?.total_cost) || 0;
+      const orderSales = Number(o.total) || 0;
+
+      dailyMap[dateKey].orders += 1;
+      dailyMap[dateKey].total_sales += orderSales;
+      dailyMap[dateKey].total_cost += orderCost;
+      dailyMap[dateKey].total_profit += (orderSales - orderCost);
+      if (o.first_collaborator) dailyMap[dateKey].collaboratorsSet.add(o.first_collaborator);
+    }
+
+    const timeline = Object.values(dailyMap).map((d) => {
+      const margen = d.total_sales > 0 ? (d.total_profit / d.total_sales) * 100 : 0;
+      return {
+        date: d.date,
+        orders: d.orders,
+        total_sales: Number(d.total_sales.toFixed(2)),
+        total_cost: Number(d.total_cost.toFixed(2)),
+        total_profit: Number(d.total_profit.toFixed(2)),
+        margin: Number(margen.toFixed(2)),
+        distinct_collaborators: d.collaboratorsSet.size,
+        ticket_promedio: d.orders > 0 ? Number((d.total_sales / d.orders).toFixed(2)) : 0,
+      };
+    });
 
     // ── 3. Armar colaboradores con costo y ganancia ──
     const collaborators = salesRes.rows.map((r) => {
@@ -1152,50 +1197,7 @@ router.get('/collaborators', authMiddleware, async (req, res) => {
       };
     });
 
-    // ── 4. Timeline diaria con costo y ganancia ──
-    //      Se recalcula costo por día asociando inventory_movements
-    const timelineCostRes = await query(`
-      SELECT
-        po.created_at::date AS date,
-        COALESCE(SUM(ABS(im.quantity) * im.unit_cost), 0)::numeric AS total_cost
-      FROM "${schema}".pos_orders po
-      LEFT JOIN "${schema}".inventory_movements im
-        ON im.reference_id::text = po.id::text
-       AND im.type = 'venta'
-       AND im.applied = true
-      WHERE po.created_at::date BETWEEN $1 AND $2
-        AND po.status = 'paid'
-        ${collaborator_id ? `AND EXISTS (
-          SELECT 1 FROM "${schema}".order_collaborators oc
-          WHERE oc.order_id = po.id AND oc.collaborator_id = $3
-        )` : ''}
-      GROUP BY po.created_at::date
-      ORDER BY po.created_at::date ASC
-    `, collaborator_id ? [from, to, collaborator_id] : [from, to]);
-
-    const timelineCostMap = new Map();
-    timelineCostRes.rows.forEach(r => {
-      timelineCostMap.set(r.date, Number(r.total_cost) || 0);
-    });
-
-    const timeline = timelineRes.rows.map((r) => {
-      const costo = timelineCostMap.get(r.date) || 0;
-      const ventas = Number(r.total_sales) || 0;
-      const ganancia = ventas - costo;
-      const margen = ventas > 0 ? (ganancia / ventas) * 100 : 0;
-      return {
-        date: r.date,
-        orders: Number(r.orders) || 0,
-        total_sales: ventas,
-        total_cost: costo,
-        total_profit: ganancia,
-        margin: margen,
-        ticket_promedio: Number(r.ticket_promedio) || 0,
-        distinct_collaborators: Number(r.distinct_collaborators) || 0,
-      };
-    });
-
-    // ── 5. Totales generales ──
+    // ── 4. Totales generales ──
     const totalVentas = collaborators.reduce((s, c) => s + c.total_sales, 0);
     const totalCosto = collaborators.reduce((s, c) => s + c.total_cost, 0);
     const totalGanancia = totalVentas - totalCosto;
