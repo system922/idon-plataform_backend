@@ -2,6 +2,7 @@ import express from 'express';
 import { query } from '../../config/database.js';
 import logger from '../../utils/logger.js';
 import { sendGenericEmail } from '../../services/crmEmailService.js';
+import { issuePlatformPaymentInvoice } from '../../services/platformInvoiceService.js';
 
 const router = express.Router();
 
@@ -18,7 +19,8 @@ router.get('/payments', async (req, res, next) => {
         (SELECT bh.billing_date FROM public.billing_history bh
          WHERE bh.subscription_id = s.id AND bh.status = 'paid'
          ORDER BY bh.billing_date DESC LIMIT 1) AS last_paid_at,
-        bo.first_name || ' ' || bo.last_name AS owner_name, bo.email AS owner_email
+        bo.first_name || ' ' || bo.last_name AS owner_name, bo.email AS owner_email,
+        bo.document_type, bo.document_number
       FROM public.businesses b
       JOIN public.business_types bt ON b.business_type_id = bt.id
       LEFT JOIN public.subscriptions s ON s.business_id = b.id
@@ -296,13 +298,19 @@ async function sendPaymentConfirmedEmail(subscriptionId, ownerName, ownerEmail, 
 // POST /api/admin/payments/record
 router.post('/payments/record', async (req, res, next) => {
   try {
-    const { subscriptionId, notes, payment_method, reference, months = 1 } = req.body;
+    const {
+      subscriptionId, notes, payment_method, reference, months = 1,
+      invoice_customer_name, invoice_document_type, invoice_document_number, invoice_email,
+    } = req.body;
 
     if (!subscriptionId) {
       return res.status(400).json({ ok: false, message: 'subscriptionId es requerido' });
     }
 
-    const monthsToAdd = Math.max(1, parseInt(months) || 1);
+    const monthsToAdd = parseInt(months, 10);
+    if (![1, 2, 3, 6, 12].includes(monthsToAdd)) {
+      return res.status(400).json({ ok: false, message: 'La cantidad de meses seleccionada no es válida' });
+    }
 
     // Obtener suscripción con negocio y propietario
     const { rows: subRows } = await query(`
@@ -313,7 +321,9 @@ router.post('/payments/record', async (req, res, next) => {
         u.first_name,
         u.last_name,
         u.email AS owner_email,
-        bo.id AS owner_id
+        bo.id AS owner_id,
+        bo.document_type,
+        bo.document_number
       FROM public.subscriptions s
       JOIN public.businesses b ON s.business_id = b.id
       JOIN public.business_users bu ON bu.business_id = b.id AND bu.is_owner = TRUE
@@ -328,6 +338,10 @@ router.post('/payments/record', async (req, res, next) => {
 
     const sub = subRows[0];
     const ownerName = `${sub.first_name} ${sub.last_name || ''}`.trim();
+    const documentType = invoice_document_type || sub.document_type;
+    const documentNumber = invoice_document_number || sub.document_number;
+    const customerName = invoice_customer_name?.trim() || ownerName;
+    const customerEmail = invoice_email?.trim() || sub.owner_email;
 
     // No permitir pagos si suspendida
     if (sub.status === 'suspended') {
@@ -335,6 +349,15 @@ router.post('/payments/record', async (req, res, next) => {
         ok: false,
         message: 'No se puede registrar un pago para una suscripción suspendida. Primero reactívala.'
       });
+    }
+
+    const subscriptionAmount = Number(sub.total_amount);
+    const monthlyAmount = sub.billing_period === 'annual'
+      ? subscriptionAmount / 12
+      : subscriptionAmount;
+    const paymentAmount = Number((monthlyAmount * monthsToAdd).toFixed(2));
+    if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
+      return res.status(400).json({ ok: false, message: 'El monto de la suscripción debe ser mayor a cero' });
     }
 
     // --- Calcular fecha base para sumar los meses ---
@@ -356,31 +379,35 @@ router.post('/payments/record', async (req, res, next) => {
     newNextBilling.setMonth(newNextBilling.getMonth() + monthsToAdd);
     newNextBilling.setDate(1); // asegurar día 1
 
-    const invoiceNumber = `INV-${Date.now()}`;
-
     // --- Calcular el período cubierto por este pago ---
     const periodStart = baseDate.toISOString();
     const periodEnd = newNextBilling.toISOString();
 
-    // Registrar en billing_history (con las columnas agregadas)
-    await query(
+    const { rows: billingRows } = await query(
       `INSERT INTO public.billing_history
          (subscription_id, billing_date, due_date, amount, status, invoice_number, 
-          notes, payment_method, reference, period_start, period_end, months_paid)
-       VALUES ($1, NOW(), $2, $3, 'paid', $4, $5, $6, $7, $8, $9, $10)`,
+          notes, payment_method, reference, period_start, period_end, months_paid,
+          customer_name, customer_document_type, customer_document_number, customer_email,
+          invoice_status)
+       VALUES ($1, NOW(), $2, $3, 'paid', NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pendiente')
+       RETURNING id`,
       [
         sub.id,
         sub.next_billing_at,  // due_date (fecha de vencimiento anterior)
-        sub.total_amount,
-        invoiceNumber,
+        paymentAmount,
         notes || null,
         payment_method || null,
         reference || null,
         periodStart,
         periodEnd,
-        monthsToAdd
+        monthsToAdd,
+        customerName,
+        documentType || null,
+        documentNumber || null,
+        customerEmail || null,
       ]
     );
+    const billingHistoryId = billingRows[0].id;
 
     // --- Actualizar suscripción ---
     // Actualizar next_billing_at y paid_until
@@ -417,13 +444,37 @@ router.post('/payments/record', async (req, res, next) => {
       logger.error('Error enviando email de pago confirmado:', emailError);
     }
 
-    logger.info(`[PAYMENT-RECORD] Pago registrado para suscripción ${sub.id}, meses=${monthsToAdd}, invoice ${invoiceNumber}`);
+    let invoice = null;
+    let invoiceError = null;
+    try {
+      invoice = await issuePlatformPaymentInvoice(billingHistoryId);
+    } catch (error) {
+      invoiceError = error.message;
+      try {
+        await query(
+          `UPDATE public.billing_history
+              SET invoice_status = 'error', invoice_error = $1
+            WHERE id = $2`,
+          [invoiceError, billingHistoryId]
+        );
+      } catch (updateError) {
+        invoiceError += `; no se pudo guardar el estado de error: ${updateError.message}`;
+        logger.error({ err: updateError, billingHistoryId }, 'Could not persist platform invoice error status');
+      }
+      logger.error({ err: error, billingHistoryId }, 'Pago registrado, pero falló la emisión de su factura');
+    }
+
+    logger.info(`[PAYMENT-RECORD] Pago registrado para suscripción ${sub.id}, meses=${monthsToAdd}, invoice ${invoice?.invoice_number || 'pendiente'}`);
 
     res.json({
       ok: true,
       message: `Pago de ${monthsToAdd} mes(es) registrado correctamente.`,
       data: {
-        invoice_number: invoiceNumber,
+        billing_history_id: billingHistoryId,
+        invoice_number: invoice?.invoice_number || null,
+        invoice_status: invoice?.status || 'error',
+        invoice_error: invoiceError,
+        amount: paymentAmount,
         next_billing_at: newNextBilling,
         months_paid: monthsToAdd,
         status: sub.status,

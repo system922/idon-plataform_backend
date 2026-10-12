@@ -34,6 +34,7 @@ import adminClientsRoutes    from './routes/admin/clients.js';
 import adminModulesRoutes    from './routes/admin/modules.js';
 import adminFeaturesRoutes   from './routes/admin/features.js';
 import adminPaymentsRoutes   from './routes/admin/payments.js';
+import adminEinvoicingRoutes from './routes/admin/einvoicing.js';
 import adminUsersRoutes      from './routes/admin/users.js';
 import adminRolesRoutes      from './routes/admin/roles.js';
 import adminSettingsRoutes   from './routes/admin/settings.js';
@@ -241,6 +242,7 @@ app.use('/api/admin', ...authAdmin, adminClientsRoutes);    // Negocios → Gest
 app.use('/api/admin', ...authAdmin, adminModulesRoutes);    // Sistema  → Módulos
 app.use('/api/admin', ...authAdmin, adminFeaturesRoutes);   // Sistema  → Funcionalidades
 app.use('/api/admin', ...authAdmin, adminPaymentsRoutes);   // Comercial → Pagos
+app.use('/api/admin', ...authAdmin, adminEinvoicingRoutes); // Comercial → Facturación electrónica IDON
 app.use('/api/admin', ...authAdmin, adminUsersRoutes);      // Usuarios → Gestión de Usuarios
 app.use('/api/admin', ...authAdmin, adminRolesRoutes);      // Usuarios → Roles y Permisos
 app.use('/api/admin', ...authAdmin, adminSettingsRoutes);   // Global   → Configuración
