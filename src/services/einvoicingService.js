@@ -36,12 +36,22 @@ function ivaCode(rate) {
 }
 
 // ------------------- CONFIG Y SIGNATURE -------------------
+async function ensureConfigRow(schema) {
+  await query(
+    `INSERT INTO "${schema}".einvoice_config (id)
+     VALUES (1)
+     ON CONFLICT DO NOTHING`
+  );
+}
+
 export async function getConfig(schema) {
+  await ensureConfigRow(schema);
   const { rows } = await query(`SELECT * FROM "${schema}".einvoice_config LIMIT 1`);
   return rows[0] || null;
 }
 
 export async function saveConfig(schema, data) {
+  await ensureConfigRow(schema);
   const { rows } = await query(
     `UPDATE "${schema}".einvoice_config SET
        ruc                       = COALESCE($1,  ruc),
@@ -74,6 +84,7 @@ export async function saveConfig(schema, data) {
 }
 
 export async function uploadLogo(schema, buffer) {
+  await ensureConfigRow(schema);
   const url = await new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       { folder: `idon/${schema}`, public_id: 'business_logo', overwrite: true, resource_type: 'image' },
