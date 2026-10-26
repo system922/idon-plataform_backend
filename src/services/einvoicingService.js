@@ -3,11 +3,9 @@
  * Servicio central para emisión y gestión de facturas electrónicas SRI.
  * Usa osodreamer-sri-xml-signer.
  */
-import { readFile, writeFile, mkdir } from 'fs/promises';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import { readFile } from 'fs/promises';
 import PDFDocument from 'pdfkit';
-import { v2 as cloudinary } from 'cloudinary';
+import { randomUUID } from 'crypto';
 import {
   generateXmlInvoice,
   signXml,
@@ -17,11 +15,9 @@ import {
 import { query, getClient } from '../config/database.js';
 import logger from '../utils/logger.js';
 import { sendInvoiceEmail } from './emailService.js';
+import cloudinary from '../config/cloudinary.js';
 
-cloudinary.config({ cloudinary_url: process.env.CLOUDINARY_URL });
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const UPLOADS_DIR = path.join(__dirname, '../../uploads/signatures');
+const CLOUDINARY_SIGNATURE_PREFIX = 'cloudinary:';
 
 // ------------------- Helpers --------------------
 function pad(n, len) {
@@ -93,30 +89,70 @@ export async function uploadLogo(schema, buffer) {
 }
 
 export async function saveSignatureFile(schema, buffer) {
-  const p12Base64 = buffer.toString('base64');
+  const config = cloudinary.config();
+  if (!config.cloud_name || !config.api_key || !config.api_secret) {
+    throw new Error('Cloudinary no está configurado en el backend. Configura CLOUDINARY_URL en Render.');
+  }
 
-  try {
-    await query(`ALTER TABLE "${schema}".einvoice_config ADD COLUMN IF NOT EXISTS p12_base64 TEXT`);
-  } catch { }
-
-  try {
-    await query(
-      `UPDATE "${schema}".einvoice_config SET p12_base64 = $1, updated_at = NOW()`,
-      [p12Base64]
+  const safeSchema = schema.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const publicId = `${safeSchema}-${randomUUID()}.p12`;
+  const result = await new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder: 'idon/firmas_electronicas',
+        public_id: publicId,
+        overwrite: false,
+        resource_type: 'raw',
+        type: 'authenticated',
+      },
+      (error, uploaded) => {
+        if (error) reject(error);
+        else resolve(uploaded);
+      }
     );
-  } catch (e) {
-    logger.warn({ err: e.message }, 'Could not save p12_base64 to DB');
+    stream.end(buffer);
+  });
+
+  if (!result?.public_id) {
+    throw new Error('Cloudinary no devolvió el identificador del certificado.');
+  }
+  return `${CLOUDINARY_SIGNATURE_PREFIX}${result.public_id}`;
+}
+
+export async function deleteSignatureFile(storedPath) {
+  if (!storedPath?.startsWith(CLOUDINARY_SIGNATURE_PREFIX)) return;
+
+  const publicId = storedPath.slice(CLOUDINARY_SIGNATURE_PREFIX.length);
+  await cloudinary.uploader.destroy(publicId, {
+    resource_type: 'raw',
+    type: 'authenticated',
+    invalidate: true,
+  });
+}
+
+async function getSignatureBuffer(config) {
+  if (config.p12_path?.startsWith(CLOUDINARY_SIGNATURE_PREFIX)) {
+    const storedPublicId = config.p12_path.slice(CLOUDINARY_SIGNATURE_PREFIX.length);
+    const publicId = storedPublicId.replace(/\.p12$/i, '');
+    const downloadUrl = cloudinary.utils.private_download_url(publicId, 'p12', {
+      resource_type: 'raw',
+      type: 'authenticated',
+      expires_at: Math.floor(Date.now() / 1000) + 300,
+    });
+    const response = await fetch(downloadUrl);
+    if (!response.ok) {
+      throw new Error(`No se pudo descargar la firma electrónica desde Cloudinary (HTTP ${response.status}).`);
+    }
+    return Buffer.from(await response.arrayBuffer());
   }
 
-  try {
-    const dir = path.join(UPLOADS_DIR, schema);
-    await mkdir(dir, { recursive: true });
-    const filePath = path.join(dir, 'firma.p12');
-    await writeFile(filePath, buffer);
-    return filePath;
-  } catch {
-    return null;
+  if (config.p12_base64) {
+    return Buffer.from(config.p12_base64, 'base64');
   }
+  if (config.p12_path) {
+    return readFile(config.p12_path);
+  }
+  throw new Error('No hay firma electrónica cargada');
 }
 
 // ------------------- CORE: Emisión (USANDO VALORES DEL FRONTEND) -------------------
@@ -299,14 +335,7 @@ export async function emitInvoice(schema, opts) {
     const claveMatch = generatedXml.match(/<claveAcceso>([^<]+)<\/claveAcceso>/);
     const claveAcceso = claveMatch?.[1] || '';
 
-    let p12Buffer;
-    if (cfg.p12_base64) {
-      p12Buffer = Buffer.from(cfg.p12_base64, 'base64');
-    } else if (cfg.p12_path) {
-      p12Buffer = await readFile(cfg.p12_path);
-    } else {
-      throw new Error('No hay firma electrónica cargada');
-    }
+    const p12Buffer = await getSignatureBuffer(cfg);
     
     const signedXml = await signXml({
       p12Buffer: new Uint8Array(p12Buffer),

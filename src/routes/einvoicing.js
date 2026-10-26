@@ -13,6 +13,7 @@ import { getSchemaName } from '../utils/tenantHelper.js';
 import { query } from '../config/database.js';
 import * as svc from '../services/einvoicingService.js';
 import { sendInvoiceEmail } from '../services/emailService.js';
+import logger from '../utils/logger.js';
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
@@ -104,24 +105,50 @@ router.post('/config/logo', authMiddleware, requireInvoicingModule, upload.singl
 // ── POST /api/einvoicing/config/signature ─────────────────────────────────────
 // multipart/form-data: file=firma.p12, password=xxx, (optionally config fields)
 router.post('/config/signature', authMiddleware, requireInvoicingModule, upload.single('file'), async (req, res) => {
+  let uploadedPath;
+  let schema;
+  let previousPath;
   try {
-    const schema = await getSchemaName(req);
+    schema = await getSchemaName(req);
     if (!schema) return res.status(400).json({ error: 'Business context required' });
     if (!req.file) return res.status(400).json({ error: 'Se requiere el archivo .p12' });
+    if (!req.file.originalname.toLowerCase().endsWith('.p12')) {
+      return res.status(400).json({ error: 'El certificado debe ser un archivo .p12' });
+    }
+    if (!req.body.password) {
+      return res.status(400).json({ error: 'La contraseña del certificado es obligatoria' });
+    }
 
-    const filePath = await svc.saveSignatureFile(schema, req.file.buffer);
+    previousPath = (await svc.getConfig(schema))?.p12_path;
+    uploadedPath = await svc.saveSignatureFile(schema, req.file.buffer);
     const updated = await svc.saveConfig(schema, {
-      p12_path: filePath || undefined,
-      p12_password: req.body.password || '',
+      p12_path: uploadedPath,
+      p12_password: req.body.password,
       ruc: req.body.ruc,
       razon_social: req.body.razon_social,
       nombre_comercial: req.body.nombre_comercial,
       direccion_matriz: req.body.direccion_matriz,
       ambiente: req.body.ambiente,
     });
+    if (!updated) throw new Error('No se encontró la configuración de facturación del negocio.');
+    if (previousPath && previousPath !== uploadedPath) {
+      try {
+        await svc.deleteSignatureFile(previousPath);
+      } catch (cleanupError) {
+        logger.error({ err: cleanupError, schema }, 'Could not remove replaced SRI signature from Cloudinary');
+      }
+    }
     const { p12_password, p12_path, p12_base64, ...safe } = updated;
     res.json({ ...safe, has_signature: true });
   } catch (err) {
+    if (uploadedPath) {
+      try {
+        await svc.deleteSignatureFile(uploadedPath);
+      } catch (cleanupError) {
+        logger.error({ err: cleanupError, schema }, 'Could not remove orphaned SRI signature from Cloudinary');
+      }
+    }
+    logger.error({ err, schema }, 'Could not upload SRI signature');
     res.status(500).json({ error: err.message });
   }
 });
