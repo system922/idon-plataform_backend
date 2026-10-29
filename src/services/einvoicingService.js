@@ -897,24 +897,38 @@ export async function generateInvoicePdf(schema, invoiceId) {
     ];
 
     const thH = 18;
-    fill(M, y, W, thH, LGR);
-    bord(M, y, W, thH, 0.5);
-    let cx = M;
-    for (const col of COLS) {
-      const cw = W * col.w;
-      doc.fillColor(BK).fontSize(7).font('Helvetica-Bold')
-         .text(col.h, cx + 2, y + 5, { width: cw - 4, align: col.a === 'right' ? 'right' : 'center' });
-      if (cx > M) doc.moveTo(cx, y).lineTo(cx, y + thH).lineWidth(0.3).stroke(BDR);
-      cx += cw;
-    }
-    y += thH;
+    const drawItemsHeader = () => {
+      fill(M, y, W, thH, LGR);
+      bord(M, y, W, thH, 0.5);
+      let headerX = M;
+      for (const col of COLS) {
+        const cw = W * col.w;
+        doc.fillColor(BK).fontSize(7).font('Helvetica-Bold')
+           .text(col.h, headerX + 2, y + 5, { width: cw - 4, align: col.a === 'right' ? 'right' : 'center' });
+        if (headerX > M) doc.moveTo(headerX, y).lineTo(headerX, y + thH).lineWidth(0.3).stroke(BDR);
+        headerX += cw;
+      }
+      y += thH;
+    };
+    drawItemsHeader();
 
     let alt = false;
     for (const item of d.items) {
-      const rH = 14;
+      const descripcion = item.descripcion || '';
+      const descripcionWidth = W * COLS[2].w - 4;
+      doc.font('Helvetica').fontSize(7);
+      const descripcionHeight = doc.heightOfString(descripcion, { width: descripcionWidth });
+      const rH = Math.max(14, Math.ceil(descripcionHeight) + 6);
+
+      if (y + rH > doc.page.height - 160) {
+        doc.addPage();
+        y = M;
+        drawItemsHeader();
+      }
+
       fill(M, y, W, rH, alt ? VLGR : WHT);
       bord(M, y, W, rH, 0.25);
-      cx = M;
+      let cx = M;
       
       const descuentoItem = item.descuento || 0;
       const precioUnitario = item.unitPrice;
@@ -927,7 +941,7 @@ export async function generateInvoicePdf(schema, invoiceId) {
       const rv = [
         codigo.length > 15 ? codigo.substring(0, 12) + '...' : codigo,
         item.cantidad.toFixed(2),
-        item.descripcion.length > 30 ? item.descripcion.substring(0, 27) + '...' : item.descripcion,
+        descripcion,
         precioUnitario.toFixed(2),
         descuentoItem > 0 ? descuentoItem.toFixed(2) : '0.00',
         precioTotal.toFixed(2),
@@ -936,8 +950,9 @@ export async function generateInvoicePdf(schema, invoiceId) {
       for (let i = 0; i < COLS.length; i++) {
         const cw = W * COLS[i].w;
         const align = COLS[i].a;
+        const textY = i === 2 ? y + 3 : y + Math.max(3, (rH - 8) / 2);
         doc.fillColor(BK).fontSize(7).font('Helvetica')
-           .text(rv[i], cx + 2, y + 3, { 
+           .text(rv[i], cx + 2, textY, {
              width: cw - 4, 
              align: align,
              lineBreak: i === 2
@@ -946,7 +961,6 @@ export async function generateInvoicePdf(schema, invoiceId) {
       }
       y += rH;
       alt = !alt;
-      if (y > doc.page.height - 160) { doc.addPage(); y = M; }
     }
     
     if (d.items.length === 0) {
