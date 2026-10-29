@@ -5,7 +5,6 @@
  */
 import { readFile } from 'fs/promises';
 import PDFDocument from 'pdfkit';
-import { randomUUID } from 'crypto';
 import {
   generateXmlInvoice,
   signXml,
@@ -99,35 +98,19 @@ export async function uploadLogo(schema, buffer) {
   return url;
 }
 
-export async function saveSignatureFile(schema, buffer) {
-  const config = cloudinary.config();
-  if (!config.cloud_name || !config.api_key || !config.api_secret) {
-    throw new Error('Cloudinary no está configurado en el backend. Configura CLOUDINARY_URL en Render.');
-  }
-
-  const safeSchema = schema.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const publicId = `${safeSchema}-${randomUUID()}.p12`;
-  const result = await new Promise((resolve, reject) => {
-    const stream = cloudinary.uploader.upload_stream(
-      {
-        folder: 'idon/firmas_electronicas',
-        public_id: publicId,
-        overwrite: false,
-        resource_type: 'raw',
-        type: 'authenticated',
-      },
-      (error, uploaded) => {
-        if (error) reject(error);
-        else resolve(uploaded);
-      }
-    );
-    stream.end(buffer);
-  });
-
-  if (!result?.public_id) {
-    throw new Error('Cloudinary no devolvió el identificador del certificado.');
-  }
-  return `${CLOUDINARY_SIGNATURE_PREFIX}${result.public_id}`;
+export async function saveSignatureFile(schema, buffer, password) {
+  await ensureConfigRow(schema);
+  await query(`ALTER TABLE "${schema}".einvoice_config ADD COLUMN IF NOT EXISTS p12_base64 TEXT`);
+  await query(
+    `UPDATE "${schema}".einvoice_config
+        SET p12_base64 = $1,
+            p12_path = NULL,
+            p12_password = $2,
+            has_signature = TRUE,
+            updated_at = NOW()
+      WHERE id = 1`,
+    [buffer.toString('base64'), password]
+  );
 }
 
 export async function deleteSignatureFile(storedPath) {
@@ -142,6 +125,10 @@ export async function deleteSignatureFile(storedPath) {
 }
 
 async function getSignatureBuffer(config) {
+  if (config.p12_base64) {
+    return Buffer.from(config.p12_base64, 'base64');
+  }
+
   if (config.p12_path?.startsWith(CLOUDINARY_SIGNATURE_PREFIX)) {
     const storedPublicId = config.p12_path.slice(CLOUDINARY_SIGNATURE_PREFIX.length);
     const publicId = storedPublicId.replace(/\.p12$/i, '');
@@ -157,9 +144,6 @@ async function getSignatureBuffer(config) {
     return Buffer.from(await response.arrayBuffer());
   }
 
-  if (config.p12_base64) {
-    return Buffer.from(config.p12_base64, 'base64');
-  }
   if (config.p12_path) {
     return readFile(config.p12_path);
   }

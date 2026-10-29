@@ -105,7 +105,6 @@ router.post('/config/logo', authMiddleware, requireInvoicingModule, upload.singl
 // ── POST /api/einvoicing/config/signature ─────────────────────────────────────
 // multipart/form-data: file=firma.p12, password=xxx, (optionally config fields)
 router.post('/config/signature', authMiddleware, requireInvoicingModule, upload.single('file'), async (req, res) => {
-  let uploadedPath;
   let schema;
   let previousPath;
   try {
@@ -120,10 +119,8 @@ router.post('/config/signature', authMiddleware, requireInvoicingModule, upload.
     }
 
     previousPath = (await svc.getConfig(schema))?.p12_path;
-    uploadedPath = await svc.saveSignatureFile(schema, req.file.buffer);
+    await svc.saveSignatureFile(schema, req.file.buffer, req.body.password);
     const updated = await svc.saveConfig(schema, {
-      p12_path: uploadedPath,
-      p12_password: req.body.password,
       ruc: req.body.ruc,
       razon_social: req.body.razon_social,
       nombre_comercial: req.body.nombre_comercial,
@@ -131,7 +128,7 @@ router.post('/config/signature', authMiddleware, requireInvoicingModule, upload.
       ambiente: req.body.ambiente,
     });
     if (!updated) throw new Error('No se encontró la configuración de facturación del negocio.');
-    if (previousPath && previousPath !== uploadedPath) {
+    if (previousPath) {
       try {
         await svc.deleteSignatureFile(previousPath);
       } catch (cleanupError) {
@@ -141,13 +138,6 @@ router.post('/config/signature', authMiddleware, requireInvoicingModule, upload.
     const { p12_password, p12_path, p12_base64, ...safe } = updated;
     res.json({ ...safe, has_signature: true });
   } catch (err) {
-    if (uploadedPath) {
-      try {
-        await svc.deleteSignatureFile(uploadedPath);
-      } catch (cleanupError) {
-        logger.error({ err: cleanupError, schema }, 'Could not remove orphaned SRI signature from Cloudinary');
-      }
-    }
     logger.error({ err, schema }, 'Could not upload SRI signature');
     res.status(500).json({ error: err.message });
   }

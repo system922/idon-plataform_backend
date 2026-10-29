@@ -2246,6 +2246,7 @@ BEGIN
         secuencial_credit_notes   INT        DEFAULT 1,
         p12_path                  TEXT,
         p12_password              TEXT,
+        p12_base64                TEXT,
         cert_valid_until          DATE,
         has_signature             BOOLEAN   DEFAULT false,
         logo_url                  TEXT,
@@ -2487,5 +2488,4 @@ EXCEPTION WHEN OTHERS THEN
   );
 END;
 $$ LANGUAGE plpgsql;
-
 

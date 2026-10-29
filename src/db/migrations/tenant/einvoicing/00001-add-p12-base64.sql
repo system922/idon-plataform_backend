@@ -1,0 +1,2 @@
+ALTER TABLE "{SCHEMA}".einvoice_config
+  ADD COLUMN IF NOT EXISTS p12_base64 TEXT;
