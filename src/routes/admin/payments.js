@@ -6,6 +6,27 @@ import { issuePlatformPaymentInvoice } from '../../services/platformInvoiceServi
 
 const router = express.Router();
 
+const addMonthsClamped = (date, months) => {
+  const source = new Date(date);
+  const day = source.getDate();
+  const targetMonth = new Date(
+    source.getFullYear(),
+    source.getMonth() + months,
+    1,
+    source.getHours(),
+    source.getMinutes(),
+    source.getSeconds(),
+    source.getMilliseconds()
+  );
+  const lastDay = new Date(
+    targetMonth.getFullYear(),
+    targetMonth.getMonth() + 1,
+    0
+  ).getDate();
+  targetMonth.setDate(Math.min(day, lastDay));
+  return targetMonth;
+};
+
 // GET /api/admin/payments
 router.get('/payments', async (req, res, next) => {
   try {
@@ -101,32 +122,16 @@ router.post('/subscriptions/:subId/mark-paid', async (req, res, next) => {
 
     // --- Definir fecha base según el estado ---
     const now = new Date();
-    let baseDate;
+    let baseDate = sub.status === 'pending_activation' || !sub.next_billing_at
+      ? new Date(now)
+      : new Date(sub.next_billing_at);
+    if (baseDate < now) baseDate = new Date(now);
 
-    if (sub.status === 'pending_activation') {
-      // Primer pago: la base es hoy (fecha del pago)
-      baseDate = new Date(now);
-    } else {
-      // Renovación (estado 'active' o 'suspended'? solo permitimos si no está activa, pero puede ser 'suspended')
-      // Si está suspendida, usamos la fecha actual o la del próximo cobro si existe y es futura
-      baseDate = sub.next_billing_at ? new Date(sub.next_billing_at) : new Date(now);
-      // Si la fecha base es anterior a hoy, usar hoy (para reactivaciones)
-      if (baseDate < now) {
-        baseDate = new Date(now);
-      }
-    }
-
-    // Calcular próximo cobro (sumar un período)
-    const nextBilling = new Date(baseDate);
-    if (sub.billing_period === 'monthly') {
-      nextBilling.setMonth(nextBilling.getMonth() + 1);
-    } else {
-      nextBilling.setFullYear(nextBilling.getFullYear() + 1);
-    }
-
-    // Asegurar día 1 si lo prefieres (comenta si no)
-    // nextBilling.setDate(1);
-    // nextBilling.setHours(0, 0, 0, 0);
+    // El primer pago cubre desde hoy; una renovación continúa desde el vencimiento.
+    const nextBilling = addMonthsClamped(
+      baseDate,
+      sub.billing_period === 'monthly' ? 1 : 12
+    );
 
     const invoiceNumber = `INV-${Date.now()}`;
     const periodStart = baseDate.toISOString();
@@ -361,23 +366,14 @@ router.post('/payments/record', async (req, res, next) => {
     }
 
     // --- Calcular fecha base para sumar los meses ---
-    // Si está pendiente o no tiene next_billing_at o ya expiró, partimos de hoy
-    let baseDate = sub.next_billing_at ? new Date(sub.next_billing_at) : new Date();
     const now = new Date();
-    // Ajustar a día 1 y cero horas
-    baseDate.setDate(1);
-    baseDate.setHours(0, 0, 0, 0);
-    // Si baseDate es menor que hoy, usar hoy (para renovaciones atrasadas)
-    if (baseDate < now) {
-      baseDate = new Date(now);
-      baseDate.setDate(1);
-      baseDate.setHours(0, 0, 0, 0);
-    }
+    let baseDate = sub.status === 'pending_activation' || !sub.next_billing_at
+      ? new Date(now)
+      : new Date(sub.next_billing_at);
+    if (baseDate < now) baseDate = new Date(now);
 
     // Sumar los meses pagados
-    const newNextBilling = new Date(baseDate);
-    newNextBilling.setMonth(newNextBilling.getMonth() + monthsToAdd);
-    newNextBilling.setDate(1); // asegurar día 1
+    const newNextBilling = addMonthsClamped(baseDate, monthsToAdd);
 
     // --- Calcular el período cubierto por este pago ---
     const periodStart = baseDate.toISOString();
@@ -447,7 +443,12 @@ router.post('/payments/record', async (req, res, next) => {
     let invoice = null;
     let invoiceError = null;
     try {
-      invoice = await issuePlatformPaymentInvoice(billingHistoryId);
+      invoice = await issuePlatformPaymentInvoice(billingHistoryId, {
+        name: customerName,
+        documentType,
+        documentNumber,
+        email: customerEmail,
+      });
     } catch (error) {
       invoiceError = error.message;
       try {

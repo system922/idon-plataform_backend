@@ -7,6 +7,27 @@ import { provisionTenantTables } from '../../services/provisioningService.js';
 
 const router = express.Router();
 
+const addMonthsClamped = (date, months) => {
+  const source = new Date(date);
+  const day = source.getDate();
+  const targetMonth = new Date(
+    source.getFullYear(),
+    source.getMonth() + months,
+    1,
+    source.getHours(),
+    source.getMinutes(),
+    source.getSeconds(),
+    source.getMilliseconds()
+  );
+  const lastDay = new Date(
+    targetMonth.getFullYear(),
+    targetMonth.getMonth() + 1,
+    0
+  ).getDate();
+  targetMonth.setDate(Math.min(day, lastDay));
+  return targetMonth;
+};
+
 // GET /api/admin/clients
 router.get('/clients', async (req, res, next) => {
   try {
@@ -228,12 +249,8 @@ router.post('/businesses/:businessId/subscribe', async (req, res, next) => {
     const amount_annual  = parseFloat((amount_annual_base  * (1 - disc / 100)).toFixed(2));
     const total_amount   = billing_period === 'monthly' ? amount_monthly : amount_annual;
 
+    // La fecha de vencimiento es HOY; el cliente debe pagar de inmediato.
     const next_billing = new Date();
-    if (billing_period === 'monthly') {
-      next_billing.setMonth(next_billing.getMonth() + 1);
-    } else {
-      next_billing.setFullYear(next_billing.getFullYear() + 1);
-    }
 
     // Insertar suscripción con estado pending_activation
     const { rows: newSub } = await query(`
@@ -395,13 +412,16 @@ router.post('/subscriptions/:subId/mark-paid', async (req, res, next) => {
       });
     }
 
-    // Calcular próxima fecha de cobro
-    const nextBilling = new Date(sub.next_billing_at || new Date());
-    if (sub.billing_period === 'monthly') {
-      nextBilling.setMonth(nextBilling.getMonth() + 1);
-    } else {
-      nextBilling.setFullYear(nextBilling.getFullYear() + 1);
-    }
+    // El primer pago inicia hoy; las renovaciones parten del vencimiento vigente.
+    const now = new Date();
+    let baseDate = sub.status === 'pending_activation' || !sub.next_billing_at
+      ? new Date(now)
+      : new Date(sub.next_billing_at);
+    if (baseDate < now) baseDate = new Date(now);
+    const nextBilling = addMonthsClamped(
+      baseDate,
+      sub.billing_period === 'monthly' ? 1 : 12
+    );
 
     const invoiceNumber = `INV-${Date.now()}`;
 

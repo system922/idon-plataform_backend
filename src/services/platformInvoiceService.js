@@ -15,7 +15,7 @@ const SRI_PAYMENT_METHODS = {
   otros: '20',
 };
 
-export async function issuePlatformPaymentInvoice(billingHistoryId) {
+export async function issuePlatformPaymentInvoice(billingHistoryId, customer = {}) {
   const { rows } = await query(`
     SELECT bh.*,
            s.billing_period,
@@ -48,11 +48,11 @@ export async function issuePlatformPaymentInvoice(billingHistoryId) {
     return existingRows[0];
   }
 
-  const customerName = payment.customer_name?.trim() || payment.owner_name?.trim();
-  const customerEmail = payment.customer_email?.trim() || payment.owner_email?.trim();
-  const requestedDocumentType = (payment.customer_document_type || payment.owner_document_type || '').toLowerCase();
+  const customerName = customer.name?.trim() || payment.customer_name?.trim() || payment.owner_name?.trim();
+  const customerEmail = customer.email?.trim() || payment.customer_email?.trim() || payment.owner_email?.trim();
+  const requestedDocumentType = (customer.documentType || payment.customer_document_type || payment.owner_document_type || '').toLowerCase();
   const documentType = requestedDocumentType === 'passport' ? 'pasaporte' : requestedDocumentType;
-  const documentNumber = (payment.customer_document_number || payment.owner_document_number || '').trim();
+  const documentNumber = (customer.documentNumber || payment.customer_document_number || payment.owner_document_number || '').trim();
   const identificationCode = SRI_IDENTIFICATION_TYPES[documentType];
 
   if (!customerName) throw new Error('El nombre del cliente de la factura es obligatorio');
