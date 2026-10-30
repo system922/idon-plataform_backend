@@ -34,6 +34,7 @@ import adminClientsRoutes    from './routes/admin/clients.js';
 import adminModulesRoutes    from './routes/admin/modules.js';
 import adminFeaturesRoutes   from './routes/admin/features.js';
 import adminPaymentsRoutes   from './routes/admin/payments.js';
+import payphoneRoutes        from './routes/payphone.js';
 import adminEinvoicingRoutes from './routes/admin/einvoicing.js';
 import adminUsersRoutes      from './routes/admin/users.js';
 import adminRolesRoutes      from './routes/admin/roles.js';
@@ -236,6 +237,7 @@ app.use('/api/odontologia/cuotas-ortodoncia', ...authBusiness, cuotasOrtodonciaR
 
 
 // ─── Rutas de admin ─────────────────────────────
+app.use('/api/payphone', ...authAdmin, payphoneRoutes);
 app.use('/api/admin', ...authAdmin, adminDashboardRoutes);  // General → Dashboard
 app.use('/api/admin', ...authAdmin, adminRequestsRoutes);   // Negocios → Solicitudes
 app.use('/api/admin', ...authAdmin, adminClientsRoutes);    // Negocios → Gestión de Clientes
