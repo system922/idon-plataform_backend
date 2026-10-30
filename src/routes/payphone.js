@@ -58,6 +58,7 @@ router.post('/enviar-link-email', async (req, res) => {
       throw new Error('Falta configurar PAYPHONE_TOKEN o PAYPHONE_STORE_ID');
     }
 
+    const transactionId = `TX-${Date.now()}`;
     const response = await axios.post(
       'https://pay.payphonetodoesposible.com/api/button/Prepare',
       {
@@ -65,7 +66,7 @@ router.post('/enviar-link-email', async (req, res) => {
         amountWithoutTax: amountInCents,
         amountWithTax: 0,
         tax: 0,
-        clientTransactionId: `SUB-${subscriptionId}-${Date.now()}`,
+        clientTransactionId: transactionId,
         currency: 'USD',
         storeId: process.env.PAYPHONE_STORE_ID,
         reference: `Suscripción ${subscription.business_name || businessName || ''}`.trim(),
@@ -122,7 +123,19 @@ router.post('/enviar-link-email', async (req, res) => {
 
     return res.status(200).json({ success: true });
   } catch (error) {
-    console.error('Error generando o enviando el link de pago PayPhone:', error);
+    console.error('--- ERROR REAL DE PAYPHONE ---');
+    if (error.response?.data) {
+      console.error('Mensaje:', error.response.data.message);
+      if (error.response.data.errors) {
+        console.error(
+          'Detalle de validaciones:',
+          JSON.stringify(error.response.data.errors, null, 2)
+        );
+      }
+    } else {
+      console.error(error.message);
+    }
+    console.error('-------------------------------');
     return res.status(500).json({ error: 'No se pudo generar el link o enviar el correo' });
   }
 });
