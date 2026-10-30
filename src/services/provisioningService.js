@@ -46,8 +46,8 @@ export const createBusinessFromRequest = async (requestId, adminId) => {
     await client.query(
       `INSERT INTO public.businesses
          (id, slug, name, business_type_id, schema_name,
-          is_active, is_verified, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,TRUE,TRUE,NOW(),NOW())`,
+          is_active, is_verified, provisioned_at, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,FALSE,TRUE,NULL,NOW(),NOW())`,
       [businessId, req.slug, req.business_name, req.business_type_id, schemaName]
     );
 
@@ -159,6 +159,13 @@ export const provisionTenantTables = async (businessId) => {
     if (!provResult || !provResult.success) {
       throw new Error(provResult?.error || 'Unknown error creating tables');
     }
+
+    await client.query(
+      `UPDATE public.businesses
+       SET provisioned_at = NOW(), updated_at = NOW()
+       WHERE id = $1`,
+      [businessId]
+    );
 
     return {
       success: true,

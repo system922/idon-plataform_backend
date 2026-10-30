@@ -23,10 +23,13 @@ router.get('/clients', async (req, res, next) => {
     const { rows: businesses } = await query(`
       SELECT
         b.id, b.slug, b.name AS business_name, b.schema_name, b.is_active, b.is_verified,
+        (b.provisioned_at IS NOT NULL) AS is_provisioned,
         bt.name AS business_type_name, bt.code AS business_type_code,
         bu.user_id,
         s.id AS sub_id, s.status AS sub_status, s.billing_period,
+        s.billing_day AS sub_billing_day,
         s.amount_monthly, s.amount_annual, s.total_amount, s.next_billing_at, s.activated_at,
+        s.discount_percentage AS sub_discount_percentage,
         (
           SELECT json_agg(json_build_object(
             'id', m.id, 'code', m.code, 'name', m.name,
@@ -49,13 +52,15 @@ router.get('/clients', async (req, res, next) => {
       bizByUser[biz.user_id].push({
         id: biz.id, slug: biz.slug, business_name: biz.business_name,
         schema_name: biz.schema_name, is_active: biz.is_active, is_verified: biz.is_verified,
+        is_provisioned: biz.is_provisioned,
         business_type_name: biz.business_type_name, business_type_code: biz.business_type_code,
         modules: biz.modules || [],
         subscription: biz.sub_id ? {
           id: biz.sub_id, status: biz.sub_status, billing_period: biz.billing_period,
+          billing_day: biz.sub_billing_day,
           amount_monthly: biz.amount_monthly, amount_annual: biz.amount_annual,
           total_amount: biz.total_amount, next_billing_at: biz.next_billing_at,
-          activated_at: biz.activated_at,
+          activated_at: biz.activated_at, discount_percentage: biz.sub_discount_percentage,
         } : null,
       });
     }
@@ -142,6 +147,20 @@ router.post('/businesses/:businessId/subscribe', async (req, res, next) => {
   try {
     const { businessId } = req.params;
     const { billing_period = 'monthly', billing_day = 1, discount_percentage = 0 } = req.body;
+
+    const { rows: provisionRows } = await query(
+      'SELECT provisioned_at FROM public.businesses WHERE id = $1',
+      [businessId]
+    );
+    if (!provisionRows.length) {
+      return res.status(404).json({ ok: false, message: 'Negocio no encontrado' });
+    }
+    if (!provisionRows[0].provisioned_at) {
+      return res.status(400).json({
+        ok: false,
+        message: 'El negocio debe estar aprovisionado antes de crear/modificar la suscripción.',
+      });
+    }
 
     // 🔥 CONSULTA CORREGIDA - Usando las tablas correctas
     const { rows: bizRows } = await query(`
@@ -549,6 +568,20 @@ router.put('/businesses/:businessId/subscription/:subId', async (req, res, next)
   try {
     const { subId, businessId } = req.params;
     const { billing_period, billing_day, discount_percentage, status } = req.body;
+
+    const { rows: provisionRows } = await query(
+      'SELECT provisioned_at FROM public.businesses WHERE id = $1',
+      [businessId]
+    );
+    if (!provisionRows.length) {
+      return res.status(404).json({ ok: false, message: 'Negocio no encontrado' });
+    }
+    if (!provisionRows[0].provisioned_at) {
+      return res.status(400).json({
+        ok: false,
+        message: 'El negocio debe estar aprovisionado antes de crear/modificar la suscripción.',
+      });
+    }
 
     const { rows: modRows } = await query(`
       SELECT m.price_monthly, m.price_annual
