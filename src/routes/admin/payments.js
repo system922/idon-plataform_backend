@@ -88,7 +88,15 @@ router.patch('/subscriptions/:subId/discount', async (req, res, next) => {
 router.post('/subscriptions/:subId/mark-paid', async (req, res, next) => {
   try {
     const { subId } = req.params;
-    const { notes, payment_method, reference } = req.body;
+    const {
+      notes,
+      payment_method,
+      reference,
+      invoice_customer_name,
+      invoice_document_type,
+      invoice_document_number,
+      invoice_email,
+    } = req.body;
 
     // Obtener suscripción con datos del negocio y propietario
     const { rows: subRows } = await query(`
@@ -115,109 +123,155 @@ router.post('/subscriptions/:subId/mark-paid', async (req, res, next) => {
     const sub = subRows[0];
     const ownerName = `${sub.first_name} ${sub.last_name || ''}`.trim();
 
-    // No permitir si ya está activa
     if (sub.status === 'active') {
       return res.status(400).json({ ok: false, message: 'Esta suscripción ya está activa' });
     }
 
-    // --- Definir fecha base según el estado ---
+    const customerName = typeof invoice_customer_name === 'string' ? invoice_customer_name.trim() : '';
+    const customerEmail = typeof invoice_email === 'string' ? invoice_email.trim() : '';
+    const documentType = typeof invoice_document_type === 'string'
+      ? invoice_document_type.trim().toLowerCase()
+      : '';
+    const documentNumber = typeof invoice_document_number === 'string'
+      ? invoice_document_number.trim()
+      : '';
+
+    if (!customerName) {
+      return res.status(400).json({ ok: false, message: 'El nombre del cliente de la factura es obligatorio' });
+    }
+    if (!customerEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail)) {
+      return res.status(400).json({ ok: false, message: 'Ingrese un correo válido para enviar la factura' });
+    }
+    if (!['cedula', 'ruc', 'pasaporte', 'consumidor_final'].includes(documentType) || !documentNumber) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Complete el tipo y número de identificación del cliente para emitir la factura',
+      });
+    }
+    if (documentType === 'cedula' && !/^\d{10}$/.test(documentNumber)) {
+      return res.status(400).json({ ok: false, message: 'La cédula del cliente debe tener 10 dígitos' });
+    }
+    if (documentType === 'ruc' && !/^\d{13}$/.test(documentNumber)) {
+      return res.status(400).json({ ok: false, message: 'El RUC del cliente debe tener 13 dígitos' });
+    }
+    if (documentType === 'pasaporte' && documentNumber.length > 20) {
+      return res.status(400).json({
+        ok: false,
+        message: 'El número de pasaporte del cliente no puede exceder 20 caracteres',
+      });
+    }
+    if (documentType === 'consumidor_final' && documentNumber !== '9999999999999') {
+      return res.status(400).json({ ok: false, message: 'La identificación de consumidor final no es válida' });
+    }
+
+    const amount = Number(sub.total_amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ ok: false, message: 'El monto de la suscripción debe ser mayor a cero' });
+    }
+
     const now = new Date();
     let baseDate = sub.status === 'pending_activation' || !sub.next_billing_at
       ? new Date(now)
       : new Date(sub.next_billing_at);
     if (baseDate < now) baseDate = new Date(now);
 
-    // El primer pago cubre desde hoy; una renovación continúa desde el vencimiento.
-    const nextBilling = addMonthsClamped(
-      baseDate,
-      sub.billing_period === 'monthly' ? 1 : 12
-    );
-
-    const invoiceNumber = `INV-${Date.now()}`;
+    const monthsPaid = sub.billing_period === 'annual' ? 12 : 1;
+    const nextBilling = addMonthsClamped(baseDate, monthsPaid);
     const periodStart = baseDate.toISOString();
     const periodEnd = nextBilling.toISOString();
-    const monthsPaid = 1; // Siempre 1 mes en este endpoint
 
-    // --- Registrar en billing_history con todos los campos ---
-    await query(
+    const { rows: billingRows } = await query(
       `INSERT INTO public.billing_history
          (subscription_id, billing_date, due_date, amount, status, invoice_number,
-          notes, payment_method, reference, period_start, period_end, months_paid)
-       VALUES ($1, NOW(), $2, $3, 'paid', $4, $5, $6, $7, $8, $9, $10)`,
+          notes, payment_method, reference, period_start, period_end, months_paid,
+          customer_name, customer_document_type, customer_document_number, customer_email,
+          invoice_status)
+       VALUES ($1, NOW(), $2, $3, 'paid', NULL, $4, $5, $6, $7, $8, $9,
+               $10, $11, $12, $13, 'pendiente')
+       RETURNING id`,
       [
-        sub.id,
-        sub.next_billing_at,   // due_date (fecha de vencimiento anterior, puede ser null)
-        sub.total_amount,
-        invoiceNumber,
+        subId,
+        sub.next_billing_at,
+        amount,
         notes || null,
         payment_method || null,
         reference || null,
         periodStart,
         periodEnd,
-        monthsPaid
+        monthsPaid,
+        customerName,
+        documentType,
+        documentNumber,
+        customerEmail,
       ]
     );
+    const billingHistoryId = billingRows[0].id;
 
-    // --- Actualizar suscripción ---
-    // Cambiar estado a 'active' si estaba pendiente
-    let statusChanged = false;
-    if (sub.status === 'pending_activation') {
-      await query(
-        `UPDATE public.subscriptions 
-         SET status = 'active', 
-             activated_at = NOW(),
-             next_billing_at = $1,
-             paid_until = $1,
-             updated_at = NOW()
-         WHERE id = $2`,
-        [nextBilling.toISOString(), sub.id]
-      );
-      // Activar el negocio
-      await query(
-        `UPDATE public.businesses 
-         SET is_active = TRUE, updated_at = NOW() 
-         WHERE id = (SELECT business_id FROM public.subscriptions WHERE id = $1)`,
-        [sub.id]
-      );
-      statusChanged = true;
-    } else {
-      // Si ya estaba activa (no debería por la validación anterior) o suspendida
-      // Solo actualizar next_billing_at y paid_until
-      await query(
-        `UPDATE public.subscriptions 
-         SET next_billing_at = $1,
-             paid_until = $1,
-             updated_at = NOW()
-         WHERE id = $2`,
-        [nextBilling.toISOString(), sub.id]
-      );
+    await query(
+      `UPDATE public.subscriptions
+       SET status = 'active',
+           activated_at = COALESCE(activated_at, NOW()),
+           next_billing_at = $1,
+           paid_until = $1,
+           updated_at = NOW()
+       WHERE id = $2`,
+      [nextBilling.toISOString(), subId]
+    );
+    await query(
+      `UPDATE public.businesses
+       SET is_active = TRUE, updated_at = NOW()
+       WHERE id = $1`,
+      [sub.business_id]
+    );
+
+    let invoice;
+    try {
+      invoice = await issuePlatformPaymentInvoice(billingHistoryId);
+    } catch (error) {
+      logger.error({ err: error, billingHistoryId, subscriptionId: subId }, 'Payment invoice emission failed');
+      try {
+        await query(
+          `UPDATE public.billing_history
+           SET invoice_status = 'error', invoice_error = $1
+           WHERE id = $2`,
+          [error.message, billingHistoryId]
+        );
+      } catch (updateError) {
+        logger.error({ err: updateError, billingHistoryId }, 'Could not save payment invoice error');
+      }
+      return res.status(502).json({
+        ok: false,
+        message: `Pago registrado, pero no se pudo emitir o enviar la factura: ${error.message}`,
+        data: { billing_history_id: billingHistoryId, payment_recorded: true, invoice_status: 'error' },
+      });
     }
 
-    // --- Enviar email de confirmación ---
     try {
       await sendPaymentConfirmedEmail(subId, ownerName, sub.owner_email, monthsPaid);
     } catch (emailError) {
       logger.error('Error enviando email de pago confirmado:', emailError);
     }
 
-    logger.info(`[PAYMENT] Pago registrado para suscripción ${subId}, invoice ${invoiceNumber}, próximo cobro ${nextBilling}`);
-
-    res.json({
+    logger.info({ subscriptionId: subId, billingHistoryId, invoiceNumber: invoice.invoice_number }, 'Payment and invoice completed');
+    return res.json({
       ok: true,
-      message: 'Pago registrado correctamente. Suscripción activada.',
+      message: 'Pago registrado y factura emitida correctamente.',
       data: {
-        invoice_number: invoiceNumber,
+        billing_history_id: billingHistoryId,
+        invoice_number: invoice.invoice_number,
+        invoice_status: invoice.status,
+        invoice_email: invoice.customer_email || customerEmail,
         next_billing_at: nextBilling,
-        status: 'active',
         period_start: periodStart,
         period_end: periodEnd,
-        months_paid: monthsPaid
+        months_paid: monthsPaid,
+        status: 'active',
       }
     });
 
   } catch (error) {
-    logger.error('Error registrando pago:', error);
-    res.status(500).json({
+    logger.error({ err: error, subscriptionId: req.params.subId }, 'Error registrando pago');
+    return res.status(500).json({
       ok: false,
       message: 'Error al registrar el pago: ' + error.message
     });
