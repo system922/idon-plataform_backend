@@ -162,8 +162,9 @@ app.use('/api/public', publicRoutes);
 // ─── Ruta de configureación fiscal ─────────────────────────────────────────────────
 app.use('/api/fiscal', fiscalRoutes);
 
-// Platform-admin endpoint: must run before tenant-context routes.
-app.use('/api/payphone', ...authAdmin, payphoneRoutes);
+// The PayPhone router is mounted before tenant-context routes. Its email endpoint
+// enforces admin auth internally; the PayPhone callback must remain publicly reachable.
+app.use('/api/payphone', payphoneRoutes);
 
 // ─── Rutas autenticadas + contexto de negocio ─────────────────────────────────
 app.use('/api/settings',            ...authBusiness, posSettingsRoutes);
