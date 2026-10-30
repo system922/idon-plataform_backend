@@ -14,7 +14,7 @@ const escapeHtml = (value) => String(value)
 
 router.post('/enviar-link-email', async (req, res) => {
   try {
-    const { amount, subscriptionId, email, businessName } = req.body;
+    const { amount, subscriptionId, businessId, email, businessName } = req.body;
 
     const recipientEmail = typeof email === 'string' ? email.trim() : '';
     if (!recipientEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipientEmail)) {
@@ -28,17 +28,20 @@ router.post('/enviar-link-email', async (req, res) => {
     if (subscriptionId === undefined || subscriptionId === null || String(subscriptionId).trim() === '') {
       return res.status(400).json({ error: 'La suscripción es obligatoria' });
     }
+    if (typeof businessId !== 'string' || !businessId.trim()) {
+      return res.status(400).json({ error: 'El negocio es obligatorio' });
+    }
 
     const { rows: subscriptions } = await query(
       `SELECT s.total_amount, b.name AS business_name
        FROM public.subscriptions s
        JOIN public.businesses b ON b.id = s.business_id
-       WHERE s.id = $1
+       WHERE s.id = $1 AND s.business_id = $2
        LIMIT 1`,
-      [subscriptionId]
+      [subscriptionId, businessId]
     );
     if (!subscriptions.length) {
-      return res.status(404).json({ error: 'La suscripción no existe' });
+      return res.status(404).json({ error: 'La suscripción no existe para el negocio indicado' });
     }
 
     const subscription = subscriptions[0];

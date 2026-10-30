@@ -162,6 +162,8 @@ app.use('/api/public', publicRoutes);
 // ─── Ruta de configureación fiscal ─────────────────────────────────────────────────
 app.use('/api/fiscal', fiscalRoutes);
 
+// Platform-admin endpoint: must run before tenant-context routes.
+app.use('/api/payphone', ...authAdmin, payphoneRoutes);
 
 // ─── Rutas autenticadas + contexto de negocio ─────────────────────────────────
 app.use('/api/settings',            ...authBusiness, posSettingsRoutes);
@@ -237,8 +239,6 @@ app.use('/api/odontologia/cuotas-ortodoncia', ...authBusiness, cuotasOrtodonciaR
 
 
 // ─── Rutas de admin ─────────────────────────────
-// POST /api/payphone/enviar-link-email: genera el enlace PayPhone y lo envía por correo.
-app.use('/api/payphone', ...authAdmin, payphoneRoutes);
 app.use('/api/admin', ...authAdmin, adminDashboardRoutes);  // General → Dashboard
 app.use('/api/admin', ...authAdmin, adminRequestsRoutes);   // Negocios → Solicitudes
 app.use('/api/admin', ...authAdmin, adminClientsRoutes);    // Negocios → Gestión de Clientes
