@@ -7,27 +7,6 @@ import { provisionTenantTables } from '../../services/provisioningService.js';
 
 const router = express.Router();
 
-const addMonthsClamped = (date, months) => {
-  const source = new Date(date);
-  const day = source.getDate();
-  const targetMonth = new Date(
-    source.getFullYear(),
-    source.getMonth() + months,
-    1,
-    source.getHours(),
-    source.getMinutes(),
-    source.getSeconds(),
-    source.getMilliseconds()
-  );
-  const lastDay = new Date(
-    targetMonth.getFullYear(),
-    targetMonth.getMonth() + 1,
-    0
-  ).getDate();
-  targetMonth.setDate(Math.min(day, lastDay));
-  return targetMonth;
-};
-
 // GET /api/admin/clients
 router.get('/clients', async (req, res, next) => {
   try {
