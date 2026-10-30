@@ -327,6 +327,19 @@ export async function generatePlatformInvoicePdf(invoiceId) {
   const d = await parseFacturaFromXml(inv.signed_xml);
   const cfg = await getPlatformEinvoicingConfig();
   const barcodeBuf = await generateBarcode(d.claveAcceso || inv.access_key);
+  let logoBuf = null;
+  if (cfg?.logo_url) {
+    try {
+      const response = await fetch(cfg.logo_url);
+      if (response.ok) {
+        logoBuf = Buffer.from(await response.arrayBuffer());
+      } else {
+        logger.warn({ status: response.status, logoUrl: cfg.logo_url }, 'Could not download platform invoice logo');
+      }
+    } catch (error) {
+      logger.warn({ err: error, logoUrl: cfg.logo_url }, 'Could not download platform invoice logo');
+    }
+  }
 
   const subtotalByRate = {};
   const ivaByRate = {};
@@ -366,7 +379,16 @@ export async function generatePlatformInvoicePdf(invoiceId) {
     const hH = 178;
     bord(rightX, y, rightW, hH, 0.8);
 
-    let ly = y + 2;
+    const LOGO_FIT = 100;
+    if (logoBuf) {
+      try {
+        doc.image(logoBuf, M, y, { fit: [LOGO_FIT, LOGO_FIT] });
+      } catch (error) {
+        logger.warn({ err: error }, 'Could not render platform invoice logo');
+        logoBuf = null;
+      }
+    }
+    let ly = logoBuf ? y + LOGO_FIT + 4 : y + 2;
     doc.fillColor(BK).fontSize(8.5).font('Helvetica').text('R.U.C.:   ' + d.ruc, M, ly, { width: leftW - 2 });
     ly += 12;
     doc.fontSize(9).font('Helvetica-Bold').text(d.razonSocial, M, ly, { width: leftW - 2 });
