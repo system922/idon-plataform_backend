@@ -169,77 +169,110 @@ router.post('/confirmar', async (req, res) => {
   try {
     const {
       Amount,
+      TransactionId,
       ClientTransactionId,
       StatusCode,
       TransactionStatus,
       StoreId,
     } = req.body || {};
-    const approved = TransactionStatus === 'Approved' || Number(StatusCode) === 3;
-
-    if (!approved) {
-      return payphoneResponse(res, true, '000');
-    }
+    const transactionId = typeof TransactionId === 'string' || typeof TransactionId === 'number'
+      ? String(TransactionId).trim()
+      : '';
+    const statusCode = Number(StatusCode);
+    const approved = statusCode === 3;
+    const amountInCents = Number(Amount);
 
     if (!process.env.PAYPHONE_STORE_ID ||
         String(StoreId) !== String(process.env.PAYPHONE_STORE_ID)) {
       throw new Error('Webhook PayPhone recibido con un StoreId inválido');
     }
+    if (!transactionId) {
+      throw new Error('TransactionId no está presente en la notificación de PayPhone');
+    }
+    if (!Number.isSafeInteger(amountInCents) || amountInCents < 0) {
+      throw new Error('Amount inválido en la notificación de PayPhone');
+    }
 
     const transactionMatch = /^S([\da-f]{32})-(\d{13})$/i.exec(String(ClientTransactionId || ''));
-    if (!transactionMatch) {
-      throw new Error('ClientTransactionId no identifica una suscripción válida');
+    let subscriptionId = null;
+    if (transactionMatch) {
+      const compactSubscriptionId = transactionMatch[1];
+      subscriptionId = [
+        compactSubscriptionId.slice(0, 8),
+        compactSubscriptionId.slice(8, 12),
+        compactSubscriptionId.slice(12, 16),
+        compactSubscriptionId.slice(16, 20),
+        compactSubscriptionId.slice(20),
+      ].join('-');
     }
-    const compactSubscriptionId = transactionMatch[1];
-    const subscriptionId = [
-      compactSubscriptionId.slice(0, 8),
-      compactSubscriptionId.slice(8, 12),
-      compactSubscriptionId.slice(12, 16),
-      compactSubscriptionId.slice(16, 20),
-      compactSubscriptionId.slice(20),
-    ].join('-');
-    const amountInCents = Number(Amount);
-    if (!Number.isSafeInteger(amountInCents) || amountInCents <= 0) {
-      throw new Error('Amount inválido en la notificación de PayPhone');
+    if (approved && !subscriptionId) {
+      throw new Error('ClientTransactionId no identifica una suscripción válida');
     }
 
     client = await getClient();
     await client.query('BEGIN');
     transactionOpen = true;
 
-    const { rows } = await client.query(
-      `SELECT id, business_id, total_amount, billing_period, next_billing_at
-       FROM public.subscriptions
-       WHERE id = $1
-       FOR UPDATE`,
-      [subscriptionId]
-    );
-    if (!rows.length) {
-      throw new Error(`No se encontró la suscripción ${subscriptionId}`);
+    let subscription = null;
+    if (subscriptionId) {
+      const { rows } = await client.query(
+        `SELECT id, business_id, total_amount, next_billing_at
+         FROM public.subscriptions
+         WHERE id = $1${approved ? ' FOR UPDATE' : ''}`,
+        [subscriptionId]
+      );
+      if (!rows.length && approved) {
+        throw new Error(`No se encontró la suscripción ${subscriptionId}`);
+      }
+      subscription = rows[0] || null;
+      if (!subscription) subscriptionId = null;
     }
 
-    const subscription = rows[0];
-    const expectedAmountInCents = Math.round(Number(subscription.total_amount) * 100);
-    if (amountInCents !== expectedAmountInCents) {
-      throw new Error(`El Amount recibido no coincide con la suscripción ${subscriptionId}`);
+    let expectedAmountInCents = null;
+    if (approved) {
+      expectedAmountInCents = Math.round(Number(subscription.total_amount) * 100);
+      if (amountInCents !== expectedAmountInCents) {
+        throw new Error(`El Amount recibido no coincide con la suscripción ${subscriptionId}`);
+      }
     }
 
-    const paymentReference = `PayPhone transaction ${ClientTransactionId}`;
-    const { rows: existingPayments } = await client.query(
-      `SELECT id
-       FROM public.billing_history
-       WHERE subscription_id = $1 AND notes = $2
-       LIMIT 1`,
-      [subscriptionId, paymentReference]
+    const paymentStatus = typeof TransactionStatus === 'string' && TransactionStatus.trim()
+      ? TransactionStatus.trim()
+      : (approved ? 'Approved' : 'Unknown');
+    const { rows: insertedPayments } = await client.query(
+      `INSERT INTO public.payments
+         (transaction_id, client_transaction_id, subscription_id, amount, status,
+          status_code, transaction_status, store_id, raw_payload)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+       ON CONFLICT (transaction_id) DO NOTHING
+       RETURNING id`,
+      [
+        transactionId,
+        ClientTransactionId ? String(ClientTransactionId) : null,
+        subscriptionId,
+        amountInCents,
+        paymentStatus,
+        Number.isInteger(statusCode) ? statusCode : null,
+        TransactionStatus ? String(TransactionStatus) : null,
+        String(StoreId),
+        JSON.stringify(req.body),
+      ]
     );
 
-    if (!existingPayments.length) {
+    if (!insertedPayments.length) {
+      await client.query('COMMIT');
+      transactionOpen = false;
+      return payphoneResponse(res, true, '000');
+    }
+
+    if (approved) {
       const now = new Date();
       const dueDate = subscription.next_billing_at
         ? new Date(subscription.next_billing_at)
         : now;
       const baseDate = dueDate > now ? dueDate : now;
-      const months = subscription.billing_period === 'annual' ? 12 : 1;
-      const nextBillingAt = addMonthsClamped(baseDate, months);
+      const nextBillingAt = addMonthsClamped(baseDate, 1);
+      const paymentReference = `PayPhone transaction ${transactionId}`;
 
       await client.query(
         `INSERT INTO public.billing_history
