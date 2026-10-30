@@ -309,11 +309,13 @@ router.post('/payments/record', async (req, res, next) => {
     } = req.body;
 
     if (!subscriptionId) {
+      logger.warn({ route: '/payments/record' }, 'Payment validation failed: subscriptionId is required');
       return res.status(400).json({ ok: false, message: 'subscriptionId es requerido' });
     }
 
     const monthsToAdd = parseInt(months, 10);
     if (![1, 2, 3, 6, 12].includes(monthsToAdd)) {
+      logger.warn({ subscriptionId, months }, 'Payment validation failed: invalid billing months');
       return res.status(400).json({ ok: false, message: 'La cantidad de meses seleccionada no es válida' });
     }
 
@@ -343,13 +345,43 @@ router.post('/payments/record', async (req, res, next) => {
 
     const sub = subRows[0];
     const ownerName = `${sub.first_name} ${sub.last_name || ''}`.trim();
-    const documentType = invoice_document_type || sub.document_type;
-    const documentNumber = invoice_document_number || sub.document_number;
-    const customerName = invoice_customer_name?.trim() || ownerName;
-    const customerEmail = invoice_email?.trim() || sub.owner_email;
+    const documentType = invoice_document_type?.trim().toLowerCase();
+    const documentNumber = invoice_document_number?.trim();
+    const customerName = invoice_customer_name?.trim();
+    const customerEmail = invoice_email?.trim();
+
+    if (!customerName) {
+      logger.warn({ subscriptionId }, 'Payment validation failed: invoice customer name is required');
+      return res.status(400).json({ ok: false, message: 'El nombre del cliente de la factura es obligatorio' });
+    }
+    if (!customerEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail)) {
+      logger.warn({ subscriptionId }, 'Payment validation failed: invalid invoice customer email');
+      return res.status(400).json({ ok: false, message: 'Ingrese un correo válido para enviar la factura' });
+    }
+    if (!['cedula', 'ruc', 'pasaporte', 'consumidor_final'].includes(documentType) || !documentNumber) {
+      logger.warn({ subscriptionId, documentType }, 'Payment validation failed: invoice identification is incomplete');
+      return res.status(400).json({ ok: false, message: 'Complete el tipo y número de identificación del cliente para emitir la factura' });
+    }
+    if (documentType === 'cedula' && !/^\d{10}$/.test(documentNumber)) {
+      logger.warn({ subscriptionId }, 'Payment validation failed: invalid customer cedula');
+      return res.status(400).json({ ok: false, message: 'La cédula del cliente debe tener 10 dígitos' });
+    }
+    if (documentType === 'ruc' && !/^\d{13}$/.test(documentNumber)) {
+      logger.warn({ subscriptionId }, 'Payment validation failed: invalid customer RUC');
+      return res.status(400).json({ ok: false, message: 'El RUC del cliente debe tener 13 dígitos' });
+    }
+    if (documentType === 'pasaporte' && documentNumber.length > 20) {
+      logger.warn({ subscriptionId }, 'Payment validation failed: customer passport number is too long');
+      return res.status(400).json({ ok: false, message: 'El número de pasaporte del cliente no puede exceder 20 caracteres' });
+    }
+    if (documentType === 'consumidor_final' && documentNumber !== '9999999999999') {
+      logger.warn({ subscriptionId }, 'Payment validation failed: invalid final consumer identification');
+      return res.status(400).json({ ok: false, message: 'La identificación de consumidor final no es válida' });
+    }
 
     // No permitir pagos si suspendida
     if (sub.status === 'suspended') {
+      logger.warn({ subscriptionId, status: sub.status }, 'Payment validation failed: subscription is suspended');
       return res.status(400).json({
         ok: false,
         message: 'No se puede registrar un pago para una suscripción suspendida. Primero reactívala.'
@@ -362,6 +394,12 @@ router.post('/payments/record', async (req, res, next) => {
       : subscriptionAmount;
     const paymentAmount = Number((monthlyAmount * monthsToAdd).toFixed(2));
     if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
+      logger.warn({
+        subscriptionId,
+        billingPeriod: sub.billing_period,
+        totalAmount: sub.total_amount,
+        months: monthsToAdd,
+      }, 'Payment validation failed: payment amount must be greater than zero');
       return res.status(400).json({ ok: false, message: 'El monto de la suscripción debe ser mayor a cero' });
     }
 
@@ -441,28 +479,29 @@ router.post('/payments/record', async (req, res, next) => {
     }
 
     let invoice = null;
-    let invoiceError = null;
     try {
-      invoice = await issuePlatformPaymentInvoice(billingHistoryId, {
-        name: customerName,
-        documentType,
-        documentNumber,
-        email: customerEmail,
-      });
+      invoice = await issuePlatformPaymentInvoice(billingHistoryId);
     } catch (error) {
-      invoiceError = error.message;
       try {
         await query(
           `UPDATE public.billing_history
               SET invoice_status = 'error', invoice_error = $1
             WHERE id = $2`,
-          [invoiceError, billingHistoryId]
+          [error.message, billingHistoryId]
         );
       } catch (updateError) {
-        invoiceError += `; no se pudo guardar el estado de error: ${updateError.message}`;
         logger.error({ err: updateError, billingHistoryId }, 'Could not persist platform invoice error status');
       }
       logger.error({ err: error, billingHistoryId }, 'Pago registrado, pero falló la emisión de su factura');
+      return res.status(502).json({
+        ok: false,
+        message: `Pago registrado, pero no se pudo emitir o enviar la factura: ${error.message}`,
+        data: {
+          billing_history_id: billingHistoryId,
+          payment_recorded: true,
+          invoice_status: 'error',
+        },
+      });
     }
 
     logger.info(`[PAYMENT-RECORD] Pago registrado para suscripción ${sub.id}, meses=${monthsToAdd}, invoice ${invoice?.invoice_number || 'pendiente'}`);
@@ -473,8 +512,8 @@ router.post('/payments/record', async (req, res, next) => {
       data: {
         billing_history_id: billingHistoryId,
         invoice_number: invoice?.invoice_number || null,
-        invoice_status: invoice?.status || 'error',
-        invoice_error: invoiceError,
+        invoice_status: invoice?.status || null,
+        invoice_email: invoice?.customer_email || customerEmail,
         amount: paymentAmount,
         next_billing_at: newNextBilling,
         months_paid: monthsToAdd,
@@ -487,7 +526,7 @@ router.post('/payments/record', async (req, res, next) => {
     logger.error('Error registrando pago en /payments/record:', error);
     res.status(500).json({
       ok: false,
-      message: 'Error al registrar el pago: ' + error.message
+      message: 'Error al registrar el pago: ' + error.message,
     });
   }
 });

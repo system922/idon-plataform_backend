@@ -211,9 +211,7 @@ export async function emitPlatformInvoice(opts) {
     client.release();
   }
 
-  authorizePlatformInvoice(invoice, signedXml, accessKey, envName)
-    .catch((error) => logger.error({ err: error, invoiceId: invoice.id }, 'Platform SRI authorization failed'));
-  return invoice;
+  return authorizePlatformInvoice(invoice, signedXml, accessKey, envName);
 }
 
 async function authorizePlatformInvoice(invoice, signedXml, accessKey, environment) {
@@ -257,7 +255,10 @@ async function authorizePlatformInvoice(invoice, signedXml, accessKey, environme
     [status, sriMessage, invoice.billing_history_id]
   );
 
-  if (status === 'autorizada' && updatedInvoice.customer_email) {
+  if (status === 'autorizada') {
+    if (!updatedInvoice.customer_email) {
+      throw new Error('La factura fue autorizada, pero no tiene correo de cliente para enviarla');
+    }
     try {
       const config = await getPlatformEinvoicingConfig();
       const emitterName = config?.nombre_comercial || config?.razon_social || 'IDON';
@@ -265,8 +266,10 @@ async function authorizePlatformInvoice(invoice, signedXml, accessKey, environme
       await sendInvoiceEmail(updatedInvoice, pdf, updatedInvoice.customer_email, emitterName);
     } catch (error) {
       logger.error({ err: error, invoiceId: updatedInvoice.id }, 'Could not send platform invoice email');
+      throw new Error(`Factura autorizada, pero no se pudo enviar al correo ${updatedInvoice.customer_email}: ${error.message}`);
     }
   }
+  return updatedInvoice;
 }
 
 export async function generatePlatformInvoicePdf(invoiceId) {

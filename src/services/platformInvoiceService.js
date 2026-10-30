@@ -15,20 +15,14 @@ const SRI_PAYMENT_METHODS = {
   otros: '20',
 };
 
-export async function issuePlatformPaymentInvoice(billingHistoryId, customer = {}) {
+export async function issuePlatformPaymentInvoice(billingHistoryId) {
   const { rows } = await query(`
     SELECT bh.*,
            s.billing_period,
-           b.name AS business_name,
-           bo.first_name || ' ' || COALESCE(bo.last_name, '') AS owner_name,
-           bo.email AS owner_email,
-           bo.document_type AS owner_document_type,
-           bo.document_number AS owner_document_number
+           b.name AS business_name
       FROM public.billing_history bh
       JOIN public.subscriptions s ON s.id = bh.subscription_id
       JOIN public.businesses b ON b.id = s.business_id
-      LEFT JOIN public.business_users bu ON bu.business_id = b.id AND bu.is_owner = TRUE
-      LEFT JOIN public.business_owners bo ON bo.user_id = bu.user_id
      WHERE bh.id = $1 AND bh.status = 'paid'
   `, [billingHistoryId]);
 
@@ -36,10 +30,20 @@ export async function issuePlatformPaymentInvoice(billingHistoryId, customer = {
   if (!payment) throw new Error('Pago confirmado no encontrado');
 
   const { rows: existingRows } = await query(
-    'SELECT id, invoice_number, status, customer_email FROM public.platform_einvoices WHERE billing_history_id = $1',
+    'SELECT id, invoice_number, status, customer_email, sri_message FROM public.platform_einvoices WHERE billing_history_id = $1',
     [billingHistoryId]
   );
   if (existingRows[0]) {
+    if (existingRows[0].status !== 'autorizada') {
+      throw new Error(
+        `La factura ${existingRows[0].invoice_number || ''} aún no está autorizada por el SRI: ${existingRows[0].sri_message || existingRows[0].status}`
+      );
+    }
+    if (existingRows[0].status !== 'autorizada') {
+      throw new Error(
+        `La factura ${existingRows[0].invoice_number || ''} aún no está autorizada por el SRI: ${existingRows[0].sri_message || existingRows[0].status}`
+      );
+    }
     await query(`
       UPDATE public.billing_history
          SET invoice_number = $1, invoice_status = $2, invoice_error = NULL
@@ -48,11 +52,11 @@ export async function issuePlatformPaymentInvoice(billingHistoryId, customer = {
     return existingRows[0];
   }
 
-  const customerName = customer.name?.trim() || payment.customer_name?.trim() || payment.owner_name?.trim();
-  const customerEmail = customer.email?.trim() || payment.customer_email?.trim() || payment.owner_email?.trim();
-  const requestedDocumentType = (customer.documentType || payment.customer_document_type || payment.owner_document_type || '').toLowerCase();
+  const customerName = payment.customer_name?.trim();
+  const customerEmail = payment.customer_email?.trim();
+  const requestedDocumentType = (payment.customer_document_type || '').toLowerCase();
   const documentType = requestedDocumentType === 'passport' ? 'pasaporte' : requestedDocumentType;
-  const documentNumber = (customer.documentNumber || payment.customer_document_number || payment.owner_document_number || '').trim();
+  const documentNumber = (payment.customer_document_number || '').trim();
   const identificationCode = SRI_IDENTIFICATION_TYPES[documentType];
 
   if (!customerName) throw new Error('El nombre del cliente de la factura es obligatorio');
@@ -114,6 +118,11 @@ export async function issuePlatformPaymentInvoice(billingHistoryId, customer = {
     total,
     forma_pago: SRI_PAYMENT_METHODS[payment.payment_method] || '20',
   });
+  if (invoice.status !== 'autorizada') {
+    throw new Error(
+      `El SRI no autorizó la factura ${invoice.invoice_number || ''}: ${invoice.sri_message || invoice.status || 'estado desconocido'}`
+    );
+  }
 
   await query(`
     UPDATE public.billing_history
