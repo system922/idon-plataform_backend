@@ -23,6 +23,26 @@ const addMonthsClamped = (date, months) => {
   return target;
 };
 
+const extractSubscriptionId = (clientTransactionId) => {
+  const value = typeof clientTransactionId === 'string' || typeof clientTransactionId === 'number'
+    ? String(clientTransactionId).trim()
+    : '';
+  const uuidMatch = /[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}/i.exec(value);
+  if (uuidMatch) return uuidMatch[0];
+
+  const compactMatch = /^S([a-f\d]{32})-\d{13}$/i.exec(value);
+  if (!compactMatch) return null;
+
+  const compactUuid = compactMatch[1];
+  return [
+    compactUuid.slice(0, 8),
+    compactUuid.slice(8, 12),
+    compactUuid.slice(12, 16),
+    compactUuid.slice(16, 20),
+    compactUuid.slice(20),
+  ].join('-');
+};
+
 const escapeHtml = (value) => String(value)
   .replace(/&/g, '&amp;')
   .replace(/</g, '&lt;')
@@ -193,18 +213,7 @@ router.post('/confirmar', async (req, res) => {
       throw new Error('Amount inválido en la notificación de PayPhone');
     }
 
-    const transactionMatch = /^S([\da-f]{32})-(\d{13})$/i.exec(String(ClientTransactionId || ''));
-    let subscriptionId = null;
-    if (transactionMatch) {
-      const compactSubscriptionId = transactionMatch[1];
-      subscriptionId = [
-        compactSubscriptionId.slice(0, 8),
-        compactSubscriptionId.slice(8, 12),
-        compactSubscriptionId.slice(12, 16),
-        compactSubscriptionId.slice(16, 20),
-        compactSubscriptionId.slice(20),
-      ].join('-');
-    }
+    let subscriptionId = extractSubscriptionId(ClientTransactionId);
     if (approved && !subscriptionId) {
       throw new Error('ClientTransactionId no identifica una suscripción válida');
     }
@@ -215,13 +224,20 @@ router.post('/confirmar', async (req, res) => {
 
     let subscription = null;
     if (subscriptionId) {
-      const { rows } = await client.query(
-        `SELECT id, business_id, total_amount, next_billing_at
-         FROM public.subscriptions
-         WHERE id = $1${approved ? ' FOR UPDATE' : ''}`,
-        [subscriptionId]
-      );
+      let rows;
+      try {
+        ({ rows } = await client.query(
+          `SELECT id, business_id, total_amount, next_billing_at
+           FROM public.subscriptions
+           WHERE id = $1${approved ? ' FOR UPDATE' : ''}`,
+          [subscriptionId]
+        ));
+      } catch (error) {
+        console.error('Error consultando suscripción PayPhone. UUID buscado:', subscriptionId);
+        throw error;
+      }
       if (!rows.length && approved) {
+        console.error('Suscripción PayPhone no encontrada. UUID buscado:', subscriptionId);
         throw new Error(`No se encontró la suscripción ${subscriptionId}`);
       }
       subscription = rows[0] || null;
