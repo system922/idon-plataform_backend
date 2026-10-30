@@ -237,6 +237,7 @@ app.use('/api/odontologia/cuotas-ortodoncia', ...authBusiness, cuotasOrtodonciaR
 
 
 // ─── Rutas de admin ─────────────────────────────
+// POST /api/payphone/enviar-link-email: genera el enlace PayPhone y lo envía por correo.
 app.use('/api/payphone', ...authAdmin, payphoneRoutes);
 app.use('/api/admin', ...authAdmin, adminDashboardRoutes);  // General → Dashboard
 app.use('/api/admin', ...authAdmin, adminRequestsRoutes);   // Negocios → Solicitudes

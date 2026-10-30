@@ -1,5 +1,6 @@
 import express from 'express';
 import axios from 'axios';
+import { query } from '../config/database.js';
 import { sendGenericEmail } from '../services/crmEmailService.js';
 
 const router = express.Router();
@@ -15,8 +16,9 @@ router.post('/enviar-link-email', async (req, res) => {
   try {
     const { amount, subscriptionId, email, businessName } = req.body;
 
-    if (typeof email !== 'string' || !email.trim()) {
-      return res.status(400).json({ error: 'El correo del cliente es obligatorio' });
+    const recipientEmail = typeof email === 'string' ? email.trim() : '';
+    if (!recipientEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipientEmail)) {
+      return res.status(400).json({ error: 'El correo del cliente no es válido' });
     }
 
     const parsedAmount = Number(amount);
@@ -26,11 +28,33 @@ router.post('/enviar-link-email', async (req, res) => {
     if (subscriptionId === undefined || subscriptionId === null || String(subscriptionId).trim() === '') {
       return res.status(400).json({ error: 'La suscripción es obligatoria' });
     }
+
+    const { rows: subscriptions } = await query(
+      `SELECT s.total_amount, b.name AS business_name
+       FROM public.subscriptions s
+       JOIN public.businesses b ON b.id = s.business_id
+       WHERE s.id = $1
+       LIMIT 1`,
+      [subscriptionId]
+    );
+    if (!subscriptions.length) {
+      return res.status(404).json({ error: 'La suscripción no existe' });
+    }
+
+    const subscription = subscriptions[0];
+    const amountInCents = Math.round(parsedAmount * 100);
+    const storedAmountInCents = Math.round(Number(subscription.total_amount) * 100);
+    if (!Number.isFinite(storedAmountInCents) || storedAmountInCents <= 0) {
+      throw new Error('La suscripción tiene un monto inválido');
+    }
+    if (amountInCents !== storedAmountInCents) {
+      return res.status(409).json({ error: 'El monto enviado no coincide con el monto de la suscripción' });
+    }
+
     if (!process.env.PAYPHONE_TOKEN || !process.env.PAYPHONE_STORE_ID) {
       throw new Error('Falta configurar PAYPHONE_TOKEN o PAYPHONE_STORE_ID');
     }
 
-    const amountInCents = Math.round(parsedAmount * 100);
     const response = await axios.post(
       'https://pay.payphonetodoesposible.com/api/button/Prepare',
       {
@@ -41,7 +65,7 @@ router.post('/enviar-link-email', async (req, res) => {
         clientTransactionId: `SUB-${subscriptionId}-${Date.now()}`,
         currency: 'USD',
         storeId: process.env.PAYPHONE_STORE_ID,
-        reference: `Suscripción ${businessName || ''}`.trim(),
+        reference: `Suscripción ${subscription.business_name || businessName || ''}`.trim(),
         expireInMinutes: 1440,
         responseUrl: 'https://www.idonplataform.site/pago-completado',
         cancellationUrl: 'https://www.idonplataform.site/pago-cancelado',
@@ -61,11 +85,11 @@ router.post('/enviar-link-email', async (req, res) => {
     }
 
     const parsedPaymentUrl = new URL(paymentUrl);
-    if (!['http:', 'https:'].includes(parsedPaymentUrl.protocol)) {
+    if (parsedPaymentUrl.protocol !== 'https:') {
       throw new Error('PayPhone devolvió un enlace de pago no válido');
     }
 
-    const safeBusinessName = escapeHtml(businessName || 'tu negocio');
+    const safeBusinessName = escapeHtml(subscription.business_name || businessName || 'tu negocio');
     const safePaymentUrl = escapeHtml(parsedPaymentUrl.toString());
     const html = `
       <!DOCTYPE html>
@@ -74,7 +98,7 @@ router.post('/enviar-link-email', async (req, res) => {
           <h2>Acción requerida: link de pago para tu suscripción</h2>
           <p>Hola,</p>
           <p>La suscripción de <strong>${safeBusinessName}</strong> tiene un pago pendiente.</p>
-          <p><strong>Monto a pagar:</strong> $${parsedAmount.toFixed(2)} USD</p>
+          <p><strong>Monto a pagar:</strong> $${(storedAmountInCents / 100).toFixed(2)} USD</p>
           <p style="text-align:center;margin:32px 0;">
             <a href="${safePaymentUrl}" style="display:inline-block;background:#2563eb;color:#fff;padding:16px 32px;border-radius:8px;text-decoration:none;font-weight:bold;">
               Pagar ahora
@@ -87,7 +111,7 @@ router.post('/enviar-link-email', async (req, res) => {
     `;
 
     await sendGenericEmail({
-      to: email.trim(),
+      to: recipientEmail,
       subject: 'Acción requerida: Link de pago para tu suscripción',
       html,
       businessName: 'IDON PLATAFORM',
@@ -95,7 +119,7 @@ router.post('/enviar-link-email', async (req, res) => {
 
     return res.status(200).json({ success: true });
   } catch (error) {
-    console.error('Error generando o enviando el link de pago PayPhone:', error.response?.data || error);
+    console.error('Error generando o enviando el link de pago PayPhone:', error);
     return res.status(500).json({ error: 'No se pudo generar el link o enviar el correo' });
   }
 });
