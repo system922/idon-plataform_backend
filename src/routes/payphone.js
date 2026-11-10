@@ -53,7 +53,7 @@ const escapeHtml = (value) => String(value)
 
 const validatePaymentUrl = (paymentUrl) => {
   const parsedPaymentUrl = new URL(paymentUrl);
-  const trustedDomains = ['payphonetodoesposible.com', 'payphone.app'];
+  const trustedDomains = ['payphonetodoesposible.com', 'payphone.app', 'ppls.me'];
   const isTrustedDomain = trustedDomains.some(
     (domain) =>
       parsedPaymentUrl.hostname === domain ||
