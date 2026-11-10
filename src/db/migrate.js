@@ -1,7 +1,7 @@
 // src/db/migrate.js
 import { readdir, readFile, access } from 'fs/promises';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import pool, { getClient, query } from '../config/database.js';
 import logger from '../utils/logger.js';
 
@@ -254,6 +254,6 @@ const run = async () => {
 };
 
 // Ejecutar si se llama directamente
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   run();
 }

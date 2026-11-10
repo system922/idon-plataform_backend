@@ -53,11 +53,16 @@ const escapeHtml = (value) => String(value)
 
 const validatePaymentUrl = (paymentUrl) => {
   const parsedPaymentUrl = new URL(paymentUrl);
-  if (
-    parsedPaymentUrl.protocol !== 'https:' ||
-    parsedPaymentUrl.hostname !== 'pay.payphonetodoesposible.com'
-  ) {
-    throw new Error('PayPhone devolvió un enlace de pago no válido');
+  const trustedDomains = ['payphonetodoesposible.com', 'payphone.app'];
+  const isTrustedDomain = trustedDomains.some(
+    (domain) =>
+      parsedPaymentUrl.hostname === domain ||
+      parsedPaymentUrl.hostname.endsWith(`.${domain}`)
+  );
+  if (parsedPaymentUrl.protocol !== 'https:' || !isTrustedDomain) {
+    throw new Error(
+      `PayPhone devolvió un enlace no válido (protocolo: ${parsedPaymentUrl.protocol}, dominio: ${parsedPaymentUrl.hostname})`
+    );
   }
   return parsedPaymentUrl;
 };
