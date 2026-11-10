@@ -50,6 +50,27 @@ const escapeHtml = (value) => String(value)
   .replace(/"/g, '&quot;')
   .replace(/'/g, '&#39;');
 
+const buildAnonymousPaymentUrl = (paymentUrl) => {
+  const parsedPaymentUrl = new URL(paymentUrl);
+  if (
+    parsedPaymentUrl.protocol !== 'https:' ||
+    parsedPaymentUrl.hostname !== 'pay.payphonetodoesposible.com'
+  ) {
+    throw new Error('PayPhone devolvió un enlace de pago no válido');
+  }
+
+  const paymentId = parsedPaymentUrl.searchParams.get('paymentId');
+  if (!paymentId) {
+    throw new Error('PayPhone devolvió un enlace sin paymentId');
+  }
+
+  const anonymousPaymentUrl = new URL('https://pay.payphonetodoesposible.com/Anonymous');
+  anonymousPaymentUrl.searchParams.set('paymentId', paymentId);
+  anonymousPaymentUrl.searchParams.set('direct', 'True');
+  anonymousPaymentUrl.searchParams.set('redirect', '/Direct/Result');
+  return anonymousPaymentUrl;
+};
+
 router.post('/enviar-link-email', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { amount, subscriptionId, businessId, email, businessName } = req.body;
@@ -130,13 +151,10 @@ router.post('/enviar-link-email', authMiddleware, adminMiddleware, async (req, r
       throw new Error('PayPhone no devolvió un enlace de pago');
     }
 
-    const parsedPaymentUrl = new URL(paymentUrl);
-    if (parsedPaymentUrl.protocol !== 'https:') {
-      throw new Error('PayPhone devolvió un enlace de pago no válido');
-    }
+    const anonymousPaymentUrl = buildAnonymousPaymentUrl(paymentUrl);
 
     const safeBusinessName = escapeHtml(subscription.business_name || businessName || 'tu negocio');
-    const safePaymentUrl = escapeHtml(parsedPaymentUrl.toString());
+    const safePaymentUrl = escapeHtml(anonymousPaymentUrl.toString());
     const html = `
       <!DOCTYPE html>
       <html lang="es">
