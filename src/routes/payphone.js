@@ -1,5 +1,6 @@
 import express from 'express';
 import axios from 'axios';
+import { randomBytes } from 'crypto';
 import { getClient, query } from '../config/database.js';
 import { authMiddleware, adminMiddleware } from '../middleware/auth.js';
 import { sendGenericEmail } from '../services/crmEmailService.js';
@@ -50,7 +51,7 @@ const escapeHtml = (value) => String(value)
   .replace(/"/g, '&quot;')
   .replace(/'/g, '&#39;');
 
-const buildAnonymousPaymentUrl = (paymentUrl) => {
+const validatePaymentUrl = (paymentUrl) => {
   const parsedPaymentUrl = new URL(paymentUrl);
   if (
     parsedPaymentUrl.protocol !== 'https:' ||
@@ -58,17 +59,7 @@ const buildAnonymousPaymentUrl = (paymentUrl) => {
   ) {
     throw new Error('PayPhone devolvió un enlace de pago no válido');
   }
-
-  const paymentId = parsedPaymentUrl.searchParams.get('paymentId');
-  if (!paymentId) {
-    throw new Error('PayPhone devolvió un enlace sin paymentId');
-  }
-
-  const anonymousPaymentUrl = new URL('https://pay.payphonetodoesposible.com/Anonymous');
-  anonymousPaymentUrl.searchParams.set('paymentId', paymentId);
-  anonymousPaymentUrl.searchParams.set('direct', 'True');
-  anonymousPaymentUrl.searchParams.set('redirect', '/Direct/Result');
-  return anonymousPaymentUrl;
+  return parsedPaymentUrl;
 };
 
 router.post('/enviar-link-email', authMiddleware, adminMiddleware, async (req, res) => {
@@ -117,25 +108,22 @@ router.post('/enviar-link-email', authMiddleware, adminMiddleware, async (req, r
       throw new Error('Falta configurar PAYPHONE_TOKEN o PAYPHONE_STORE_ID');
     }
 
-    const compactSubscriptionId = String(subscriptionId).replace(/-/g, '');
-    if (!/^[\da-f]{32}$/i.test(compactSubscriptionId)) {
-      throw new Error('El ID de suscripción no tiene un formato UUID válido');
-    }
-    const transactionId = `S${compactSubscriptionId}-${Date.now()}`;
+    const clientTransactionId = randomBytes(8).toString('hex').slice(0, 15);
+    const paymentReference = `Suscripción ${subscription.business_name || businessName || ''}`
+      .trim()
+      .slice(0, 100);
     const response = await axios.post(
-      'https://pay.payphonetodoesposible.com/api/button/Prepare',
+      'https://pay.payphonetodoesposible.com/api/Links',
       {
         amount: amountInCents,
         amountWithoutTax: amountInCents,
-        amountWithTax: 0,
-        tax: 0,
-        clientTransactionId: transactionId,
+        clientTransactionId,
         currency: 'USD',
         storeId: process.env.PAYPHONE_STORE_ID,
-        reference: `Suscripción ${subscription.business_name || businessName || ''}`.trim(),
-        expireInMinutes: 1440,
-        responseUrl: 'https://www.idonplataform.site/pago-completado',
-        cancellationUrl: 'https://www.idonplataform.site/pago-cancelado',
+        reference: paymentReference,
+        oneTime: true,
+        expireIn: 24,
+        isAmountEditable: false,
       },
       {
         headers: {
@@ -146,15 +134,21 @@ router.post('/enviar-link-email', authMiddleware, adminMiddleware, async (req, r
       }
     );
 
-    const paymentUrl = response.data?.payWithPayPhone || response.data?.payWithCard;
-    if (typeof paymentUrl !== 'string') {
+    const paymentUrl = typeof response.data === 'string' ? response.data.trim() : '';
+    if (!paymentUrl) {
       throw new Error('PayPhone no devolvió un enlace de pago');
     }
 
-    const anonymousPaymentUrl = buildAnonymousPaymentUrl(paymentUrl);
+    const validatedPaymentUrl = validatePaymentUrl(paymentUrl);
+    await query(
+      `INSERT INTO public.payphone_payment_links
+         (client_transaction_id, subscription_id, amount, payment_url)
+       VALUES ($1, $2, $3, $4)`,
+      [clientTransactionId, subscriptionId, amountInCents, validatedPaymentUrl.toString()]
+    );
 
     const safeBusinessName = escapeHtml(subscription.business_name || businessName || 'tu negocio');
-    const safePaymentUrl = escapeHtml(anonymousPaymentUrl.toString());
+    const safePaymentUrl = escapeHtml(validatedPaymentUrl.toString());
     const html = `
       <!DOCTYPE html>
       <html lang="es">
@@ -231,14 +225,33 @@ router.post('/confirmar', async (req, res) => {
       throw new Error('Amount inválido en la notificación de PayPhone');
     }
 
-    let subscriptionId = extractSubscriptionId(ClientTransactionId);
-    if (approved && !subscriptionId) {
-      throw new Error('ClientTransactionId no identifica una suscripción válida');
-    }
-
     client = await getClient();
     await client.query('BEGIN');
     transactionOpen = true;
+
+    const clientTransactionId = typeof ClientTransactionId === 'string'
+      ? ClientTransactionId.trim()
+      : '';
+    let subscriptionId = null;
+    let linkedAmountInCents = null;
+    if (clientTransactionId) {
+      const { rows: paymentLinks } = await client.query(
+        `SELECT subscription_id, amount
+         FROM public.payphone_payment_links
+         WHERE client_transaction_id = $1
+         FOR UPDATE`,
+        [clientTransactionId]
+      );
+      if (paymentLinks.length) {
+        subscriptionId = paymentLinks[0].subscription_id;
+        linkedAmountInCents = Number(paymentLinks[0].amount);
+      } else {
+        subscriptionId = extractSubscriptionId(clientTransactionId);
+      }
+    }
+    if (approved && !subscriptionId) {
+      throw new Error('ClientTransactionId no identifica una suscripción válida');
+    }
 
     let subscription = null;
     if (subscriptionId) {
@@ -265,6 +278,9 @@ router.post('/confirmar', async (req, res) => {
     let expectedAmountInCents = null;
     if (approved) {
       expectedAmountInCents = Math.round(Number(subscription.total_amount) * 100);
+      if (linkedAmountInCents !== null && amountInCents !== linkedAmountInCents) {
+        throw new Error(`El Amount recibido no coincide con el link de pago ${clientTransactionId}`);
+      }
       if (amountInCents !== expectedAmountInCents) {
         throw new Error(`El Amount recibido no coincide con la suscripción ${subscriptionId}`);
       }
@@ -282,7 +298,7 @@ router.post('/confirmar', async (req, res) => {
        RETURNING id`,
       [
         transactionId,
-        ClientTransactionId ? String(ClientTransactionId) : null,
+        clientTransactionId || null,
         subscriptionId,
         amountInCents,
         paymentStatus,
