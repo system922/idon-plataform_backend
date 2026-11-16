@@ -990,11 +990,21 @@ export async function generateInvoicePdf(schema, invoiceId) {
     const totW = W - infoW - 4;
     const totX = M + infoW + 4;
 
-    const rucInfoLabel = d.rucProveedor
-      ? `Información Adicional: RUC Proveedor: ${d.rucProveedor}`
-      : `Información Adicional: RUC Emisor: ${ruc}`;
-    doc.fillColor(BK).fontSize(7.5).font('Helvetica')
-       .text(rucInfoLabel, M + 4, y + 3, { width: infoW - 12 });
+    const additionalInfoH = 18;
+    const additionalDataH = 22;
+    fill(M, y, infoW, additionalInfoH, LGR);
+    bord(M, y, infoW, additionalInfoH);
+    doc.fillColor(BK).fontSize(9).font('Helvetica-Bold')
+       .text('Información Adicional', M + 4, y + 4, { width: infoW - 8 });
+    fill(M, y + additionalInfoH, infoW, additionalDataH, WHT);
+    bord(M, y + additionalInfoH, infoW, additionalDataH);
+    doc.fillColor(BK).fontSize(9).font('Helvetica')
+       .text(
+         `${d.rucProveedor ? 'RUC Proveedor' : 'RUC Emisor'}: ${d.rucProveedor || ruc}`,
+         M + 4,
+         y + additionalInfoH + 5,
+         { width: infoW - 8 }
+       );
 
     const totRows = [];
     
