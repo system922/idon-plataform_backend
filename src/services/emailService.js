@@ -5,15 +5,22 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 const FROM   = process.env.FROM_EMAIL || 'Facturación <onboarding@resend.dev>';
 
 /**
- * Envía el RIDE (PDF) de una factura autorizada al correo del cliente.
- * @param {object} inv   - Fila de einvoices (invoice_number, customer_name, total, etc.)
+ * Envía el RIDE (PDF) y el XML firmado de una factura autorizada al cliente.
+ * @param {object} inv   - Fila de einvoices, incluyendo signed_xml
  * @param {Buffer} pdfBuf - PDF generado por generateInvoicePdf
  * @param {string} to     - Email destino
  * @param {string} businessName - Nombre comercial del emisor
  */
 export async function sendInvoiceEmail(inv, pdfBuf, to, businessName) {
+  if (!inv.signed_xml) {
+    throw new Error('No se puede enviar la factura sin el XML firmado');
+  }
+
   const subject = `Factura Electrónica ${inv.invoice_number} — ${businessName}`;
   const total   = parseFloat(inv.total || 0).toFixed(2);
+  const xmlBuf = Buffer.isBuffer(inv.signed_xml)
+    ? inv.signed_xml
+    : Buffer.from(inv.signed_xml, 'utf8');
 
   const html = `
     <div style="font-family:Arial,sans-serif;max-width:520px;margin:auto;color:#1e293b">
@@ -24,7 +31,7 @@ export async function sendInvoiceEmail(inv, pdfBuf, to, businessName) {
       <div style="background:#f8fafc;padding:24px 28px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 10px 10px">
         <p style="margin:0 0 8px">Estimado/a <strong>${inv.customer_name}</strong>,</p>
         <p style="margin:0 0 20px;color:#475569;font-size:14px">
-          Se adjunta su factura electrónica autorizada por el SRI.
+          Se adjuntan el PDF y el XML de su factura electrónica autorizada por el SRI.
         </p>
         <table style="width:100%;font-size:13px;border-collapse:collapse">
           <tr>
@@ -58,10 +65,18 @@ export async function sendInvoiceEmail(inv, pdfBuf, to, businessName) {
     to:          [to],
     subject,
     html,
-    attachments: [{
-      filename: `FACTURA-${inv.invoice_number}.pdf`,
-      content:  pdfBuf.toString('base64'),
-    }],
+    attachments: [
+      {
+        filename: `FACTURA-${inv.invoice_number}.pdf`,
+        content: pdfBuf.toString('base64'),
+        content_type: 'application/pdf',
+      },
+      {
+        filename: `FACTURA-${inv.invoice_number}.xml`,
+        content: xmlBuf.toString('base64'),
+        content_type: 'application/xml',
+      },
+    ],
   });
 
   if (error) {

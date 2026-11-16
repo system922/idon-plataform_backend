@@ -13,7 +13,7 @@ const CONFIG_FIELDS = [
   'ruc', 'razon_social', 'nombre_comercial', 'direccion_matriz',
   'direccion_establecimiento', 'contribuyente_especial', 'obligado_contabilidad',
   'ambiente', 'serie_estab', 'serie_pto_emision', 'secuencial_actual',
-  'secuencial_credit_notes',
+  'secuencial_credit_notes', 'ruc_proveedor',
 ];
 
 const IVA_CODES = { 0: 0, 5: 5, 8: 6, 12: 2, 15: 4 };
@@ -39,6 +39,11 @@ async function parseFacturaFromXml(xmlText) {
 
   const it = factura?.infoTributaria ?? {};
   const inf = factura?.infoFactura ?? {};
+  let rawCamposAdicionales = factura?.infoAdicional?.campoAdicional ?? [];
+  if (!Array.isArray(rawCamposAdicionales)) rawCamposAdicionales = [rawCamposAdicionales];
+  const rucProveedor = rawCamposAdicionales.find(
+    campo => campo?.$?.nombre === 'RUC Proveedor'
+  );
 
   let rawDetalles = factura?.detalles?.detalle ?? [];
   if (!Array.isArray(rawDetalles)) rawDetalles = [rawDetalles];
@@ -83,6 +88,7 @@ async function parseFacturaFromXml(xmlText) {
   return {
     razonSocial: str(it?.razonSocial),
     ruc: str(it?.ruc),
+    rucProveedor: str(rucProveedor),
     nombreComercial: str(it?.nombreComercial),
     dirMatriz: str(it?.dirMatriz),
     dirEstab: str(inf?.dirEstablecimiento),
@@ -521,6 +527,10 @@ export async function generatePlatformInvoicePdf(invoiceId) {
     const infoW = W * 0.55;
     const totW = W - infoW - 4;
     const totX = M + infoW + 4;
+    const rucInfoLabel = d.rucProveedor
+      ? `Información Adicional: RUC Proveedor: ${d.rucProveedor}`
+      : `Información Adicional: RUC Emisor: ${d.ruc}`;
+    doc.fillColor(BK).fontSize(7.5).font('Helvetica').text(rucInfoLabel, M + 4, y + 3, { width: infoW - 12 });
     const totRows = [];
     
     for (const rate of ivaRates) {

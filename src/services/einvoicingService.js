@@ -157,6 +157,14 @@ export async function emitInvoice(schema, opts) {
   if (!cfg.p12_base64 && !cfg.p12_path) throw new Error('No hay firma electrónica cargada');
   if (!cfg.ruc) throw new Error('RUC del emisor no configurado');
 
+  const { rows: providerConfigRows } = await query(
+    'SELECT ruc_proveedor FROM public.platform_einvoice_config WHERE id = 1'
+  );
+  const rucProveedor = String(providerConfigRows[0]?.ruc_proveedor || '').trim();
+  if (!/^\d{13}$/.test(rucProveedor)) {
+    throw new Error('Configure un RUC Proveedor válido de 13 dígitos en la facturación de plataforma');
+  }
+
   const client = await getClient();
   try {
     await client.query('BEGIN');
@@ -323,6 +331,7 @@ export async function emitInvoice(schema, opts) {
       detalles: {
         detalle: detalleItems,
       },
+      rucProveedor,
     };
 
     // Generar XML
@@ -541,6 +550,11 @@ async function parseFacturaFromXml(xmlText) {
 
   const it = factura?.infoTributaria ?? {};
   const inf = factura?.infoFactura ?? {};
+  let rawCamposAdicionales = factura?.infoAdicional?.campoAdicional ?? [];
+  if (!Array.isArray(rawCamposAdicionales)) rawCamposAdicionales = [rawCamposAdicionales];
+  const rucProveedor = rawCamposAdicionales.find(
+    campo => campo?.$?.nombre === 'RUC Proveedor'
+  );
 
   let rawDetalles = factura?.detalles?.detalle ?? [];
   if (!Array.isArray(rawDetalles)) rawDetalles = [rawDetalles];
@@ -641,6 +655,7 @@ async function parseFacturaFromXml(xmlText) {
   return {
     razonSocial: str(it?.razonSocial),
     ruc: str(it?.ruc),
+    rucProveedor: str(rucProveedor),
     nombreComercial: str(it?.nombreComercial),
     dirMatriz: str(it?.dirMatriz),
     dirEstab: str(inf?.dirEstablecimiento),
@@ -974,6 +989,12 @@ export async function generateInvoicePdf(schema, invoiceId) {
     const infoW = W * 0.55;
     const totW = W - infoW - 4;
     const totX = M + infoW + 4;
+
+    const rucInfoLabel = d.rucProveedor
+      ? `Información Adicional: RUC Proveedor: ${d.rucProveedor}`
+      : `Información Adicional: RUC Emisor: ${ruc}`;
+    doc.fillColor(BK).fontSize(7.5).font('Helvetica')
+       .text(rucInfoLabel, M + 4, y + 3, { width: infoW - 12 });
 
     const totRows = [];
     
